@@ -96,15 +96,28 @@ internal sealed class VirtualDisplayDriver
 
     /// <summary>
     /// Attach <paramref name="device"/> at the given physical size, to the right of the
-    /// existing desktop, and wait until Windows reports it.
+    /// existing desktop, and wait until Windows reports it. On failure, <paramref name="problem"/>
+    /// says why.
     /// </summary>
-    public DisplayInfo? Attach(string device, int width, int height)
+    public DisplayInfo? Attach(string device, int width, int height, out string? problem)
     {
+        problem = null;
+        var modes = Desktop.Modes(device);
+        if (!modes.Contains((width, height)))
+        {
+            problem = $"{device} does not offer {width}x{height}; it offers " +
+                (modes.Count == 0 ? "no modes (no monitor attached to the output)" : string.Join(", ", modes.Select(m => $"{m.Width}x{m.Height}").Take(20)));
+            return null;
+        }
         var displays = Desktop.Displays();
         int x = displays.Count == 0 ? 0 : displays.Max(d => d.Bounds.Right);
         int top = displays.FirstOrDefault(d => d.IsPrimary)?.Bounds.Y ?? 0;
         int result = Desktop.Attach(device, width, height, x, top);
-        if (result != 0) return null;
+        if (result != 0)
+        {
+            problem = $"Windows refused to attach {device} at {width}x{height}: {Desktop.DescribeChange(result)}";
+            return null;
+        }
 
         var deadline = DateTime.UtcNow.AddSeconds(5);
         while (DateTime.UtcNow < deadline)
@@ -113,7 +126,9 @@ internal sealed class VirtualDisplayDriver
             if (display is not null && display.Bounds.Width == width && display.Bounds.Height == height) return display;
             Thread.Sleep(100);
         }
-        return Desktop.Display(device);
+        var attached = Desktop.Display(device);
+        if (attached is null) problem = $"Windows accepted {device} at {width}x{height} but never added it to the desktop";
+        return attached;
     }
 
     /// <summary>Send one command string to the driver's control pipe.</summary>

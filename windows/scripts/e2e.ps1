@@ -72,6 +72,10 @@ Check "Virtual Display Driver provides outputs" ($outputs.Count -gt 0) "$($outpu
 $created = Invoke-2ndscreen @("screen", "create", "--name", "e2e", "--size", "1280x800", "--no-hidpi", "--ttl", "10m")
 $frame = $created.screen.frame
 Check "screen create" ([bool]$created.ok) $(if ($created.ok) { "frame $($frame.x),$($frame.y) $($frame.width)x$($frame.height)" } else { $created.error })
+if (-not $created.ok) {
+    & $cli doctor | Set-Content (Join-Path $Out "doctor-after-create.json")
+    Get-Content (Join-Path $Out "doctor-after-create.json") | Write-Host
+}
 if ($created.ok) {
     Check "screen has the requested size" ($frame.width -eq 1280 -and $frame.height -eq 800) "$($frame.width)x$($frame.height)"
 } else {

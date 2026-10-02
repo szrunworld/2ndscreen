@@ -92,17 +92,17 @@ internal sealed class Screens
         if (driver.Claim() is not { } device)
             return ControlResponse.Failure("no free virtual output; destroy a screen first");
 
-        var display = driver.Attach(device, physical.Width, physical.Height);
+        var display = driver.Attach(device, physical.Width, physical.Height, out var attachProblem);
         if (display is null)
         {
             driver.Release(device);
-            return ControlResponse.Failure($"Windows refused to attach a {physical} display");
+            return ControlResponse.Failure(attachProblem ?? $"Windows refused to attach a {physical} display");
         }
         bool scaled = hiDpi && DisplayScale.Set(device, 200);
         if (hiDpi && !scaled)
         {
             // Without the scale a 2x display would look twice as big; fall back to 1x.
-            driver.Attach(device, width, height);
+            driver.Attach(device, width, height, out _);
         }
 
         var screen = new Screen

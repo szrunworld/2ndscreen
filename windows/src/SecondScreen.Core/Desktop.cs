@@ -99,6 +99,7 @@ public static class Desktop
     /// Attach <paramref name="device"/> to the desktop at (<paramref name="x"/>, <paramref name="y"/>)
     /// with the given physical size, or move or resize it if already attached.
     /// </summary>
+    /// <returns>0 on success, else a DISP_CHANGE code (see <see cref="DescribeChange"/>).</returns>
     public static int Attach(string device, int width, int height, int x, int y)
     {
         var mode = Native.DEVMODE.Create();
@@ -107,9 +108,27 @@ public static class Desktop
         mode.dmPelsHeight = (uint)height;
         mode.dmPositionX = x;
         mode.dmPositionY = y;
+        // Persisting the layout is preferred, so it survives a reconnect; some sessions
+        // refuse to write it, so fall back to changing only the current session.
         int result = Native.ChangeDisplaySettingsEx(device, ref mode, 0, Native.CDS_UPDATEREGISTRY | Native.CDS_NORESET, 0);
-        return result == Native.DISP_CHANGE_SUCCESSFUL ? Native.ApplyDisplaySettings(0, 0, 0, 0, 0) : result;
+        if (result == Native.DISP_CHANGE_SUCCESSFUL) result = Native.ApplyDisplaySettings(0, 0, 0, 0, 0);
+        if (result != Native.DISP_CHANGE_SUCCESSFUL) result = Native.ChangeDisplaySettingsEx(device, ref mode, 0, 0, 0);
+        return result;
     }
+
+    /// <summary>The name of a ChangeDisplaySettingsEx result code.</summary>
+    public static string DescribeChange(int code) => code switch
+    {
+        0 => "DISP_CHANGE_SUCCESSFUL",
+        1 => "DISP_CHANGE_RESTART",
+        -1 => "DISP_CHANGE_FAILED",
+        -2 => "DISP_CHANGE_BADMODE",
+        -3 => "DISP_CHANGE_NOTUPDATED",
+        -4 => "DISP_CHANGE_BADFLAGS",
+        -5 => "DISP_CHANGE_BADPARAM",
+        -6 => "DISP_CHANGE_BADDUALVIEW",
+        _ => $"code {code}",
+    };
 
     /// <summary>Detach <paramref name="device"/>; Windows moves its windows to the remaining displays.</summary>
     public static int Detach(string device)
