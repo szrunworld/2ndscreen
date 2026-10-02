@@ -5,8 +5,9 @@ import Foundation
 /// A software-backed display that exists for as long as this object lives.
 ///
 /// Built on CoreGraphics' private `CGVirtualDisplay`. The display's resolution
-/// can change in place: the descriptor reserves room for the largest preset at
-/// 2x, and `apply(_:hiDPI:)` swaps the active mode without recreating it.
+/// can change in place: the descriptor reserves room for the largest mode it
+/// may need at 2x, and `apply(_:hiDPI:)` swaps the active mode without
+/// recreating it.
 public final class VirtualDisplay {
     public struct Mode: Hashable, Codable, CustomStringConvertible {
         public let width: Int
@@ -37,20 +38,25 @@ public final class VirtualDisplay {
     private let display: CGVirtualDisplay
 
     /// - Parameters:
+    ///   - reserving: further modes `apply` must be able to switch to, such as
+    ///     the sizes of connected displays. The presets are always reserved.
     ///   - serialNumber: macOS refuses two live displays with the same
     ///     vendor/product/serial, and remembers arrangement per serial. Give
     ///     each concurrent display its own value.
     ///   - onTerminate: called on the main queue if macOS tears the display
     ///     down on its own (for example after a WindowServer restart).
     public init?(name: String, mode: Mode, hiDPI: Bool, refreshRate: Double = 60,
-                 serialNumber: UInt32 = 1, onTerminate: @escaping () -> Void = {}) {
-        let largest = (Self.presets + [mode]).max { $0.width * $0.height < $1.width * $1.height }!
+                 reserving: [Mode] = [], serialNumber: UInt32 = 1,
+                 onTerminate: @escaping () -> Void = {}) {
+        let candidates = Self.presets + reserving + [mode]
+        let widest = candidates.map(\.width).max()!
+        let tallest = candidates.map(\.height).max()!
 
         let descriptor = CGVirtualDisplayDescriptor()
         descriptor.setDispatchQueue(DispatchQueue.main)
         descriptor.name = name
-        descriptor.maxPixelsWide = UInt32(largest.width * 2)
-        descriptor.maxPixelsHigh = UInt32(largest.height * 2)
+        descriptor.maxPixelsWide = UInt32(widest * 2)
+        descriptor.maxPixelsHigh = UInt32(tallest * 2)
         // A 24-inch-class physical size keeps macOS' default scaling sensible.
         descriptor.sizeInMillimeters = CGSize(width: 527, height: 296)
         // Stable IDs let macOS remember where the user arranged the display.

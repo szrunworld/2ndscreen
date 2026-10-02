@@ -1,4 +1,5 @@
 import AppKit
+import Carbon.HIToolbox
 import SecondScreenCore
 
 /// Persisted user choices. The app restores them on launch.
@@ -74,6 +75,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var display: VirtualDisplay?
     private var preview: DisplayPreview?
     private var agentCursor: AgentCursorOverlay?
+    private var moveHotKey: HotKey?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -87,6 +89,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self, selector: #selector(agentCursorEvent(_:)),
             name: AgentCursorEvent.notificationName, object: nil,
             suspensionBehavior: .deliverImmediately)
+
+        moveHotKey = HotKey(keyCode: kVK_ANSI_M, modifiers: controlKey | optionKey | cmdKey) { [weak self] in
+            self?.moveFrontWindowToOtherScreen()
+        }
 
         // Default to the main display's size and scale: the full-screen
         // preview then fills it exactly, and windows keep their size when
@@ -109,6 +115,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             name: Self.displayName,
             mode: preferences.mode,
             hiDPI: preferences.hiDPI,
+            reserving: DisplayMatch.connected(excluding: nil).map(\.mode),
             onTerminate: { [weak self] in
                 // Our own disable clears `display` first; anything else means
                 // macOS removed the display behind our back.
@@ -162,11 +169,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // full-screen window would strand its Space.
         if let preview {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+                // The preview may have been closed or replaced meanwhile.
+                guard let self, self.preview === preview else { return }
                 Task { @MainActor in
                     do {
                         try await preview.restartStream()
                     } catch {
-                        self?.presentError("Preview failed: \(error.localizedDescription)")
+                        self.presentError("Preview failed: \(error.localizedDescription)")
                     }
                 }
             }
@@ -281,7 +290,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(item("Grant Accessibility to Move Windows…", #selector(requestAccessibility), on: false))
             return
         }
-        menu.addItem(item("Send Front Window to 2ndscreen", #selector(sendFrontWindow), on: false))
+        let move = item("Move Front Window to Other Screen", #selector(moveFrontWindowToOtherScreen), on: false)
+        // Shown for discoverability; the global hot key works without the menu.
+        move.keyEquivalent = "m"
+        move.keyEquivalentModifierMask = [.control, .option, .command]
+        menu.addItem(move)
 
         let windows = WindowMover.windows(on: display.displayID)
         let parent = NSMenuItem(title: "Windows on 2ndscreen (\(windows.count))", action: nil, keyEquivalent: "")
@@ -304,9 +317,18 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         WindowMover.requestTrust()
     }
 
-    @objc private func sendFrontWindow() {
-        guard let display, let window = WindowMover.focusedWindow() else { return }
-        if !WindowMover.move(window, to: display.displayID) {
+    /// Send the focused window to 2ndscreen, or back to the main display if
+    /// it is already there. Bound to ⌃⌥⌘M.
+    @objc private func moveFrontWindowToOtherScreen() {
+        guard let display else { return }
+        guard WindowMover.isTrusted else {
+            WindowMover.requestTrust()
+            return
+        }
+        guard let window = WindowMover.focusedWindow() else { return }
+        let onVirtual = WindowMover.display(containing: window.frame) == display.displayID
+        let target = onVirtual ? CGMainDisplayID() : display.displayID
+        if !WindowMover.move(window, to: target) {
             presentError("Could not move \(window.label).")
         }
     }
@@ -389,6 +411,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func presentError(_ message: String) {
+        // A menu bar app is usually inactive; without this the alert can open
+        // behind other windows and look like a hang.
+        NSApp.activate()
         let alert = NSAlert()
         alert.messageText = "2ndscreen"
         alert.informativeText = message

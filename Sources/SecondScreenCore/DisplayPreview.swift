@@ -12,6 +12,12 @@ public final class DisplayPreview: NSObject, SCStreamOutput, SCStreamDelegate, N
     private let window: NSWindow
     private let imageLayer = CALayer()
     private var stream: SCStream?
+    /// Whether the owner wants frames. Capture still pauses while the window
+    /// is fully hidden, such as on another Space, to save power.
+    private var wantsStream = false
+    /// Bumped whenever a stream is stopped, so a start still awaiting
+    /// ScreenCaptureKit can tell it was superseded and discard its stream.
+    private var streamGeneration = 0
 
     /// Called on the main queue when the user closes the preview window.
     public var onClose: (() -> Void)?
@@ -70,6 +76,7 @@ public final class DisplayPreview: NSObject, SCStreamOutput, SCStreamDelegate, N
                                                 y: visible.maxY - 24))
         }
         window.orderFrontRegardless()
+        wantsStream = true
         try await startStream()
     }
 
@@ -77,6 +84,7 @@ public final class DisplayPreview: NSObject, SCStreamOutput, SCStreamDelegate, N
     /// and its full-screen Space if it has one, stay as they are.
     @MainActor
     public func restartStream() async throws {
+        guard wantsStream else { return }
         stopStream()
         if !isFullScreen {
             let bounds = CGDisplayBounds(displayID)
@@ -91,6 +99,7 @@ public final class DisplayPreview: NSObject, SCStreamOutput, SCStreamDelegate, N
 
     @MainActor
     private func startStream() async throws {
+        let generation = streamGeneration
         let display = try await findDisplay()
         let filter = SCContentFilter(display: display, excludingWindows: [])
         let config = SCStreamConfiguration()
@@ -104,15 +113,35 @@ public final class DisplayPreview: NSObject, SCStreamOutput, SCStreamDelegate, N
         config.showsCursor = true
         config.queueDepth = 3
 
+        guard generation == streamGeneration else { return }
         let stream = SCStream(filter: filter, configuration: config, delegate: self)
         try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: .main)
         try await stream.startCapture()
+        guard generation == streamGeneration, wantsStream else {
+            try? await stream.stopCapture()
+            return
+        }
+        let previous = self.stream
         self.stream = stream
+        try? await previous?.stopCapture()
     }
 
     private func stopStream() {
+        streamGeneration += 1
         stream?.stopCapture { _ in }
         stream = nil
+    }
+
+    /// Pause capture while no part of the window can be seen and resume when
+    /// it reappears; the last frame stays on screen meanwhile.
+    public func windowDidChangeOcclusionState(_ notification: Notification) {
+        guard wantsStream else { return }
+        if window.occlusionState.contains(.visible) {
+            guard stream == nil else { return }
+            Task { @MainActor in try? await self.startStream() }
+        } else {
+            stopStream()
+        }
     }
 
     /// Stop streaming and close the window without reporting `onClose`.
@@ -121,6 +150,7 @@ public final class DisplayPreview: NSObject, SCStreamOutput, SCStreamDelegate, N
     /// strands its Space as a frozen, empty desktop.
     @MainActor
     public func stop() {
+        wantsStream = false
         stopStream()
         closingSilently = true
         if isFullScreen {
@@ -178,6 +208,7 @@ public final class DisplayPreview: NSObject, SCStreamOutput, SCStreamDelegate, N
     }
 
     public func windowWillClose(_ notification: Notification) {
+        wantsStream = false
         stopStream()
         if !closingSilently {
             onClose?()
