@@ -16,15 +16,21 @@ struct Driver {
         session = "2ndscreen-\(screen)"
     }
 
-    /// `$CUA_DRIVER`, else `cua-driver` on PATH, else its default install.
+    /// `$CUA_DRIVER`, else the first of `cua-driver-local` and `cua-driver`
+    /// on PATH or in ~/.local/bin. `cua-driver-local` is the patched build
+    /// from scripts/build-patched-cua-driver.sh, which stops dragging the
+    /// user back when they switch apps while an agent acts.
     private static func locate() -> String {
         if let explicit = ProcessInfo.processInfo.environment["CUA_DRIVER"], !explicit.isEmpty {
             return explicit
         }
         let path = ProcessInfo.processInfo.environment["PATH"] ?? ""
-        for directory in path.split(separator: ":") {
-            let candidate = "\(directory)/cua-driver"
-            if FileManager.default.isExecutableFile(atPath: candidate) { return candidate }
+        let directories = path.split(separator: ":").map(String.init) + [NSHomeDirectory() + "/.local/bin"]
+        for name in ["cua-driver-local", "cua-driver"] {
+            for directory in directories {
+                let candidate = "\(directory)/\(name)"
+                if FileManager.default.isExecutableFile(atPath: candidate) { return candidate }
+            }
         }
         return NSHomeDirectory() + "/.local/bin/cua-driver"
     }

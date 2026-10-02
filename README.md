@@ -110,7 +110,17 @@ $CLI key   --screen test-a --pid 1234 --key n --modifiers cmd
 ```
 
 These refuse any window that is not on the named screen, so an agent
-cannot act on the user's own windows. Apps placed with `app launch` or
+cannot act on the user's own windows. They use `$CUA_DRIVER` if set, else
+`cua-driver-local` (below) if installed, else `cua-driver`.
+
+Upstream cua-driver, while it acts in the background, pulls the foreground
+back to the app you were using if any other app activates, including when
+you switch apps yourself. `scripts/build-patched-cua-driver.sh` builds and
+installs it as `cua-driver-local` with
+`patches/cua-driver-respect-user-app-switch.patch`, which lets an activation
+that follows your own keyboard or mouse input stand. On an M4 MacBook Pro,
+switching apps during background clicks was undone 4 times in 8 with
+upstream and 0 times in 10 with the patch. Apps placed with `app launch` or
 `window move` stay bound to their screen: windows they open later are
 moved onto it as they appear, instead of popping up in front of you.
 
