@@ -34,8 +34,50 @@ public sealed class Driver
         return "cua-driver";
     }
 
-    /// <summary>Run one tool. Non-JSON output (some failures print text) becomes <c>error</c>.</summary>
+    /// <summary>
+    /// Run one tool. Non-JSON output (some failures print text) becomes <c>error</c>.
+    /// On Windows, tool calls go through cua-driver's daemon, which does not start
+    /// itself; start it once and retry.
+    /// </summary>
     public JsonObject Call(string tool, JsonObject arguments)
+    {
+        var result = CallOnce(tool, (JsonObject)arguments.DeepClone());
+        if (result["error"]?.ToString() is { } error && error.Contains("daemon is not running", StringComparison.OrdinalIgnoreCase)
+            && StartDaemon())
+        {
+            result = CallOnce(tool, arguments);
+        }
+        return result;
+    }
+
+    /// <summary>Start <c>cua-driver serve</c> in the background and wait until it answers.</summary>
+    private bool StartDaemon()
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo(Executable, "serve") { UseShellExecute = false, CreateNoWindow = true });
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (DateTime.UtcNow < deadline)
+        {
+            Thread.Sleep(300);
+            var status = new ProcessStartInfo(Executable, "status")
+            {
+                RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true,
+            };
+            using var probe = Process.Start(status)!;
+            var text = probe.StandardOutput.ReadToEnd() + probe.StandardError.ReadToEnd();
+            probe.WaitForExit();
+            if (probe.ExitCode == 0 && !text.Contains("not running", StringComparison.OrdinalIgnoreCase)) return true;
+        }
+        return false;
+    }
+
+    private JsonObject CallOnce(string tool, JsonObject arguments)
     {
         arguments["session"] = Session;
         var start = new ProcessStartInfo(Executable)
