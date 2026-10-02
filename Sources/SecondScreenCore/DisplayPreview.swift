@@ -126,6 +126,13 @@ public final class DisplayPreview: NSObject, SCStreamOutput, SCStreamDelegate, N
         if isFullScreen {
             closeAfterExitingFullScreen = true
             window.toggleFullScreen(nil)
+            // If the exit never completes, close anyway rather than leave
+            // the window, and its Space, behind.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                guard let self, self.closeAfterExitingFullScreen else { return }
+                self.closeAfterExitingFullScreen = false
+                self.window.close()
+            }
         } else {
             window.close()
         }
@@ -134,7 +141,23 @@ public final class DisplayPreview: NSObject, SCStreamOutput, SCStreamDelegate, N
     private var closingSilently = false
     private var closeAfterExitingFullScreen = false
 
+    /// The windowed preview keeps the display's aspect ratio, but that
+    /// constraint conflicts with the full-screen frame and collapsed the
+    /// window to 0x0, leaving a black, unresponsive Space. Drop it while full
+    /// screen; the layer letterboxes the image instead.
+    public func windowWillEnterFullScreen(_ notification: Notification) {
+        window.contentResizeIncrements = NSSize(width: 1, height: 1)
+    }
+
+    public func window(_ window: NSWindow, willUseFullScreenContentSize proposedSize: NSSize) -> NSSize {
+        proposedSize
+    }
+
     public func windowDidExitFullScreen(_ notification: Notification) {
+        let bounds = CGDisplayBounds(displayID)
+        if bounds.height > 0 {
+            window.contentAspectRatio = NSSize(width: bounds.width, height: bounds.height)
+        }
         guard closeAfterExitingFullScreen else { return }
         closeAfterExitingFullScreen = false
         window.close()
