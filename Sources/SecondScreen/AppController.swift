@@ -74,8 +74,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private var display: VirtualDisplay?
     private var preview: DisplayPreview?
-    private var agentCursor: AgentCursorOverlay?
+    /// One agent cursor overlay per screen, keyed by display ID.
+    private var cursorOverlays: [CGDirectDisplayID: AgentCursorOverlay] = [:]
     private var moveHotKey: HotKey?
+    private let agentScreens = AgentScreens()
+    /// Live previews of agent screens, keyed by screen name.
+    private var agentPreviews: [String: DisplayPreview] = [:]
+    private var controlServer: ControlServer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -105,6 +110,21 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if preferences.enabled {
             enableDisplay()
         }
+
+        agentScreens.onChange = { [weak self] in self?.agentScreensChanged() }
+        let server = ControlServer { [weak self] request in
+            await self?.handle(request) ?? .failure("2ndscreen is shutting down")
+        }
+        do {
+            try server.start()
+            controlServer = server
+        } catch {
+            presentError("Agents cannot reach 2ndscreen: \(error.localizedDescription)")
+        }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        controlServer?.stop()
     }
 
     // MARK: Display lifecycle
@@ -121,8 +141,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 // macOS removed the display behind our back.
                 guard let self, self.display != nil else { return }
                 self.stopPreview()
-                self.agentCursor?.close()
-                self.agentCursor = nil
+                self.removeCursorOverlay(for: self.display?.displayID)
                 self.display = nil
             })
         guard let display else {
@@ -134,7 +153,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let displayID = display.displayID
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
             guard let self, self.display?.displayID == displayID else { return }
-            self.agentCursor = AgentCursorOverlay(displayID: displayID)
+            self.cursorOverlays[displayID] = AgentCursorOverlay(displayID: displayID)
         }
         if preferences.showPreview {
             // Give WindowServer a moment to place the new display.
@@ -146,14 +165,178 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func disableDisplay() {
         stopPreview()
-        agentCursor?.close()
-        agentCursor = nil
+        removeCursorOverlay(for: display?.displayID)
         display = nil
     }
 
+    private func removeCursorOverlay(for displayID: CGDirectDisplayID?) {
+        guard let displayID else { return }
+        cursorOverlays.removeValue(forKey: displayID)?.close()
+    }
+
+    /// Each overlay draws only points on its own display, so every event can
+    /// go to all of them.
     @objc private func agentCursorEvent(_ notification: Notification) {
         guard let event = AgentCursorEvent(userInfo: notification.userInfo) else { return }
-        agentCursor?.handle(event)
+        for overlay in cursorOverlays.values {
+            overlay.handle(event)
+        }
+    }
+
+    // MARK: Agent screens
+
+    /// Keep overlays and previews in step with the agent screens that exist.
+    private func agentScreensChanged() {
+        let live = Set(agentScreens.screens.map(\.display.displayID))
+        let primary = display?.displayID
+        for id in cursorOverlays.keys where id != primary && !live.contains(id) {
+            removeCursorOverlay(for: id)
+        }
+        let names = Set(agentScreens.screens.map(\.name))
+        for (name, preview) in agentPreviews where !names.contains(name) {
+            preview.stop()
+            agentPreviews.removeValue(forKey: name)
+        }
+        // The overlay needs the display's NSScreen, which appears a moment
+        // after creation.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            guard let self else { return }
+            for screen in self.agentScreens.screens where self.cursorOverlays[screen.display.displayID] == nil {
+                self.cursorOverlays[screen.display.displayID] = AgentCursorOverlay(displayID: screen.display.displayID)
+            }
+        }
+    }
+
+    /// The primary screen and every agent screen, as agents see them.
+    private func allScreens() -> [ScreenInfo] {
+        var screens: [ScreenInfo] = []
+        if let display {
+            screens.append(ScreenInfo(
+                name: Self.displayName, kind: .primary, displayID: display.displayID,
+                width: display.mode.width, height: display.mode.height, hiDPI: display.hiDPI,
+                frame: Frame(display.bounds)))
+        }
+        return screens + agentScreens.screens.map(agentScreens.info)
+    }
+
+    private func handle(_ request: ControlRequest) async -> ControlResponse {
+        func target() -> ScreenInfo? {
+            guard let name = request.screen else { return nil }
+            return allScreens().first { $0.name == name }
+        }
+        let missingScreen = ControlResponse.failure(
+            request.screen.map { "no screen named \"\($0)\"" } ?? "give a screen with --screen")
+
+        switch request.command {
+        case .screenCreate:
+            // By default, match the main display's full-screen area, so a
+            // full-screen preview of the new screen is pixel for pixel.
+            let main = DisplayMatch.connected(excluding: display?.displayID).first
+            return await agentScreens.create(
+                name: request.screen,
+                width: request.width ?? main?.mode.width ?? 1440,
+                height: request.height ?? main?.mode.height ?? 900,
+                hiDPI: request.hiDPI ?? main?.hiDPI ?? false)
+        case .screenList:
+            var response = ControlResponse()
+            response.screens = allScreens()
+            return response
+        case .screenDestroy:
+            guard let name = request.screen else { return missingScreen }
+            if name == Self.displayName {
+                return .failure("the primary screen is managed from the menu bar")
+            }
+            return agentScreens.destroy(name: name)
+        case .appLaunch:
+            guard let screen = target() else { return missingScreen }
+            return await agentScreens.launch(
+                on: screen, bundleID: request.bundleID, path: request.path,
+                newInstance: request.newInstance ?? false, fill: request.fill ?? false)
+        case .windowMove:
+            guard let screen = target() else { return missingScreen }
+            guard let pid = request.pid else { return .failure("give the window's app with --pid") }
+            return await agentScreens.moveWindows(to: screen, pid: pid, windowID: request.windowID,
+                                            fill: request.fill ?? false)
+        case .screenshot:
+            guard let screen = target() else { return missingScreen }
+            guard let output = request.output else { return .failure("give a PNG path with --output") }
+            return await agentScreens.screenshot(displayID: screen.displayID, to: output)
+        }
+    }
+
+    private func toggleAgentPreview(_ name: String) {
+        if let preview = agentPreviews.removeValue(forKey: name) {
+            preview.stop()
+            return
+        }
+        guard let screen = agentScreens.screen(named: name) else { return }
+        guard CGPreflightScreenCaptureAccess() else {
+            requestScreenRecording()
+            return
+        }
+        let preview = DisplayPreview(
+            displayID: screen.display.displayID, title: "\(name) preview",
+            framesPerSecond: 30, floating: preferences.floatPreview)
+        preview.onClose = { [weak self] in self?.agentPreviews.removeValue(forKey: name) }
+        agentPreviews[name] = preview
+        Task { @MainActor in
+            do {
+                try await preview.start()
+            } catch {
+                self.agentPreviews.removeValue(forKey: name)?.stop()
+                self.presentError("Preview failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func addAgentScreenItems(to menu: NSMenu) {
+        let screens = agentScreens.screens
+        let header = NSMenuItem(title: "Agent Screens (\(screens.count))", action: nil, keyEquivalent: "")
+        header.isEnabled = false
+        menu.addItem(header)
+        for screen in screens {
+            let info = agentScreens.info(screen)
+            let entry = NSMenuItem(
+                title: "\(screen.name) — \(screen.display.mode)\(screen.display.hiDPI ? " HiDPI" : "")",
+                action: nil, keyEquivalent: "")
+            let submenu = NSMenu()
+            let previewItem = item("Show Preview", #selector(toggleAgentPreviewItem(_:)),
+                                   on: agentPreviews[screen.name] != nil)
+            previewItem.representedObject = screen.name
+            submenu.addItem(previewItem)
+            let windows = WindowMover.windows(on: info.displayID)
+            if !windows.isEmpty {
+                submenu.addItem(.separator())
+                for window in windows {
+                    let back = item("Bring Back: \(window.label)", #selector(bringBack(_:)), on: false)
+                    back.representedObject = window
+                    submenu.addItem(back)
+                }
+            }
+            submenu.addItem(.separator())
+            let destroy = item("Destroy", #selector(destroyAgentScreenItem(_:)), on: false)
+            destroy.representedObject = screen.name
+            submenu.addItem(destroy)
+            entry.submenu = submenu
+            menu.addItem(entry)
+        }
+        if screens.count > 1 {
+            menu.addItem(item("Destroy All Agent Screens", #selector(destroyAllAgentScreens), on: false))
+        }
+    }
+
+    @objc private func toggleAgentPreviewItem(_ sender: NSMenuItem) {
+        guard let name = sender.representedObject as? String else { return }
+        toggleAgentPreview(name)
+    }
+
+    @objc private func destroyAgentScreenItem(_ sender: NSMenuItem) {
+        guard let name = sender.representedObject as? String else { return }
+        _ = agentScreens.destroy(name: name)
+    }
+
+    @objc private func destroyAllAgentScreens() {
+        agentScreens.destroyAll()
     }
 
     private func apply(mode: VirtualDisplay.Mode, hiDPI: Bool) {
@@ -275,6 +458,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(.separator())
 
         addWindowItems(to: menu)
+        menu.addItem(.separator())
+
+        addAgentScreenItems(to: menu)
         menu.addItem(.separator())
 
         menu.addItem(item("Open Displays Settings…", #selector(openDisplaySettings), on: false))

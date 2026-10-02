@@ -35,6 +35,17 @@ public enum WindowMover {
     /// Normal windows whose center lies on `displayID`, front to back.
     public static func windows(on displayID: CGDirectDisplayID) -> [WindowInfo] {
         let bounds = CGDisplayBounds(displayID)
+        return normalWindows().filter { bounds.contains(CGPoint(x: $0.frame.midX, y: $0.frame.midY)) }
+    }
+
+    /// Normal on-screen windows owned by `pid`, front to back.
+    public static func windows(ofPID pid: pid_t) -> [WindowInfo] {
+        normalWindows().filter { $0.pid == pid }
+    }
+
+    /// On-screen, layer-0 windows of other apps, ignoring slivers such as
+    /// menu bar extras.
+    private static func normalWindows() -> [WindowInfo] {
         let ownPID = ProcessInfo.processInfo.processIdentifier
         let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
                                               kCGNullWindowID) as? [[String: Any]] ?? []
@@ -44,8 +55,7 @@ public enum WindowMover {
                   let id = entry[kCGWindowNumber as String] as? CGWindowID,
                   let rect = entry[kCGWindowBounds as String] as? NSDictionary,
                   let frame = CGRect(dictionaryRepresentation: rect),
-                  frame.width > 50, frame.height > 50,
-                  bounds.contains(CGPoint(x: frame.midX, y: frame.midY))
+                  frame.width > 50, frame.height > 50
             else { return nil }
             return WindowInfo(
                 pid: pid,
@@ -83,13 +93,15 @@ public enum WindowMover {
     }
 
     /// Move `window` onto `displayID`, keeping its relative position and
-    /// shrinking it if it does not fit. Returns false without permission or
-    /// if the app refuses the move.
+    /// shrinking it if it does not fit, or with `fill`, sizing it to the
+    /// display's visible area. Returns false without permission or if the
+    /// app refuses the move.
     @discardableResult
-    public static func move(_ window: WindowInfo, to displayID: CGDirectDisplayID) -> Bool {
+    public static func move(_ window: WindowInfo, to displayID: CGDirectDisplayID, fill: Bool = false) -> Bool {
         guard isTrusted, let element = axWindow(for: window) else { return false }
+        let destination = visibleFrame(of: displayID)
         let source = display(containing: window.frame).map(visibleFrame) ?? window.frame
-        let target = placement(of: window.frame, from: source, into: visibleFrame(of: displayID))
+        let target = fill ? destination : placement(of: window.frame, from: source, into: destination)
 
         // Position first so a shrink cannot push the window off the target.
         var origin = target.origin

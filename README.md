@@ -26,7 +26,7 @@ macOS ties permission grants to that certificate, so they survive rebuilds.
 | Permission | Needed for | Asked when |
 | --- | --- | --- |
 | Screen Recording | The live preview | You choose **Show Preview** |
-| Accessibility | Moving other apps' windows | You choose **Grant Accessibility to Move Windows…** |
+| Accessibility | Moving other apps' windows, including `app launch` | You choose **Grant Accessibility to Move Windows…** |
 
 macOS applies a new Screen Recording grant after the app relaunches.
 
@@ -48,6 +48,50 @@ Everything lives in the menu bar icon:
 - **Windows on 2ndscreen**: bring one window, or all of them, back.
 
 The preview is view-only: clicks in it do not reach the apps on 2ndscreen.
+
+## Agent screens
+
+Agents create their own screens through the `2ndscreen` command, which
+talks to the running app. Each screen is a separate virtual display, sized
+as the agent asks, so an agent can launch the app it is testing there and
+work in the background while you keep your own screen.
+
+```bash
+CLI=.build/release/2ndscreen
+
+$CLI screen create --name test-a --size 1280x800      # HiDPI follows the main display;
+                                                      # add --hidpi or --no-hidpi to choose
+$CLI app launch --screen test-a --path build/MyApp.app --fill
+$CLI app launch --screen test-a --bundle com.apple.Chess
+$CLI window move --screen test-a --pid 1234 [--window-id 5678] [--fill]
+$CLI screenshot --screen test-a --output shot.png
+$CLI screen list
+$CLI screen destroy test-a
+```
+
+Every command prints one JSON object and exits non-zero on failure.
+Frames are global, top-left-origin points, the same space cua-driver
+reports element frames in, so they can be passed straight to it.
+
+Things to know:
+
+- **Frames move.** macOS rearranges displays whenever one is added or
+  removed. Run `screen list` before using a screen's frame.
+- **Launching** opens the app without activating it, waits up to 15
+  seconds for its first window, and moves that window to the screen. If
+  the app grabs the foreground anyway, 2ndscreen hands it straight back.
+  An app that is already running is refused, so your own windows are never
+  rearranged; pass `--new-instance` for a separate copy, or use
+  `window move`.
+- **`--fill`** sizes the window to the screen's visible area where the
+  app allows it.
+- **Destroying** a screen moves its windows to your other displays.
+- At most 8 agent screens exist at once. Each costs WindowServer memory:
+  on an M4 MacBook Pro, four of them, three HiDPI, took about 220 MB.
+- The menu lists agent screens, each with its own preview, its windows,
+  and **Destroy**.
+
+Clicking and typing on an agent screen go through cua-driver, as below.
 
 ## Agent cursor
 

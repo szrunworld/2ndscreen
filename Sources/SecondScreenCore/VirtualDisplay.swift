@@ -96,27 +96,37 @@ public final class VirtualDisplay {
 
     /// Given one mode, macOS lists both its 1x and 2x variants and may make
     /// the wrong one current. Pick the variant matching `mode` and `hiDPI`.
-    /// The list can lag behind `apply`, so retry briefly.
-    private func selectSystemMode(attemptsLeft: Int = 10) {
+    /// The list can lag behind `apply`, by seconds when several displays
+    /// appear at once, and a switch can fail to take; keep checking until
+    /// the right variant is current.
+    private func selectSystemMode(attemptsLeft: Int = 30) {
         let options = [kCGDisplayShowDuplicateLowResolutionModes: kCFBooleanTrue] as CFDictionary
         let modes = CGDisplayCopyAllDisplayModes(displayID, options) as? [CGDisplayMode] ?? []
         let pixelWidth = hiDPI ? mode.width * 2 : mode.width
-        guard let wanted = modes.first(where: {
+        let wanted = modes.first {
             $0.width == mode.width && $0.height == mode.height && $0.pixelWidth == pixelWidth
-        }) else {
-            if attemptsLeft > 0 {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-                    self?.selectSystemMode(attemptsLeft: attemptsLeft - 1)
-                }
-            }
+        }
+        if let wanted, CGDisplayCopyDisplayMode(displayID)?.ioDisplayModeID == wanted.ioDisplayModeID {
             return
         }
-        if CGDisplayCopyDisplayMode(displayID)?.ioDisplayModeID == wanted.ioDisplayModeID { return }
+        if let wanted {
+            var config: CGDisplayConfigRef?
+            if CGBeginDisplayConfiguration(&config) == .success {
+                CGConfigureDisplayWithDisplayMode(config, displayID, wanted, nil)
+                CGCompleteDisplayConfiguration(config, .forSession)
+            }
+        }
+        guard attemptsLeft > 0 else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+            self?.selectSystemMode(attemptsLeft: attemptsLeft - 1)
+        }
+    }
 
-        var config: CGDisplayConfigRef?
-        guard CGBeginDisplayConfiguration(&config) == .success else { return }
-        CGConfigureDisplayWithDisplayMode(config, displayID, wanted, nil)
-        CGCompleteDisplayConfiguration(config, .forSession)
+    /// Whether the current system mode matches the requested size and scale.
+    public var isSettled: Bool {
+        guard let current = CGDisplayCopyDisplayMode(displayID) else { return false }
+        return current.width == mode.width && current.height == mode.height
+            && current.pixelWidth == (hiDPI ? mode.width * 2 : mode.width)
     }
 
     /// The display's frame in global points, once macOS has placed it.
