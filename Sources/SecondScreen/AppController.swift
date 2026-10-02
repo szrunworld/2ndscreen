@@ -45,6 +45,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private var display: VirtualDisplay?
     private var preview: DisplayPreview?
+    private var agentCursor: AgentCursorOverlay?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -53,6 +54,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let menu = NSMenu()
         menu.delegate = self
         statusItem.menu = menu
+
+        DistributedNotificationCenter.default().addObserver(
+            self, selector: #selector(agentCursorEvent(_:)),
+            name: AgentCursorEvent.notificationName, object: nil,
+            suspensionBehavior: .deliverImmediately)
 
         if preferences.enabled {
             enableDisplay()
@@ -72,11 +78,20 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 // macOS removed the display behind our back.
                 guard let self, self.display != nil else { return }
                 self.stopPreview()
+                self.agentCursor?.close()
+                self.agentCursor = nil
                 self.display = nil
             })
-        if display == nil {
+        guard let display else {
             presentError("macOS refused to create the virtual display.")
             return
+        }
+        // The overlay needs the display's NSScreen, which appears a moment
+        // after creation.
+        let displayID = display.displayID
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            guard let self, self.display?.displayID == displayID else { return }
+            self.agentCursor = AgentCursorOverlay(displayID: displayID)
         }
         if preferences.showPreview {
             // Give WindowServer a moment to place the new display.
@@ -88,7 +103,14 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func disableDisplay() {
         stopPreview()
+        agentCursor?.close()
+        agentCursor = nil
         display = nil
+    }
+
+    @objc private func agentCursorEvent(_ notification: Notification) {
+        guard let event = AgentCursorEvent(userInfo: notification.userInfo) else { return }
+        agentCursor?.handle(event)
     }
 
     private func apply(mode: VirtualDisplay.Mode, hiDPI: Bool) {
@@ -111,8 +133,17 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: Preview
 
-    private func startPreview() {
+    /// - Parameter userInitiated: when the user asked for the preview, a
+    ///   missing Screen Recording grant leads them to the system prompt and
+    ///   settings pane. Automatic starts stay silent instead.
+    private func startPreview(userInitiated: Bool = false) {
         guard preview == nil, let display else { return }
+        guard CGPreflightScreenCaptureAccess() else {
+            if userInitiated {
+                requestScreenRecording()
+            }
+            return
+        }
         let preview = DisplayPreview(
             displayID: display.displayID,
             title: "\(Self.displayName) preview",
@@ -130,6 +161,17 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.stopPreview()
                 self.presentError("Preview failed: \(error.localizedDescription)")
             }
+        }
+    }
+
+    /// macOS shows its own prompt the first time; afterwards only the
+    /// settings pane can change the grant, so open it as well. The grant
+    /// takes effect after the app is relaunched.
+    private func requestScreenRecording() {
+        CGRequestScreenCaptureAccess()
+        if let url = URL(string:
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
+            NSWorkspace.shared.open(url)
         }
     }
 
@@ -162,10 +204,16 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(item("HiDPI (Retina)", #selector(toggleHiDPI), on: preferences.hiDPI))
         menu.addItem(.separator())
 
-        let showPreview = item("Show Preview", #selector(togglePreview), on: preview != nil)
+        let previewTitle = CGPreflightScreenCaptureAccess()
+            ? "Show Preview" : "Show Preview (Grant Screen Recording…)"
+        let showPreview = item(previewTitle, #selector(togglePreview), on: preview != nil)
         showPreview.isEnabled = display != nil
         menu.addItem(showPreview)
         menu.addItem(item("Keep Preview on Top", #selector(toggleFloat), on: preferences.floatPreview))
+        let fullScreen = item(
+            "Preview in Full Screen", #selector(togglePreviewFullScreen), on: preview?.isFullScreen ?? false)
+        fullScreen.isEnabled = preview != nil
+        menu.addItem(fullScreen)
         menu.addItem(.separator())
 
         menu.addItem(item("Open Displays Settings…", #selector(openDisplaySettings), on: false))
@@ -209,11 +257,15 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func togglePreview() {
         if preview == nil {
             preferences.showPreview = true
-            startPreview()
+            startPreview(userInitiated: true)
         } else {
             preferences.showPreview = false
             stopPreview()
         }
+    }
+
+    @objc private func togglePreviewFullScreen() {
+        preview?.toggleFullScreen()
     }
 
     @objc private func toggleFloat() {

@@ -11,6 +11,27 @@ import SecondScreenCore
 // pixels, like a Retina panel. --preview opens a live view of the display in
 // a window on the main screen; --float keeps that window above others.
 // Ctrl-C (or SIGTERM) removes the display.
+//
+//   vdisplay cursor <move|click> <x> <y>
+//   vdisplay cursor hide
+//
+// Shows the menu bar app's agent cursor at a global point (top-left origin,
+// the coordinates cua-driver reports). Visual only: the real pointer and the
+// app under the point are untouched.
+
+if CommandLine.arguments.dropFirst().first == "cursor" {
+    let args = Array(CommandLine.arguments.dropFirst(2))
+    guard let action = args.first.flatMap(AgentCursorEvent.Action.init(rawValue:)),
+          action == .hide || (args.count == 3 && Double(args[1]) != nil && Double(args[2]) != nil)
+    else {
+        FileHandle.standardError.write(
+            "usage: vdisplay cursor <move|click> <x> <y> | vdisplay cursor hide\n".data(using: .utf8)!)
+        exit(2)
+    }
+    let point = action == .hide ? .zero : CGPoint(x: Double(args[1])!, y: Double(args[2])!)
+    AgentCursorEvent(action: action, point: point).post()
+    exit(0)
+}
 
 struct Options {
     var width = 1920

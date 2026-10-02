@@ -21,6 +21,13 @@ public final class DisplayPreview: NSObject, SCStreamOutput, SCStreamDelegate, N
         set { window.level = newValue ? .floating : .normal }
     }
 
+    public var isFullScreen: Bool { window.styleMask.contains(.fullScreen) }
+
+    @MainActor
+    public func toggleFullScreen() {
+        window.toggleFullScreen(nil)
+    }
+
     public init(displayID: CGDirectDisplayID, title: String, framesPerSecond: Int32, floating: Bool) {
         self.displayID = displayID
         self.framesPerSecond = framesPerSecond
@@ -36,6 +43,9 @@ public final class DisplayPreview: NSObject, SCStreamOutput, SCStreamDelegate, N
         window.title = title
         window.contentAspectRatio = contentSize
         window.isReleasedWhenClosed = false
+        // Native full screen gives the preview its own Space, reachable with
+        // the usual trackpad swipe.
+        window.collectionBehavior = [.fullScreenPrimary]
 
         let view = NSView(frame: NSRect(origin: .zero, size: contentSize))
         view.wantsLayer = true
