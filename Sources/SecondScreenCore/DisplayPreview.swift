@@ -70,12 +70,35 @@ public final class DisplayPreview: NSObject, SCStreamOutput, SCStreamDelegate, N
                                                 y: visible.maxY - 24))
         }
         window.orderFrontRegardless()
+        try await startStream()
+    }
 
+    /// Re-capture after the virtual display changes resolution. The window,
+    /// and its full-screen Space if it has one, stay as they are.
+    @MainActor
+    public func restartStream() async throws {
+        stopStream()
+        if !isFullScreen {
+            let bounds = CGDisplayBounds(displayID)
+            if bounds.height > 0 {
+                let width = window.contentLayoutRect.width
+                window.contentAspectRatio = NSSize(width: bounds.width, height: bounds.height)
+                window.setContentSize(NSSize(width: width, height: (width * bounds.height / bounds.width).rounded()))
+            }
+        }
+        try await startStream()
+    }
+
+    @MainActor
+    private func startStream() async throws {
         let display = try await findDisplay()
         let filter = SCContentFilter(display: display, excludingWindows: [])
         let config = SCStreamConfiguration()
-        config.width = display.width
-        config.height = display.height
+        // SCDisplay reports points; capture at the mode's pixel size so a
+        // HiDPI display stays sharp when the preview is shown full screen.
+        let mode = CGDisplayCopyDisplayMode(displayID)
+        config.width = mode?.pixelWidth ?? display.width
+        config.height = mode?.pixelHeight ?? display.height
         config.minimumFrameInterval = CMTime(value: 1, timescale: framesPerSecond)
         config.pixelFormat = kCVPixelFormatType_32BGRA
         config.showsCursor = true
@@ -87,12 +110,33 @@ public final class DisplayPreview: NSObject, SCStreamOutput, SCStreamDelegate, N
         self.stream = stream
     }
 
-    /// Stop streaming and hide the window without reporting `onClose`.
-    @MainActor
-    public func stop() {
+    private func stopStream() {
         stream?.stopCapture { _ in }
         stream = nil
-        window.delegate = nil
+    }
+
+    /// Stop streaming and close the window without reporting `onClose`.
+    ///
+    /// A full-screen window leaves full screen first: closing it in place
+    /// strands its Space as a frozen, empty desktop.
+    @MainActor
+    public func stop() {
+        stopStream()
+        closingSilently = true
+        if isFullScreen {
+            closeAfterExitingFullScreen = true
+            window.toggleFullScreen(nil)
+        } else {
+            window.close()
+        }
+    }
+
+    private var closingSilently = false
+    private var closeAfterExitingFullScreen = false
+
+    public func windowDidExitFullScreen(_ notification: Notification) {
+        guard closeAfterExitingFullScreen else { return }
+        closeAfterExitingFullScreen = false
         window.close()
     }
 
@@ -111,9 +155,10 @@ public final class DisplayPreview: NSObject, SCStreamOutput, SCStreamDelegate, N
     }
 
     public func windowWillClose(_ notification: Notification) {
-        stream?.stopCapture { _ in }
-        stream = nil
-        onClose?()
+        stopStream()
+        if !closingSilently {
+            onClose?()
+        }
     }
 
     public func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer,

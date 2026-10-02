@@ -39,14 +39,16 @@ struct Preferences {
     }
 }
 
-/// A physical display's logical size and scale, offered as a match target so
-/// the virtual display fits the hardware it is previewed on.
+/// The area a full-screen window gets on a physical display, offered as a
+/// match target so the full-screen preview shows the virtual display pixel
+/// for pixel. On displays with a camera housing that area excludes the strip
+/// beside it, so it is shorter than the display itself.
 struct DisplayMatch {
     let name: String
     let mode: VirtualDisplay.Mode
     let hiDPI: Bool
 
-    var title: String { "Match \(name) — \(mode)\(hiDPI ? " HiDPI" : "")" }
+    var title: String { "Match \(name) Full Screen — \(mode)\(hiDPI ? " HiDPI" : "")" }
 
     /// Every connected display except `excluding` (the virtual display itself).
     static func connected(excluding displayID: CGDirectDisplayID?) -> [DisplayMatch] {
@@ -54,7 +56,9 @@ struct DisplayMatch {
             guard screen.displayID != displayID else { return nil }
             return DisplayMatch(
                 name: screen.localizedName,
-                mode: VirtualDisplay.Mode(width: Int(screen.frame.width), height: Int(screen.frame.height)),
+                mode: VirtualDisplay.Mode(
+                    width: Int(screen.frame.width),
+                    height: Int(screen.frame.height - screen.safeAreaInsets.top)),
                 hiDPI: screen.backingScaleFactor > 1)
         }
     }
@@ -153,12 +157,18 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             presentError("macOS rejected \(mode)\(hiDPI ? " HiDPI" : "").")
             return
         }
-        // The preview's stream is sized for the old mode; rebuild it once the
-        // new mode has taken effect.
-        if preview != nil {
-            stopPreview()
+        // The preview's stream is sized for the old mode. Re-capture once the
+        // new mode has taken effect, keeping the same window: replacing a
+        // full-screen window would strand its Space.
+        if let preview {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
-                self?.startPreview()
+                Task { @MainActor in
+                    do {
+                        try await preview.restartStream()
+                    } catch {
+                        self?.presentError("Preview failed: \(error.localizedDescription)")
+                    }
+                }
             }
         }
     }
@@ -179,7 +189,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let preview = DisplayPreview(
             displayID: display.displayID,
             title: "\(Self.displayName) preview",
-            framesPerSecond: 15,
+            framesPerSecond: 30,
             floating: preferences.floatPreview)
         preview.onClose = { [weak self] in
             self?.preview = nil
