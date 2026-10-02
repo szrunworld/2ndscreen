@@ -90,7 +90,7 @@ internal sealed class VirtualDisplayDriver
 
     public void Release(string device)
     {
-        Desktop.Detach(device);
+        if (Topology.Deactivate(device) is not null) Desktop.Detach(device);
         reserved.Remove(device);
     }
 
@@ -102,6 +102,17 @@ internal sealed class VirtualDisplayDriver
     public DisplayInfo? Attach(string device, int width, int height, out string? problem)
     {
         problem = null;
+        // A detached output reports no modes; extend the desktop onto it first.
+        if (Desktop.Display(device) is null)
+        {
+            if (Topology.Activate(device) is { } activation)
+            {
+                problem = activation;
+                return null;
+            }
+            var activated = DateTime.UtcNow.AddSeconds(5);
+            while (Desktop.Display(device) is null && DateTime.UtcNow < activated) Thread.Sleep(100);
+        }
         var modes = Desktop.Modes(device);
         if (!modes.Contains((width, height)))
         {
