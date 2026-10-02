@@ -28,8 +28,15 @@ $target = Join-Path $Bin "TestTarget.exe"
 $results = New-Object System.Collections.Generic.List[object]
 
 function Check([string] $name, [bool] $ok, [string] $detail = "") {
-    $results.Add([pscustomobject]@{ Check = $name; Result = $(if ($ok) { "PASS" } else { "FAIL" }); Detail = $detail })
-    Write-Host ("[{0}] {1} {2}" -f $(if ($ok) { "PASS" } else { "FAIL" }), $name, $detail)
+    $result = if ($ok) { "PASS" } else { "FAIL" }
+    $results.Add([pscustomobject]@{ Check = $name; Result = $result; Detail = $detail })
+    Write-Host "[$result] $name $detail"
+}
+
+# A check whose precondition failed is skipped, not passed or failed.
+function Skip([string] $name, [string] $why) {
+    $results.Add([pscustomobject]@{ Check = $name; Result = "SKIP"; Detail = $why })
+    Write-Host "[SKIP] $name $why"
 }
 
 function Invoke-2ndscreen([string[]] $arguments) {
@@ -65,7 +72,11 @@ Check "Virtual Display Driver provides outputs" ($outputs.Count -gt 0) "$($outpu
 $created = Invoke-2ndscreen @("screen", "create", "--name", "e2e", "--size", "1280x800", "--no-hidpi", "--ttl", "10m")
 $frame = $created.screen.frame
 Check "screen create" ([bool]$created.ok) $(if ($created.ok) { "frame $($frame.x),$($frame.y) $($frame.width)x$($frame.height)" } else { $created.error })
-Check "screen has the requested size" ($created.ok -and $frame.width -eq 1280 -and $frame.height -eq 800)
+if ($created.ok) {
+    Check "screen has the requested size" ($frame.width -eq 1280 -and $frame.height -eq 800) "$($frame.width)x$($frame.height)"
+} else {
+    Skip "screen has the requested size" "screen create failed"
+}
 Add-Type -AssemblyName System.Windows.Forms
 $monitors = [System.Windows.Forms.Screen]::AllScreens
 Check "Windows reports the new monitor" ([bool]($monitors | Where-Object { $_.Bounds.Width -eq 1280 -and $_.Bounds.Height -eq 800 })) (($monitors | ForEach-Object { "$($_.DeviceName) $($_.Bounds)" }) -join "; ")
@@ -81,20 +92,35 @@ $onScreen = $launched.ok -and $window -and $window.frame.x -ge $frame.x -and $wi
 Check "app launch onto the screen" ([bool]$onScreen) $(if ($launched.ok) { "pid $targetPid window $($window.windowID) at $($window.frame.x),$($window.frame.y)" } else { $launched.error })
 Check "foreground left alone" ($frontAfter -ne $targetPid) "foreground pid before $frontBefore, after $frontAfter"
 
-# 4. Guards.
-$refused = Invoke-2ndscreen @("window", "move", "--screen", "nope", "--pid", "$targetPid")
-Check "unknown screen is refused" (-not $refused.ok) $refused.error
-$again = Invoke-2ndscreen @("app", "launch", "--screen", "e2e", "--path", $target)
-Check "already-running program is refused without --new-instance" (-not $again.ok) $again.error
+# 4. Guards. Use this script's own pid, which certainly exists.
+$refused = Invoke-2ndscreen @("window", "move", "--screen", "nope", "--pid", "$PID")
+Check "unknown screen is refused" ((-not $refused.ok) -and $refused.error -match "no screen named") $refused.error
+if ($launched.ok) {
+    $again = Invoke-2ndscreen @("app", "launch", "--screen", "e2e", "--path", $target)
+    Check "already-running program is refused without --new-instance" ((-not $again.ok) -and $again.error -match "already running") $again.error
+    $foreign = Invoke-2ndscreen @("click", "--screen", "e2e", "--pid", "$PID", "--text", "x")
+    Check "acting on a window off the screen is refused" ((-not $foreign.ok) -and $foreign.error -match "no window on screen") $foreign.error
+} else {
+    Skip "already-running program is refused without --new-instance" "launch failed"
+    Skip "acting on a window off the screen is refused" "launch failed"
+}
 
 # 5. Screenshot.
 $shot = Join-Path $Out "e2e-screen.png"
 $taken = Invoke-2ndscreen @("screenshot", "--screen", "e2e", "--output", $shot)
 $size = if (Test-Path $shot) { Add-Type -AssemblyName System.Drawing; $img = [System.Drawing.Image]::FromFile($shot); "$($img.Width)x$($img.Height)"; $img.Dispose() } else { "missing" }
-Check "screenshot" ($taken.ok -and $size -eq "1280x800") "$size $($taken.error)"
+if ($created.ok) {
+    Check "screenshot" ($taken.ok -and $size -eq "1280x800") "$size $($taken.error)"
+} else {
+    Skip "screenshot" "screen create failed"
+}
 
-# 6. Typing through cua-driver, if installed.
-if (-not $SkipDriver) {
+# 6. Clicking and typing through cua-driver, if installed and the launch worked.
+if ($SkipDriver -or -not $launched.ok) {
+    foreach ($name in "state reads the window", "click through cua-driver", "type through cua-driver") {
+        Skip $name $(if ($SkipDriver) { "cua-driver not installed" } else { "launch failed" })
+    }
+} else {
     $state = Invoke-2ndscreen @("state", "--screen", "e2e", "--pid", "$targetPid")
     Check "state reads the window" ([bool]($state.ok -and $state.elements.Count -gt 0)) "$($state.elements.Count) elements $($state.error)"
     $clicked = Invoke-2ndscreen @("click", "--screen", "e2e", "--pid", "$targetPid", "--text", "Press me")
@@ -122,10 +148,14 @@ Check "mcp lists tools" ($tools.Count -eq 10) ($tools -join ",")
 Check "mcp screen_list" (-not ($mcp | Where-Object id -eq 3).result.isError)
 
 # 8. Cleanup: destroying the screen moves the test window back to a real display.
-$destroyed = Invoke-2ndscreen @("screen", "destroy", "e2e")
-Start-Sleep -Seconds 1
-$after = Invoke-2ndscreen @("screen", "list")
-Check "screen destroy" ([bool]($destroyed.ok -and -not ($after.screens | Where-Object name -eq "e2e")))
+if ($created.ok) {
+    $destroyed = Invoke-2ndscreen @("screen", "destroy", "e2e")
+    Start-Sleep -Seconds 1
+    $after = Invoke-2ndscreen @("screen", "list")
+    Check "screen destroy" ([bool]($destroyed.ok -and -not ($after.screens | Where-Object name -eq "e2e")))
+} else {
+    Skip "screen destroy" "screen create failed"
+}
 if ($targetPid) { Stop-Process -Id $targetPid -Force -ErrorAction SilentlyContinue }
 $appProcess | Stop-Process -Force -ErrorAction SilentlyContinue
 
@@ -135,5 +165,6 @@ if ($env:GITHUB_STEP_SUMMARY) {
     $results | ForEach-Object { "| $($_.Check) | $($_.Result) | $($_.Detail -replace '\|', '/') |" } | Add-Content $env:GITHUB_STEP_SUMMARY
 }
 $failed = @($results | Where-Object Result -eq "FAIL").Count
-Write-Host "$($results.Count - $failed) passed, $failed failed"
+$skipped = @($results | Where-Object Result -eq "SKIP").Count
+Write-Host "$($results.Count - $failed - $skipped) passed, $failed failed, $skipped skipped"
 exit $(if ($failed) { 1 } else { 0 })

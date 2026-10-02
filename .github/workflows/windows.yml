@@ -56,6 +56,21 @@ jobs:
         run: |
           Invoke-RestMethod https://cua.ai/driver/install.ps1 | Invoke-Expression
           "$env:LOCALAPPDATA\Programs\Cua\cua-driver\bin" | Add-Content $env:GITHUB_PATH
+      - name: Driver diagnostics
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          pnputil /enum-devices /class Display /drivers
+          Get-PnpDevice -Class Display | ForEach-Object {
+            $_.InstanceId
+            Get-PnpDeviceProperty -InstanceId $_.InstanceId -KeyName DEVPKEY_Device_DriverInfPath, DEVPKEY_Device_Service, DEVPKEY_Device_ProblemCode, DEVPKEY_Device_DriverDesc -ErrorAction SilentlyContinue |
+              Format-Table KeyName, Data -AutoSize
+          }
+          Get-CimInstance Win32_VideoController | Format-Table Name, Status, AdapterCompatibility, DriverVersion -AutoSize
+          Get-WinEvent -LogName "Microsoft-Windows-DriverFrameworks-UserMode/Operational" -MaxEvents 30 -ErrorAction SilentlyContinue |
+            Format-Table TimeCreated, Id, Message -Wrap
+          Get-WinEvent -FilterHashtable @{ LogName = "System"; StartTime = (Get-Date).AddMinutes(-15) } -MaxEvents 40 -ErrorAction SilentlyContinue |
+            Where-Object { $_.Message -match "MttVDD|Virtual Display|UMDF|Wudf|IddCx" } | Format-Table TimeCreated, Id, ProviderName, Message -Wrap
       - name: Display state
         shell: pwsh
         run: |
