@@ -1,11 +1,11 @@
 import AppKit
-import CGVirtualDisplayPrivate
+import SecondScreenCore
 
 // vdisplay — create a software-backed display that lives as long as this
 // process does.
 //
 //   swift run vdisplay [--width 1920] [--height 1080] [--hidpi] [--name "2ndscreen"]
-//                      [--preview [--fps 15] [--float]]
+//                      [--preview [--fps 15] [--float]] [--serial 2]
 //
 // --width/--height are in points. With --hidpi the display is backed by 2x
 // pixels, like a Retina panel. --preview opens a live view of the display in
@@ -21,6 +21,8 @@ struct Options {
     var preview = false
     var previewFPS: Int32 = 15
     var floatPreview = false
+    // Distinct from the menu bar app's display so both can run at once.
+    var serialNumber: UInt32 = 2
 }
 
 func parseOptions() -> Options {
@@ -36,6 +38,7 @@ func parseOptions() -> Options {
         case "--preview": options.preview = true
         case "--fps": options.previewFPS = args.next().flatMap(Int32.init) ?? options.previewFPS
         case "--float": options.floatPreview = true
+        case "--serial": options.serialNumber = args.next().flatMap(UInt32.init) ?? options.serialNumber
         default:
             FileHandle.standardError.write("unknown argument: \(arg)\n".data(using: .utf8)!)
             exit(2)
@@ -44,45 +47,24 @@ func parseOptions() -> Options {
     return options
 }
 
-func makeDisplay(_ options: Options) -> CGVirtualDisplay? {
-    let scale = options.hiDPI ? 2 : 1
-    let descriptor = CGVirtualDisplayDescriptor()
-    descriptor.setDispatchQueue(DispatchQueue.main)
-    descriptor.name = options.name
-    descriptor.maxPixelsWide = UInt32(options.width * scale)
-    descriptor.maxPixelsHigh = UInt32(options.height * scale)
-    // A 24-inch-class physical size keeps macOS' default scaling sensible.
-    descriptor.sizeInMillimeters = CGSize(width: 527, height: 296)
-    descriptor.vendorID = 0x3256  // arbitrary, stable IDs so macOS remembers arrangement
-    descriptor.productID = 0x0002
-    descriptor.serialNum = 0x0001
-    descriptor.terminationHandler = { _, _ in
+let options = parseOptions()
+guard let display = VirtualDisplay(
+    name: options.name,
+    mode: .init(width: options.width, height: options.height),
+    hiDPI: options.hiDPI,
+    refreshRate: options.refreshRate,
+    serialNumber: options.serialNumber,
+    onTerminate: {
         print("virtual display terminated by the system")
         exit(1)
-    }
-
-    guard let display = CGVirtualDisplay(descriptor: descriptor) else { return nil }
-
-    let settings = CGVirtualDisplaySettings()
-    settings.hiDPI = options.hiDPI ? 1 : 0
-    settings.modes = [
-        CGVirtualDisplayMode(
-            width: UInt(options.width * scale),
-            height: UInt(options.height * scale),
-            refreshRate: options.refreshRate),
-    ]
-    guard display.apply(settings) else { return nil }
-    return display
-}
-
-let options = parseOptions()
-guard let display = makeDisplay(options) else {
+    })
+else {
     FileHandle.standardError.write("failed to create virtual display\n".data(using: .utf8)!)
     exit(1)
 }
 
 let displayID = display.displayID
-print("created virtual display id=\(displayID) \(options.width)x\(options.height)pt hidpi=\(options.hiDPI)")
+print("created virtual display id=\(displayID) \(display.mode)pt hidpi=\(display.hiDPI)")
 
 // An accessory app: no Dock icon, and showing the preview never activates it.
 let app = NSApplication.shared
@@ -91,8 +73,7 @@ var preview: DisplayPreview?
 
 // Report where macOS placed it once the display arrangement settles.
 DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-    let bounds = CGDisplayBounds(displayID)
-    print("display bounds (global points): \(bounds)")
+    print("display bounds (global points): \(display.bounds)")
     fflush(stdout)
 
     guard options.preview else { return }
@@ -100,7 +81,7 @@ DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
         displayID: displayID, title: "\(options.name) preview",
         framesPerSecond: options.previewFPS, floating: options.floatPreview)
     preview = livePreview
-    Task {
+    Task { @MainActor in
         do {
             try await livePreview.start()
             print("preview streaming at up to \(options.previewFPS) fps")
@@ -111,15 +92,17 @@ DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
     }
 }
 
-// Exit cleanly on Ctrl-C / SIGTERM. The display dies with the process;
-// releasing it first would fire terminationHandler and report a failure.
+// Exit cleanly on Ctrl-C / SIGTERM. The display dies with the process.
+// `_exit` skips teardown: releasing the display during `exit` fires
+// terminationHandler, whose exit(1) would override the status.
 var signalSources: [DispatchSourceSignal] = []
 for sig in [SIGINT, SIGTERM] {
     signal(sig, SIG_IGN)
     let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
     source.setEventHandler {
         print("virtual display removed")
-        exit(0)
+        fflush(stdout)
+        _exit(0)
     }
     source.resume()
     signalSources.append(source)

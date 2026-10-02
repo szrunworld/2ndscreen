@@ -5,15 +5,23 @@ import ScreenCaptureKit
 ///
 /// Frames come from ScreenCaptureKit as IOSurfaces and are handed straight to
 /// a CALayer, so nothing is copied or encoded. Capturing requires the Screen
-/// Recording permission for the process that launched `vdisplay`.
-final class DisplayPreview: NSObject, SCStreamOutput, SCStreamDelegate {
+/// Recording permission for the process that owns the preview.
+public final class DisplayPreview: NSObject, SCStreamOutput, SCStreamDelegate, NSWindowDelegate {
     private let displayID: CGDirectDisplayID
     private let framesPerSecond: Int32
     private let window: NSWindow
     private let imageLayer = CALayer()
     private var stream: SCStream?
 
-    init(displayID: CGDirectDisplayID, title: String, framesPerSecond: Int32, floating: Bool) {
+    /// Called on the main queue when the user closes the preview window.
+    public var onClose: (() -> Void)?
+
+    public var isFloating: Bool {
+        get { window.level == .floating }
+        set { window.level = newValue ? .floating : .normal }
+    }
+
+    public init(displayID: CGDirectDisplayID, title: String, framesPerSecond: Int32, floating: Bool) {
         self.displayID = displayID
         self.framesPerSecond = framesPerSecond
 
@@ -28,9 +36,6 @@ final class DisplayPreview: NSObject, SCStreamOutput, SCStreamDelegate {
         window.title = title
         window.contentAspectRatio = contentSize
         window.isReleasedWhenClosed = false
-        if floating {
-            window.level = .floating
-        }
 
         let view = NSView(frame: NSRect(origin: .zero, size: contentSize))
         view.wantsLayer = true
@@ -41,19 +46,20 @@ final class DisplayPreview: NSObject, SCStreamOutput, SCStreamDelegate {
         view.layer?.addSublayer(imageLayer)
         window.contentView = view
         super.init()
+        window.delegate = self
+        isFloating = floating
     }
 
-    /// Show the window on the main display (never on the previewed display,
-    /// which would capture itself) and start streaming.
-    func start() async throws {
-        await MainActor.run {
-            if let main = NSScreen.screens.first(where: { $0.displayID != displayID }) {
-                let visible = main.visibleFrame
-                window.setFrameTopLeftPoint(NSPoint(x: visible.maxX - window.frame.width - 24,
-                                                    y: visible.maxY - 24))
-            }
-            window.orderFrontRegardless()
+    /// Show the window on a display other than the previewed one (which would
+    /// capture itself) and start streaming.
+    @MainActor
+    public func start() async throws {
+        if let other = NSScreen.screens.first(where: { $0.displayID != displayID }) {
+            let visible = other.visibleFrame
+            window.setFrameTopLeftPoint(NSPoint(x: visible.maxX - window.frame.width - 24,
+                                                y: visible.maxY - 24))
         }
+        window.orderFrontRegardless()
 
         let display = try await findDisplay()
         let filter = SCContentFilter(display: display, excludingWindows: [])
@@ -71,6 +77,15 @@ final class DisplayPreview: NSObject, SCStreamOutput, SCStreamDelegate {
         self.stream = stream
     }
 
+    /// Stop streaming and hide the window without reporting `onClose`.
+    @MainActor
+    public func stop() {
+        stream?.stopCapture { _ in }
+        stream = nil
+        window.delegate = nil
+        window.close()
+    }
+
     /// A freshly created virtual display can take a moment to appear in
     /// ScreenCaptureKit's shareable content.
     private func findDisplay() async throws -> SCDisplay {
@@ -85,8 +100,14 @@ final class DisplayPreview: NSObject, SCStreamOutput, SCStreamDelegate {
         throw PreviewError.displayNotShareable(displayID)
     }
 
-    func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
-                of type: SCStreamOutputType) {
+    public func windowWillClose(_ notification: Notification) {
+        stream?.stopCapture { _ in }
+        stream = nil
+        onClose?()
+    }
+
+    public func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
+                       of type: SCStreamOutputType) {
         guard type == .screen, isCompleteFrame(sampleBuffer),
               let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer),
               let surface = CVPixelBufferGetIOSurface(pixelBuffer)?.takeUnretainedValue()
@@ -97,7 +118,7 @@ final class DisplayPreview: NSObject, SCStreamOutput, SCStreamDelegate {
         CATransaction.commit()
     }
 
-    func stream(_ stream: SCStream, didStopWithError error: Error) {
+    public func stream(_ stream: SCStream, didStopWithError error: Error) {
         print("preview stopped: \(error.localizedDescription)")
         fflush(stdout)
     }
@@ -113,10 +134,10 @@ final class DisplayPreview: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 }
 
-enum PreviewError: LocalizedError {
+public enum PreviewError: LocalizedError {
     case displayNotShareable(CGDirectDisplayID)
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
         switch self {
         case .displayNotShareable(let id):
             return "display \(id) never appeared in ScreenCaptureKit; check Screen Recording permission"
@@ -125,7 +146,7 @@ enum PreviewError: LocalizedError {
 }
 
 extension NSScreen {
-    var displayID: CGDirectDisplayID? {
+    public var displayID: CGDirectDisplayID? {
         deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID
     }
 }
