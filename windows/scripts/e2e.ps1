@@ -53,37 +53,61 @@ public static class Fg {
 }
 "@
 
-# 1. App and control pipe.
-Get-Process SecondScreen -ErrorAction SilentlyContinue | Stop-Process -Force
-$appProcess = Start-Process $app -PassThru
-$list = $null
-for ($i = 0; $i -lt 40; $i++) {
-    Start-Sleep -Milliseconds 250
-    $list = Invoke-2ndscreen @("screen", "list")
-    if ($list.ok) { break }
+function Start-App {
+    Get-Process SecondScreen -ErrorAction SilentlyContinue | Stop-Process -Force
+    $process = Start-Process $app -PassThru
+    for ($i = 0; $i -lt 40; $i++) {
+        Start-Sleep -Milliseconds 250
+        if ((Invoke-2ndscreen @("screen", "list")).ok) { break }
+    }
+    return $process
 }
+
+# 1. App and control pipe.
+$appProcess = Start-App
+$list = Invoke-2ndscreen @("screen", "list")
 Check "app starts and serves the control pipe" ([bool]$list.ok) $list.error
 
 $doctor = Invoke-2ndscreen @("doctor")
 $outputs = @($doctor.virtualOutputs)
 Check "Virtual Display Driver provides outputs" ($outputs.Count -gt 0) "$($outputs.Count) outputs; $($doctor.driverSettings)"
 
+# Virtual monitors need a GPU that can render them. Without one (as on CI virtual
+# machines) the driver's outputs have no monitor, so stand in an existing display
+# and test everything except creating the screen itself.
+$standIn = $false
+$virtualDevices = @($outputs | ForEach-Object { $_.device })
+$hosted = @($doctor.paths | Where-Object { $virtualDevices -contains $_.source -and $_.targetAvailable }).Count -gt 0
+if (-not $hosted) {
+    $standIn = $true
+    $primary = ($doctor.displays | Where-Object primary | Select-Object -First 1).device
+    Write-Host "No virtual monitor can attach on this machine; standing in $primary for the agent screen."
+    $env:SECONDSCREEN_TEST_DISPLAY = $primary
+    $appProcess | Stop-Process -Force -ErrorAction SilentlyContinue
+    $appProcess = Start-App
+}
+
 # 2. Create an agent screen.
-$created = Invoke-2ndscreen @("screen", "create", "--name", "e2e", "--size", "1280x800", "--no-hidpi", "--ttl", "10m")
+$width = 1280; $height = 800
+$created = Invoke-2ndscreen @("screen", "create", "--name", "e2e", "--size", "${width}x${height}", "--no-hidpi", "--ttl", "10m")
 $frame = $created.screen.frame
 Check "screen create" ([bool]$created.ok) $(if ($created.ok) { "frame $($frame.x),$($frame.y) $($frame.width)x$($frame.height)" } else { $created.error })
 if (-not $created.ok) {
     & $cli doctor | Set-Content (Join-Path $Out "doctor-after-create.json")
     Get-Content (Join-Path $Out "doctor-after-create.json") | Write-Host
 }
-if ($created.ok) {
+if ($standIn) {
+    Skip "screen has the requested size" "no GPU to host virtual monitors; $primary stands in"
+    Skip "Windows reports the new monitor" "no GPU to host virtual monitors"
+    $width = $frame.width; $height = $frame.height
+} elseif ($created.ok) {
     Check "screen has the requested size" ($frame.width -eq 1280 -and $frame.height -eq 800) "$($frame.width)x$($frame.height)"
 } else {
     Skip "screen has the requested size" "screen create failed"
 }
 Add-Type -AssemblyName System.Windows.Forms
 $monitors = [System.Windows.Forms.Screen]::AllScreens
-Check "Windows reports the new monitor" ([bool]($monitors | Where-Object { $_.Bounds.Width -eq 1280 -and $_.Bounds.Height -eq 800 })) (($monitors | ForEach-Object { "$($_.DeviceName) $($_.Bounds)" }) -join "; ")
+if (-not $standIn) { Check "Windows reports the new monitor" ([bool]($monitors | Where-Object { $_.Bounds.Width -eq 1280 -and $_.Bounds.Height -eq 800 })) (($monitors | ForEach-Object { "$($_.DeviceName) $($_.Bounds)" }) -join "; ") }
 
 # 3. Launch the test window onto it without taking the foreground.
 $frontBefore = [Fg]::Pid()
@@ -114,7 +138,7 @@ $shot = Join-Path $Out "e2e-screen.png"
 $taken = Invoke-2ndscreen @("screenshot", "--screen", "e2e", "--output", $shot)
 $size = if (Test-Path $shot) { Add-Type -AssemblyName System.Drawing; $img = [System.Drawing.Image]::FromFile($shot); "$($img.Width)x$($img.Height)"; $img.Dispose() } else { "missing" }
 if ($created.ok) {
-    Check "screenshot" ($taken.ok -and $size -eq "1280x800") "$size $($taken.error)"
+    Check "screenshot" ($taken.ok -and $size -eq "${width}x${height}") "$size $($taken.error)"
 } else {
     Skip "screenshot" "screen create failed"
 }

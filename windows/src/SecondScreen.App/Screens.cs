@@ -22,6 +22,8 @@ internal sealed class Screens
         public TimeSpan? IdleTimeout { get; init; }
         public int? OwnerPid { get; init; }
         public DateTime LastUsed { get; set; } = DateTime.UtcNow;
+        /// <summary>An existing display standing in for a virtual one (SECONDSCREEN_TEST_DISPLAY).</summary>
+        public bool TestStandIn { get; init; }
 
         public DisplayInfo? Display => Desktop.Display(Device);
         public Rect Bounds => Display?.Bounds ?? default;
@@ -84,6 +86,23 @@ internal sealed class Screens
             return ControlResponse.Failure($"owner pid {owner} is not running");
         if (ttl is <= 0) return ControlResponse.Failure("--ttl must be positive");
 
+        // Test only: machines whose GPU cannot host virtual monitors (such as CI virtual
+        // machines) can still exercise everything else against an existing display.
+        if (Environment.GetEnvironmentVariable("SECONDSCREEN_TEST_DISPLAY") is { Length: > 0 } testDevice)
+        {
+            if (Desktop.Display(testDevice) is not { } existing) return ControlResponse.Failure($"no display {testDevice}");
+            var standIn = new Screen
+            {
+                Name = name, Kind = kind, Device = testDevice, Width = existing.LogicalWidth, Height = existing.LogicalHeight,
+                HiDpi = existing.HiDpi, Deadline = ttl is double s ? DateTime.UtcNow.AddSeconds(s) : null,
+                IdleTimeout = idleTimeout is double i && i > 0 ? TimeSpan.FromSeconds(i) : null, OwnerPid = ownerPid,
+                TestStandIn = true,
+            };
+            screens.Add(standIn);
+            Changed?.Invoke();
+            return new ControlResponse { Screen = Info(standIn) };
+        }
+
         int scale = hiDpi ? 2 : 1;
         var physical = new VddSettings.Resolution(width * scale, height * scale);
         // A reload detaches every virtual monitor, so only allow one while none is in use.
@@ -135,7 +154,7 @@ internal sealed class Screens
         screens.Remove(screen);
         foreach (var pid in bindings.Where(b => b.Value == screen.Name).Select(b => b.Key).ToList()) bindings.Remove(pid);
         // Detaching moves the screen's windows onto the remaining displays.
-        driver.Release(screen.Device);
+        if (!screen.TestStandIn) driver.Release(screen.Device);
         Changed?.Invoke();
     }
 
