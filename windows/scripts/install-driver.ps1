@@ -69,8 +69,8 @@ Start-Sleep -Seconds 5
 $devices = Get-PnpDevice -Class Display | Where-Object { $_.InstanceId -like "ROOT\*" }
 foreach ($device in $devices) {
     $problem = (Get-PnpDeviceProperty -InstanceId $device.InstanceId -KeyName DEVPKEY_Device_ProblemCode).Data
-    $inf = (Get-PnpDeviceProperty -InstanceId $device.InstanceId -KeyName DEVPKEY_Device_DriverInfPath).Data
-    Write-Host "$($device.InstanceId): $($device.FriendlyName) status $($device.Status), problem $problem, driver $inf"
+    $bound = (Get-PnpDeviceProperty -InstanceId $device.InstanceId -KeyName DEVPKEY_Device_DriverInfPath).Data
+    Write-Host "$($device.InstanceId): $($device.FriendlyName) status $($device.Status), problem $problem, driver $bound"
 }
 if (-not ($devices | Where-Object { $_.Status -eq "OK" -and $_.FriendlyName -like "*Virtual Display*" })) {
     throw "the Virtual Display Driver did not start"
