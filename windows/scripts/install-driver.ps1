@@ -59,6 +59,19 @@ if ($devcon) {
     & $nefcon.FullName --install-driver --inf-path $inf.FullName
 }
 
-# Report what Windows now sees.
+# Bind the driver to the device node now that the node exists: staging it
+# before the node was created leaves the device without a driver.
+pnputil /add-driver $inf.FullName /install
+pnputil /scan-devices
 Start-Sleep -Seconds 5
-Get-PnpDevice -FriendlyName "*Virtual Display*" -ErrorAction SilentlyContinue | Format-Table -AutoSize FriendlyName, Status, InstanceId
+
+# Report what Windows now sees.
+$devices = Get-PnpDevice -Class Display | Where-Object { $_.InstanceId -like "ROOT\*" }
+foreach ($device in $devices) {
+    $problem = (Get-PnpDeviceProperty -InstanceId $device.InstanceId -KeyName DEVPKEY_Device_ProblemCode).Data
+    $inf = (Get-PnpDeviceProperty -InstanceId $device.InstanceId -KeyName DEVPKEY_Device_DriverInfPath).Data
+    Write-Host "$($device.InstanceId): $($device.FriendlyName) status $($device.Status), problem $problem, driver $inf"
+}
+if (-not ($devices | Where-Object { $_.Status -eq "OK" -and $_.FriendlyName -like "*Virtual Display*" })) {
+    throw "the Virtual Display Driver did not start"
+}
