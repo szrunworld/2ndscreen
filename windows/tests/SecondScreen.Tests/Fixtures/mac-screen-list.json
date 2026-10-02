@@ -1,0 +1,35 @@
+{
+  "ok" : true,
+  "screens" : [
+    {
+      "displayID" : 54,
+      "frame" : {
+        "height" : 1440,
+        "width" : 2560,
+        "x" : 1920,
+        "y" : -104
+      },
+      "height" : 1440,
+      "hiDPI" : true,
+      "kind" : "primary",
+      "name" : "2ndscreen",
+      "width" : 2560
+    },
+    {
+      "displayID" : 79,
+      "expiresIn" : 119,
+      "frame" : {
+        "height" : 800,
+        "width" : 1280,
+        "x" : -1280,
+        "y" : 0
+      },
+      "height" : 800,
+      "hiDPI" : true,
+      "idleTimeout" : 3600,
+      "kind" : "agent",
+      "name" : "fixture",
+      "width" : 1280
+    }
+  ]
+}

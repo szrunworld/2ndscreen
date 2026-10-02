@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The agent-facing 2ndscreen.exe: talks to the tray app over the control pipe,
+       drives programs through cua-driver, and serves MCP. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <!-- For System.Drawing, used to downscale MCP screenshots. -->
+    <UseWindowsForms>true</UseWindowsForms>
+    <AssemblyName>2ndscreen</AssemblyName>
+    <RootNamespace>SecondScreen.Cli</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../SecondScreen.Core/SecondScreen.Core.csproj" />
+  </ItemGroup>
+</Project>

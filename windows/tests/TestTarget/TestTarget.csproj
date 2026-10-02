@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- A tiny, deterministic window for end-to-end tests: a text box, a button,
+       and a label counting presses. Classic Win32, so it behaves the same on
+       every Windows edition, unlike Notepad on Windows 11. -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <AssemblyName>TestTarget</AssemblyName>
+  </PropertyGroup>
+</Project>

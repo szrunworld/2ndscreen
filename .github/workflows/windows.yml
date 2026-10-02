@@ -1,0 +1,76 @@
+name: Windows
+
+on:
+  push:
+    paths: ["windows/**", ".github/workflows/windows.yml"]
+  pull_request:
+    paths: ["windows/**", ".github/workflows/windows.yml"]
+  workflow_dispatch:
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  DOTNET_NOLOGO: "1"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Unit tests
+        run: dotnet test windows/tests/SecondScreen.Tests -c Release
+      - name: Publish single-file executables
+        shell: pwsh
+        run: |
+          foreach ($project in "src/SecondScreen.App", "src/SecondScreen.Cli", "tests/TestTarget") {
+            dotnet publish "windows/$project" -c Release -r win-x64 --self-contained true `
+              -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o windows/artifacts/publish
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          }
+          Copy-Item windows/scripts/*.ps1 windows/artifacts/publish/
+          Get-ChildItem windows/artifacts/publish | Format-Table Name, Length
+      - uses: actions/upload-artifact@v4
+        with:
+          name: 2ndscreen-windows-x64
+          path: windows/artifacts/publish
+
+  e2e:
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: 2ndscreen-windows-x64
+          path: publish
+      - name: Install the Virtual Display Driver
+        id: driver
+        continue-on-error: true
+        shell: pwsh
+        run: ./publish/install-driver.ps1
+      - name: Install cua-driver
+        id: cua
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          Invoke-RestMethod https://cua.ai/driver/install.ps1 | Invoke-Expression
+          "$env:LOCALAPPDATA\Programs\Cua\cua-driver\bin" | Add-Content $env:GITHUB_PATH
+      - name: Display state
+        shell: pwsh
+        run: |
+          Get-PnpDevice -Class Display | Format-Table FriendlyName, Status, InstanceId -AutoSize
+          Add-Type -AssemblyName System.Windows.Forms
+          [System.Windows.Forms.Screen]::AllScreens | Format-Table DeviceName, Bounds, Primary -AutoSize
+          Get-Content C:\VirtualDisplayDriver\vdd_settings.xml -ErrorAction SilentlyContinue | Select-Object -First 20
+      - name: End-to-end acceptance
+        shell: pwsh
+        run: |
+          $skip = @()
+          if ("${{ steps.cua.outcome }}" -ne "success") { $skip = @("-SkipDriver") }
+          ./publish/e2e.ps1 -Bin publish -Out e2e-out @skip
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-results
+          path: e2e-out
