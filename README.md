@@ -86,8 +86,15 @@ Things to know:
 - **`--fill`** sizes the window to the screen's visible area where the
   app allows it.
 - **Destroying** a screen moves its windows to your other displays.
-- At most 8 agent screens exist at once. Each costs WindowServer memory:
-  on an M4 MacBook Pro, four of them, three HiDPI, took about 220 MB.
+- **Screens expire** so a forgetful agent cannot leave them behind:
+  `--ttl 30m` destroys a screen 30 minutes after creation,
+  `--idle-timeout 20m` after 20 minutes in which no command named it
+  (default 60m; `0` turns it off), and `--owner-pid PID` when that
+  process exits.
+- At most 8 agent screens exist at once. On an M4 MacBook Pro with 16 GB,
+  eight empty 1280x800 screens added about 180 MB to WindowServer (about
+  300 MB at HiDPI) and a few percent CPU, and took 0.7 s (1.2 s at HiDPI)
+  each to create. The apps you run on them cost what they always do.
 - The menu lists agent screens, each with its own preview, its windows,
   and **Destroy**.
 

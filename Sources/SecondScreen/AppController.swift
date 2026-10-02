@@ -226,6 +226,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         let missingScreen = ControlResponse.failure(
             request.screen.map { "no screen named \"\($0)\"" } ?? "give a screen with --screen")
+        if let name = request.screen {
+            agentScreens.touch(name)
+        }
 
         switch request.command {
         case .screenCreate:
@@ -236,7 +239,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 name: request.screen,
                 width: request.width ?? main?.mode.width ?? 1440,
                 height: request.height ?? main?.mode.height ?? 900,
-                hiDPI: request.hiDPI ?? main?.hiDPI ?? false)
+                hiDPI: request.hiDPI ?? main?.hiDPI ?? false,
+                ttl: request.ttl, idleTimeout: request.idleTimeout, ownerPID: request.ownerPID)
         case .screenList:
             var response = ControlResponse()
             response.screens = allScreens()

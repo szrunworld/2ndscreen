@@ -28,6 +28,8 @@ CLI=2ndscreen   # or <repo>/.build/release/2ndscreen
 
    Without `--size`, the screen matches the main display's full-screen
    area. HiDPI follows the main display; pass `--hidpi` or `--no-hidpi`.
+   Add `--ttl 30m` as a safety net. A screen no command names for an hour
+   is destroyed anyway (`--idle-timeout` changes that).
 
 2. **Launch the app there.** Use `--path` for a fresh build, `--bundle`
    for an installed app.

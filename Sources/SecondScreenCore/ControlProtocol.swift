@@ -41,6 +41,13 @@ public struct ControlRequest: Codable {
     public var windowID: UInt32?
     /// Where `screenshot` writes its PNG.
     public var output: String?
+    /// `screen.create`: destroy the screen this many seconds after creation.
+    public var ttl: Double?
+    /// `screen.create`: destroy the screen after this many seconds without
+    /// a request naming it. 0 means never; the app has a default.
+    public var idleTimeout: Double?
+    /// `screen.create`: destroy the screen when this process exits.
+    public var ownerPID: Int32?
 
     public init(command: Command) {
         self.command = command
@@ -65,6 +72,12 @@ public struct ScreenInfo: Codable {
     /// Global frame in CoreGraphics coordinates (top-left origin), the space
     /// cua-driver reports element frames in.
     public var frame: Frame
+    /// Seconds until the TTL destroys the screen, if it has one.
+    public var expiresIn: Int?
+    /// Seconds without use after which the screen is destroyed, if any.
+    public var idleTimeout: Int?
+    /// The process whose exit destroys the screen, if any.
+    public var ownerPID: Int32?
 
     public init(name: String, kind: Kind, displayID: UInt32, width: Int, height: Int,
                 hiDPI: Bool, frame: Frame) {

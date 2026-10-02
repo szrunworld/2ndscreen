@@ -1,5 +1,6 @@
 #!/bin/bash
-# Build the menu bar app and wrap it in build/2ndscreen.app.
+# Build the menu bar app and wrap it in build/2ndscreen.app; also builds the
+# 2ndscreen and vdisplay command-line tools in .build/release.
 #
 # The bundle gives the app a stable identity, so macOS attributes the Screen
 # Recording grant (needed for the preview) to 2ndscreen instead of whichever
@@ -18,7 +19,8 @@ BUNDLE_ID="io.github.szrunworld.2ndscreen"
 VERSION="0.1.0"
 
 cd "$ROOT"
-swift build -c release --product SecondScreen
+# Build every product so the 2ndscreen CLI always matches the app.
+swift build -c release
 BIN="$(swift build -c release --show-bin-path)/SecondScreen"
 
 rm -rf "$APP"

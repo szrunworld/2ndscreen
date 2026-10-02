@@ -8,11 +8,29 @@ import UniformTypeIdentifiers
 /// capturing what it shows.
 @MainActor
 final class AgentScreens {
-    struct Screen {
+    final class Screen {
         let name: String
         let display: VirtualDisplay
         let serialNumber: UInt32
+        let deadline: Date?
+        let idleTimeout: TimeInterval?
+        let ownerPID: pid_t?
+        var lastUsed = Date()
+
+        init(name: String, display: VirtualDisplay, serialNumber: UInt32,
+             deadline: Date?, idleTimeout: TimeInterval?, ownerPID: pid_t?) {
+            self.name = name
+            self.display = display
+            self.serialNumber = serialNumber
+            self.deadline = deadline
+            self.idleTimeout = idleTimeout
+            self.ownerPID = ownerPID
+        }
     }
+
+    /// Agents forget to clean up. Unless told otherwise, a screen nobody has
+    /// named in a request for this long is destroyed.
+    static let defaultIdleTimeout: TimeInterval = 60 * 60
 
     /// Each display costs WindowServer memory and compositing time; this keeps
     /// a runaway agent from exhausting either.
@@ -27,6 +45,7 @@ final class AgentScreens {
     /// get moved onto the app's screen as they appear.
     private var bindings: [pid_t: String] = [:]
     private var followTimer: Timer?
+    private var reapTimer: Timer?
     /// Called after a screen is created or removed, so the app can add or
     /// drop its agent cursor overlay and preview.
     var onChange: (() -> Void)?
@@ -36,9 +55,18 @@ final class AgentScreens {
     }
 
     func info(_ screen: Screen) -> ScreenInfo {
-        ScreenInfo(name: screen.name, kind: .agent, displayID: screen.display.displayID,
-                   width: screen.display.mode.width, height: screen.display.mode.height,
-                   hiDPI: screen.display.hiDPI, frame: Frame(screen.display.bounds))
+        var info = ScreenInfo(name: screen.name, kind: .agent, displayID: screen.display.displayID,
+                              width: screen.display.mode.width, height: screen.display.mode.height,
+                              hiDPI: screen.display.hiDPI, frame: Frame(screen.display.bounds))
+        info.expiresIn = screen.deadline.map { max(0, Int($0.timeIntervalSinceNow)) }
+        info.idleTimeout = screen.idleTimeout.map { Int($0) }
+        info.ownerPID = screen.ownerPID
+        return info
+    }
+
+    /// Note that an agent is still using `name`, postponing its idle timeout.
+    func touch(_ name: String) {
+        screen(named: name)?.lastUsed = Date()
     }
 
     func destroyAll() {
@@ -48,7 +76,8 @@ final class AgentScreens {
 
     // MARK: Requests
 
-    func create(name requested: String?, width: Int, height: Int, hiDPI: Bool) async -> ControlResponse {
+    func create(name requested: String?, width: Int, height: Int, hiDPI: Bool,
+                ttl: TimeInterval?, idleTimeout: TimeInterval?, ownerPID: pid_t?) async -> ControlResponse {
         guard screens.count < Self.limit else {
             return .failure("at most \(Self.limit) agent screens can exist at once")
         }
@@ -59,6 +88,10 @@ final class AgentScreens {
         guard (320...6016).contains(width), (240...3384).contains(height) else {
             return .failure("size must be between 320x240 and 6016x3384 points")
         }
+        if let ownerPID, kill(ownerPID, 0) != 0, errno == ESRCH {
+            return .failure("owner pid \(ownerPID) is not running")
+        }
+        if let ttl, ttl <= 0 { return .failure("--ttl must be positive") }
         let serial = nextSerial()
         let mode = VirtualDisplay.Mode(width: width, height: height)
         guard let display = VirtualDisplay(
@@ -67,8 +100,12 @@ final class AgentScreens {
         else {
             return .failure("macOS refused to create a \(mode)\(hiDPI ? " HiDPI" : "") display")
         }
-        let screen = Screen(name: name, display: display, serialNumber: serial)
+        let idle = idleTimeout ?? Self.defaultIdleTimeout
+        let screen = Screen(name: name, display: display, serialNumber: serial,
+                            deadline: ttl.map { Date().addingTimeInterval($0) },
+                            idleTimeout: idle > 0 ? idle : nil, ownerPID: ownerPID)
         screens.append(screen)
+        startReaping()
         onChange?()
         // macOS places a new display and settles its mode a moment after
         // creating it; agents need the final frame.
@@ -196,6 +233,32 @@ final class AgentScreens {
         screens.removeAll { $0.name == name }
         bindings = bindings.filter { $0.value != name }
         onChange?()
+    }
+
+    // MARK: Expiry
+
+    private func startReaping() {
+        guard reapTimer == nil else { return }
+        reapTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.reapExpired() }
+        }
+    }
+
+    /// Destroy screens past their TTL, idle too long, or whose owner exited.
+    private func reapExpired() {
+        let now = Date()
+        for screen in screens {
+            let expired = screen.deadline.map { now >= $0 } ?? false
+            let idle = screen.idleTimeout.map { now.timeIntervalSince(screen.lastUsed) >= $0 } ?? false
+            let orphaned = screen.ownerPID.map { kill($0, 0) != 0 && errno == ESRCH } ?? false
+            if expired || idle || orphaned {
+                remove(named: screen.name)
+            }
+        }
+        if screens.isEmpty {
+            reapTimer?.invalidate()
+            reapTimer = nil
+        }
     }
 
     // MARK: Following new windows

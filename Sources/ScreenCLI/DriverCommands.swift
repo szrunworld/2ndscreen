@@ -173,7 +173,10 @@ struct Target {
         guard let name = args.value("--screen") else { throw DriverError("give the screen with --screen NAME") }
         guard let pid = args.value("--pid").flatMap(Int32.init) else { throw DriverError("give the app with --pid PID") }
 
-        let list = try sendControlRequest(ControlRequest(command: .screenList))
+        // Naming the screen also tells the app it is still in use.
+        var listRequest = ControlRequest(command: .screenList)
+        listRequest.screen = name
+        let list = try sendControlRequest(listRequest)
         guard let screen = list.screens?.first(where: { $0.name == name }) else {
             throw DriverError("no screen named \"\(name)\"")
         }

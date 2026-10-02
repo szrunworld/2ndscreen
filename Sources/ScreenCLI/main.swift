@@ -8,6 +8,7 @@ import SecondScreenCore
 let usage = """
 usage:
   2ndscreen screen create [--name NAME] [--size WxH] [--hidpi | --no-hidpi]
+                          [--ttl DURATION] [--idle-timeout DURATION] [--owner-pid PID]
   2ndscreen screen list
   2ndscreen screen destroy NAME
   2ndscreen app launch --screen NAME (--bundle ID | --path APP) [--new-instance] [--fill]
@@ -22,6 +23,10 @@ usage:
 state, click, type and key act through cua-driver's background routes and
 only on a window that is on the named screen. Indexes come from state; click
 and type re-read the window, so run state again after the UI changes.
+
+Durations take s, m or h (90s, 30m, 2h). A screen is destroyed when its TTL
+passes, when no command has named it for its idle timeout (default 60m; 0
+turns it off), or when its owner process exits.
 
 Sizes are in points. Without --size, a new screen matches the main display's
 full-screen area, so its full-screen preview is pixel for pixel. Frames in
@@ -43,7 +48,7 @@ struct Arguments {
     static let valued: Set<String> = ["--name", "--size", "--screen", "--bundle", "--path",
                                       "--pid", "--window-id", "--output", "--query", "--screenshot",
                                       "--index", "--text", "--x", "--y", "--value", "--key",
-                                      "--modifiers"]
+                                      "--modifiers", "--ttl", "--idle-timeout", "--owner-pid"]
 
     init(_ words: [String]) {
         var iterator = words.makeIterator()
@@ -61,6 +66,15 @@ struct Arguments {
 
     func value(_ name: String) -> String? { options[name] }
     func has(_ name: String) -> Bool { flags.contains(name) }
+}
+
+/// "90s", "30m", "2h", or bare seconds.
+func parseDuration(_ text: String) -> Double? {
+    let units: [Character: Double] = ["s": 1, "m": 60, "h": 3600]
+    if let unit = text.last.flatMap({ units[$0] }), let value = Double(text.dropLast()) {
+        return value * unit
+    }
+    return Double(text)
 }
 
 let words = Array(CommandLine.arguments.dropFirst())
@@ -87,6 +101,18 @@ case "screen create":
     }
     if args.has("--hidpi") { request.hiDPI = true }
     if args.has("--no-hidpi") { request.hiDPI = false }
+    if let ttl = args.value("--ttl") {
+        guard let seconds = parseDuration(ttl) else { fail("--ttl takes a duration such as 30m") }
+        request.ttl = seconds
+    }
+    if let idle = args.value("--idle-timeout") {
+        guard let seconds = parseDuration(idle) else { fail("--idle-timeout takes a duration such as 20m, or 0") }
+        request.idleTimeout = seconds
+    }
+    if let owner = args.value("--owner-pid") {
+        guard let pid = Int32(owner) else { fail("--owner-pid takes a process ID") }
+        request.ownerPID = pid
+    }
 case "screen list":
     request = ControlRequest(command: .screenList)
 case "screen destroy":
