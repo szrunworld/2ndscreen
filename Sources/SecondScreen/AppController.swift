@@ -216,9 +216,64 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(fullScreen)
         menu.addItem(.separator())
 
+        addWindowItems(to: menu)
+        menu.addItem(.separator())
+
         menu.addItem(item("Open Displays Settings…", #selector(openDisplaySettings), on: false))
         menu.addItem(NSMenuItem(
             title: "Quit 2ndscreen", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+    }
+
+    /// Items for choosing which windows live on the virtual display. The
+    /// display has no physical panel, so its windows cannot be dragged back.
+    private func addWindowItems(to menu: NSMenu) {
+        guard let display else { return }
+        guard WindowMover.isTrusted else {
+            menu.addItem(item("Grant Accessibility to Move Windows…", #selector(requestAccessibility), on: false))
+            return
+        }
+        menu.addItem(item("Send Front Window to 2ndscreen", #selector(sendFrontWindow), on: false))
+
+        let windows = WindowMover.windows(on: display.displayID)
+        let parent = NSMenuItem(title: "Windows on 2ndscreen (\(windows.count))", action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+        for window in windows {
+            let entry = item("Bring Back: \(window.label)", #selector(bringBack(_:)), on: false)
+            entry.representedObject = window
+            submenu.addItem(entry)
+        }
+        if windows.count > 1 {
+            submenu.addItem(.separator())
+            submenu.addItem(item("Bring All Back", #selector(bringAllBack), on: false))
+        }
+        parent.submenu = submenu
+        parent.isEnabled = !windows.isEmpty
+        menu.addItem(parent)
+    }
+
+    @objc private func requestAccessibility() {
+        WindowMover.requestTrust()
+    }
+
+    @objc private func sendFrontWindow() {
+        guard let display, let window = WindowMover.focusedWindow() else { return }
+        if !WindowMover.move(window, to: display.displayID) {
+            presentError("Could not move \(window.label).")
+        }
+    }
+
+    @objc private func bringBack(_ sender: NSMenuItem) {
+        guard let window = sender.representedObject as? WindowInfo else { return }
+        if !WindowMover.move(window, to: CGMainDisplayID()) {
+            presentError("Could not move \(window.label).")
+        }
+    }
+
+    @objc private func bringAllBack() {
+        guard let display else { return }
+        for window in WindowMover.windows(on: display.displayID) {
+            WindowMover.move(window, to: CGMainDisplayID())
+        }
     }
 
     private func statusLine() -> String {
