@@ -91,7 +91,24 @@ Things to know:
 - The menu lists agent screens, each with its own preview, its windows,
   and **Destroy**.
 
-Clicking and typing on an agent screen go through cua-driver, as below.
+Agents then look and act with `state`, `click`, `type` and `key`, which
+run through [cua-driver](https://github.com/trycua/cua)'s background
+routes and show the agent cursor:
+
+```bash
+$CLI state --screen test-a --pid 1234 [--screenshot before.png]   # elements + accessibility tree
+$CLI click --screen test-a --pid 1234 --text "Sign In"            # or --index N, or --x/--y
+$CLI type  --screen test-a --pid 1234 --index 7 --value "hello"
+$CLI key   --screen test-a --pid 1234 --key n --modifiers cmd
+```
+
+These refuse any window that is not on the named screen, so an agent
+cannot act on the user's own windows. Apps placed with `app launch` or
+`window move` stay bound to their screen: windows they open later are
+moved onto it as they appear, instead of popping up in front of you.
+
+`skills/2ndscreen/SKILL.md` is the agent-facing guide; give it to an
+agent, or install it as a Claude Code skill.
 
 ## Agent cursor
 

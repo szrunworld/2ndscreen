@@ -14,6 +14,15 @@ usage:
   2ndscreen window move --screen NAME --pid PID [--window-id ID] [--fill]
   2ndscreen screenshot --screen NAME --output FILE.png
 
+  2ndscreen state --screen NAME --pid PID [--window-id ID] [--query TEXT] [--screenshot FILE.png]
+  2ndscreen click --screen NAME --pid PID (--index N | --text TEXT | --x X --y Y)
+  2ndscreen type  --screen NAME --pid PID --value TEXT [--index N | --text TEXT]
+  2ndscreen key   --screen NAME --pid PID --key NAME [--modifiers cmd,shift]
+
+state, click, type and key act through cua-driver's background routes and
+only on a window that is on the named screen. Indexes come from state; click
+and type re-read the window, so run state again after the UI changes.
+
 Sizes are in points. Without --size, a new screen matches the main display's
 full-screen area, so its full-screen preview is pixel for pixel. Frames in
 the output use global top-left coordinates, the same space as cua-driver.
@@ -32,7 +41,9 @@ struct Arguments {
 
     /// Options that take a value; anything else starting with `--` is a flag.
     static let valued: Set<String> = ["--name", "--size", "--screen", "--bundle", "--path",
-                                      "--pid", "--window-id", "--output"]
+                                      "--pid", "--window-id", "--output", "--query", "--screenshot",
+                                      "--index", "--text", "--x", "--y", "--value", "--key",
+                                      "--modifiers"]
 
     init(_ words: [String]) {
         var iterator = words.makeIterator()
@@ -58,6 +69,9 @@ guard words.count >= 1, !words.contains("--help"), !words.contains("-h") else {
     exit(words.isEmpty ? 2 : 0)
 }
 let args = Arguments(words)
+if let first = args.positional.first, DriverCommands.verbs.contains(first) {
+    DriverCommands.run(first, args)
+}
 let verb = args.positional.prefix(2).joined(separator: " ")
 
 var request: ControlRequest
