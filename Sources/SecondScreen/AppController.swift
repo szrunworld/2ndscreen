@@ -10,6 +10,9 @@ struct Preferences {
         nonmutating set { defaults.set(newValue, forKey: "enabled") }
     }
 
+    /// False until the user (or the first-launch default) picks a mode.
+    var hasMode: Bool { defaults.data(forKey: "mode") != nil }
+
     var mode: VirtualDisplay.Mode {
         get {
             guard let data = defaults.data(forKey: "mode"),
@@ -36,6 +39,27 @@ struct Preferences {
     }
 }
 
+/// A physical display's logical size and scale, offered as a match target so
+/// the virtual display fits the hardware it is previewed on.
+struct DisplayMatch {
+    let name: String
+    let mode: VirtualDisplay.Mode
+    let hiDPI: Bool
+
+    var title: String { "Match \(name) — \(mode)\(hiDPI ? " HiDPI" : "")" }
+
+    /// Every connected display except `excluding` (the virtual display itself).
+    static func connected(excluding displayID: CGDirectDisplayID?) -> [DisplayMatch] {
+        NSScreen.screens.compactMap { screen in
+            guard screen.displayID != displayID else { return nil }
+            return DisplayMatch(
+                name: screen.localizedName,
+                mode: VirtualDisplay.Mode(width: Int(screen.frame.width), height: Int(screen.frame.height)),
+                hiDPI: screen.backingScaleFactor > 1)
+        }
+    }
+}
+
 /// Owns the status item, the virtual display, and its optional preview.
 @MainActor
 final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -59,6 +83,14 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self, selector: #selector(agentCursorEvent(_:)),
             name: AgentCursorEvent.notificationName, object: nil,
             suspensionBehavior: .deliverImmediately)
+
+        // Default to the main display's size and scale: the full-screen
+        // preview then fills it exactly, and windows keep their size when
+        // they move between the two.
+        if !preferences.hasMode, let main = DisplayMatch.connected(excluding: nil).first {
+            preferences.mode = main.mode
+            preferences.hiDPI = main.hiDPI
+        }
 
         if preferences.enabled {
             enableDisplay()
@@ -194,6 +226,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let resolution = NSMenuItem(title: "Resolution", action: nil, keyEquivalent: "")
         let resolutions = NSMenu()
+        for match in DisplayMatch.connected(excluding: display?.displayID) {
+            let entry = item(match.title, #selector(selectMatch(_:)),
+                             on: match.mode == preferences.mode && match.hiDPI == preferences.hiDPI)
+            entry.representedObject = match
+            resolutions.addItem(entry)
+        }
+        resolutions.addItem(.separator())
         for mode in VirtualDisplay.presets {
             let entry = item(mode.description, #selector(selectMode(_:)), on: mode == preferences.mode)
             entry.representedObject = mode
@@ -303,6 +342,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func selectMode(_ sender: NSMenuItem) {
         guard let mode = sender.representedObject as? VirtualDisplay.Mode else { return }
         apply(mode: mode, hiDPI: preferences.hiDPI)
+    }
+
+    @objc private func selectMatch(_ sender: NSMenuItem) {
+        guard let match = sender.representedObject as? DisplayMatch else { return }
+        apply(mode: match.mode, hiDPI: match.hiDPI)
     }
 
     @objc private func toggleHiDPI() {
