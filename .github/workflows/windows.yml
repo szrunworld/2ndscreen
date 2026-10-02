@@ -62,7 +62,7 @@ jobs:
           Get-PnpDevice -Class Display | Format-Table FriendlyName, Status, InstanceId -AutoSize
           Add-Type -AssemblyName System.Windows.Forms
           [System.Windows.Forms.Screen]::AllScreens | Format-Table DeviceName, Bounds, Primary -AutoSize
-          Get-Content C:\VirtualDisplayDriver\vdd_settings.xml -ErrorAction SilentlyContinue | Select-Object -First 20
+          ./publish/2ndscreen.exe doctor
       - name: End-to-end acceptance
         shell: pwsh
         run: |

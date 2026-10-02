@@ -65,17 +65,19 @@ public static class Desktop
     public static DisplayInfo Primary() => Displays().First(d => d.IsPrimary);
 
     /// <summary>Every display output the Virtual Display Driver provides, attached or not.</summary>
-    public static List<(string Device, bool Attached)> VirtualDevices()
+    public static List<(string Device, bool Attached)> VirtualDevices() =>
+        AllDevices().Where(d => d.Adapter.Contains(VirtualAdapterName, StringComparison.OrdinalIgnoreCase))
+            .Select(d => (d.Device, d.Attached)).ToList();
+
+    /// <summary>Every display output of every adapter, attached or not.</summary>
+    public static List<(string Device, string Adapter, bool Attached)> AllDevices()
     {
-        var result = new List<(string, bool)>();
+        var result = new List<(string, string, bool)>();
         for (uint i = 0; ; i++)
         {
             var device = new Native.DISPLAY_DEVICE { cb = (uint)Marshal.SizeOf<Native.DISPLAY_DEVICE>() };
             if (!Native.EnumDisplayDevices(null, i, ref device, 0)) break;
-            if (device.DeviceString.Contains(VirtualAdapterName, StringComparison.OrdinalIgnoreCase))
-            {
-                result.Add((device.DeviceName, (device.StateFlags & Native.DISPLAY_DEVICE_ATTACHED_TO_DESKTOP) != 0));
-            }
+            result.Add((device.DeviceName, device.DeviceString, (device.StateFlags & Native.DISPLAY_DEVICE_ATTACHED_TO_DESKTOP) != 0));
         }
         return result;
     }

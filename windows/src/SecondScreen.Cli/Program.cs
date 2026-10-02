@@ -22,6 +22,7 @@ usage:
   2ndscreen key   --screen NAME --pid PID --key NAME [--modifiers ctrl,shift]
 
   2ndscreen mcp      serve these commands as MCP tools over stdio
+  2ndscreen doctor   report displays, the virtual display driver, and cua-driver
 
 Durations take s, m or h (90s, 30m, 2h). A screen is destroyed when its TTL
 passes, when no command has named it for its idle timeout (default 60m; 0
@@ -45,6 +46,7 @@ if (args.Length == 0 || args.Contains("--help") || args.Contains("-h"))
     return args.Length == 0 ? 2 : 0;
 }
 if (args is ["mcp"]) return Mcp.Run();
+if (args is ["doctor"]) return Doctor.Run();
 
 var parsed = new Arguments(args);
 var first = parsed.Positional.FirstOrDefault() ?? "";

@@ -32,7 +32,7 @@ function Check([string] $name, [bool] $ok, [string] $detail = "") {
     Write-Host ("[{0}] {1} {2}" -f $(if ($ok) { "PASS" } else { "FAIL" }), $name, $detail)
 }
 
-function Cli([string[]] $arguments) {
+function Invoke-2ndscreen([string[]] $arguments) {
     $text = & $cli @arguments 2>&1 | Out-String
     try { return $text | ConvertFrom-Json } catch { return [pscustomobject]@{ ok = $false; error = $text.Trim() } }
 }
@@ -52,16 +52,17 @@ $appProcess = Start-Process $app -PassThru
 $list = $null
 for ($i = 0; $i -lt 40; $i++) {
     Start-Sleep -Milliseconds 250
-    $list = Cli @("screen", "list")
+    $list = Invoke-2ndscreen @("screen", "list")
     if ($list.ok) { break }
 }
 Check "app starts and serves the control pipe" ([bool]$list.ok) $list.error
 
-$virtual = Get-PnpDevice -FriendlyName "*Virtual Display*" -ErrorAction SilentlyContinue | Where-Object Status -eq "OK"
-Check "Virtual Display Driver present" ([bool]$virtual) $(if ($virtual) { $virtual[0].InstanceId } else { "not installed; screen checks will fail" })
+$doctor = Invoke-2ndscreen @("doctor")
+$outputs = @($doctor.virtualOutputs)
+Check "Virtual Display Driver provides outputs" ($outputs.Count -gt 0) "$($outputs.Count) outputs; $($doctor.driverSettings)"
 
 # 2. Create an agent screen.
-$created = Cli @("screen", "create", "--name", "e2e", "--size", "1280x800", "--no-hidpi", "--ttl", "10m")
+$created = Invoke-2ndscreen @("screen", "create", "--name", "e2e", "--size", "1280x800", "--no-hidpi", "--ttl", "10m")
 $frame = $created.screen.frame
 Check "screen create" ([bool]$created.ok) $(if ($created.ok) { "frame $($frame.x),$($frame.y) $($frame.width)x$($frame.height)" } else { $created.error })
 Check "screen has the requested size" ($created.ok -and $frame.width -eq 1280 -and $frame.height -eq 800)
@@ -71,7 +72,7 @@ Check "Windows reports the new monitor" ([bool]($monitors | Where-Object { $_.Bo
 
 # 3. Launch the test window onto it without taking the foreground.
 $frontBefore = [Fg]::Pid()
-$launched = Cli @("app", "launch", "--screen", "e2e", "--path", $target)
+$launched = Invoke-2ndscreen @("app", "launch", "--screen", "e2e", "--path", $target)
 Start-Sleep -Seconds 1
 $frontAfter = [Fg]::Pid()
 $targetPid = $launched.pid
@@ -81,31 +82,31 @@ Check "app launch onto the screen" ([bool]$onScreen) $(if ($launched.ok) { "pid 
 Check "foreground left alone" ($frontAfter -ne $targetPid) "foreground pid before $frontBefore, after $frontAfter"
 
 # 4. Guards.
-$refused = Cli @("window", "move", "--screen", "nope", "--pid", "$targetPid")
+$refused = Invoke-2ndscreen @("window", "move", "--screen", "nope", "--pid", "$targetPid")
 Check "unknown screen is refused" (-not $refused.ok) $refused.error
-$again = Cli @("app", "launch", "--screen", "e2e", "--path", $target)
+$again = Invoke-2ndscreen @("app", "launch", "--screen", "e2e", "--path", $target)
 Check "already-running program is refused without --new-instance" (-not $again.ok) $again.error
 
 # 5. Screenshot.
 $shot = Join-Path $Out "e2e-screen.png"
-$taken = Cli @("screenshot", "--screen", "e2e", "--output", $shot)
+$taken = Invoke-2ndscreen @("screenshot", "--screen", "e2e", "--output", $shot)
 $size = if (Test-Path $shot) { Add-Type -AssemblyName System.Drawing; $img = [System.Drawing.Image]::FromFile($shot); "$($img.Width)x$($img.Height)"; $img.Dispose() } else { "missing" }
 Check "screenshot" ($taken.ok -and $size -eq "1280x800") "$size $($taken.error)"
 
 # 6. Typing through cua-driver, if installed.
 if (-not $SkipDriver) {
-    $state = Cli @("state", "--screen", "e2e", "--pid", "$targetPid")
+    $state = Invoke-2ndscreen @("state", "--screen", "e2e", "--pid", "$targetPid")
     Check "state reads the window" ([bool]($state.ok -and $state.elements.Count -gt 0)) "$($state.elements.Count) elements $($state.error)"
-    $clicked = Cli @("click", "--screen", "e2e", "--pid", "$targetPid", "--text", "Press me")
+    $clicked = Invoke-2ndscreen @("click", "--screen", "e2e", "--pid", "$targetPid", "--text", "Press me")
     Start-Sleep -Milliseconds 500
-    $state = Cli @("state", "--screen", "e2e", "--pid", "$targetPid")
+    $state = Invoke-2ndscreen @("state", "--screen", "e2e", "--pid", "$targetPid")
     Check "click through cua-driver" ([bool]($clicked.ok -and $state.tree -match "Pressed 1")) "$($clicked.effect) $($clicked.error)"
-    $typed = Cli @("type", "--screen", "e2e", "--pid", "$targetPid", "--text", "Input", "--value", "hello from 2ndscreen")
+    $typed = Invoke-2ndscreen @("type", "--screen", "e2e", "--pid", "$targetPid", "--text", "Input", "--value", "hello from 2ndscreen")
     Start-Sleep -Milliseconds 500
-    $state = Cli @("state", "--screen", "e2e", "--pid", "$targetPid")
+    $state = Invoke-2ndscreen @("state", "--screen", "e2e", "--pid", "$targetPid")
     Check "type through cua-driver" ([bool]($typed.ok -and $state.tree -match "hello from 2ndscreen")) "$($typed.effect) $($typed.error)"
     Check "foreground still left alone" ([Fg]::Pid() -ne $targetPid)
-    Cli @("screenshot", "--screen", "e2e", "--output", (Join-Path $Out "e2e-typed.png")) | Out-Null
+    Invoke-2ndscreen @("screenshot", "--screen", "e2e", "--output", (Join-Path $Out "e2e-typed.png")) | Out-Null
 }
 
 # 7. MCP.
@@ -121,9 +122,9 @@ Check "mcp lists tools" ($tools.Count -eq 10) ($tools -join ",")
 Check "mcp screen_list" (-not ($mcp | Where-Object id -eq 3).result.isError)
 
 # 8. Cleanup: destroying the screen moves the test window back to a real display.
-$destroyed = Cli @("screen", "destroy", "e2e")
+$destroyed = Invoke-2ndscreen @("screen", "destroy", "e2e")
 Start-Sleep -Seconds 1
-$after = Cli @("screen", "list")
+$after = Invoke-2ndscreen @("screen", "list")
 Check "screen destroy" ([bool]($destroyed.ok -and -not ($after.screens | Where-Object name -eq "e2e")))
 if ($targetPid) { Stop-Process -Id $targetPid -Force -ErrorAction SilentlyContinue }
 $appProcess | Stop-Process -Force -ErrorAction SilentlyContinue
