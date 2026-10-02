@@ -5,9 +5,12 @@ import CGVirtualDisplayPrivate
 // process does.
 //
 //   swift run vdisplay [--width 1920] [--height 1080] [--hidpi] [--name "2ndscreen"]
+//                      [--preview [--fps 15] [--float]]
 //
 // --width/--height are in points. With --hidpi the display is backed by 2x
-// pixels, like a Retina panel. Ctrl-C (or SIGTERM) removes the display.
+// pixels, like a Retina panel. --preview opens a live view of the display in
+// a window on the main screen; --float keeps that window above others.
+// Ctrl-C (or SIGTERM) removes the display.
 
 struct Options {
     var width = 1920
@@ -15,6 +18,9 @@ struct Options {
     var hiDPI = false
     var name = "2ndscreen"
     var refreshRate = 60.0
+    var preview = false
+    var previewFPS: Int32 = 15
+    var floatPreview = false
 }
 
 func parseOptions() -> Options {
@@ -27,6 +33,9 @@ func parseOptions() -> Options {
         case "--hidpi": options.hiDPI = true
         case "--name": options.name = args.next() ?? options.name
         case "--refresh": options.refreshRate = args.next().flatMap(Double.init) ?? options.refreshRate
+        case "--preview": options.preview = true
+        case "--fps": options.previewFPS = args.next().flatMap(Int32.init) ?? options.previewFPS
+        case "--float": options.floatPreview = true
         default:
             FileHandle.standardError.write("unknown argument: \(arg)\n".data(using: .utf8)!)
             exit(2)
@@ -75,21 +84,40 @@ guard let display = makeDisplay(options) else {
 let displayID = display.displayID
 print("created virtual display id=\(displayID) \(options.width)x\(options.height)pt hidpi=\(options.hiDPI)")
 
+// An accessory app: no Dock icon, and showing the preview never activates it.
+let app = NSApplication.shared
+app.setActivationPolicy(.accessory)
+var preview: DisplayPreview?
+
 // Report where macOS placed it once the display arrangement settles.
 DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
     let bounds = CGDisplayBounds(displayID)
     print("display bounds (global points): \(bounds)")
     fflush(stdout)
+
+    guard options.preview else { return }
+    let livePreview = DisplayPreview(
+        displayID: displayID, title: "\(options.name) preview",
+        framesPerSecond: options.previewFPS, floating: options.floatPreview)
+    preview = livePreview
+    Task {
+        do {
+            try await livePreview.start()
+            print("preview streaming at up to \(options.previewFPS) fps")
+        } catch {
+            print("preview failed: \(error.localizedDescription)")
+        }
+        fflush(stdout)
+    }
 }
 
-// Tear down cleanly on Ctrl-C / SIGTERM; releasing `display` removes it.
-var keepAlive: CGVirtualDisplay? = display
+// Exit cleanly on Ctrl-C / SIGTERM. The display dies with the process;
+// releasing it first would fire terminationHandler and report a failure.
 var signalSources: [DispatchSourceSignal] = []
 for sig in [SIGINT, SIGTERM] {
     signal(sig, SIG_IGN)
     let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
     source.setEventHandler {
-        keepAlive = nil
         print("virtual display removed")
         exit(0)
     }
@@ -97,4 +125,4 @@ for sig in [SIGINT, SIGTERM] {
     signalSources.append(source)
 }
 fflush(stdout)
-dispatchMain()
+app.run()
