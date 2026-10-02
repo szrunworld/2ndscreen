@@ -26,6 +26,15 @@ public static class Doctor
             ["modes"] = Desktop.Modes(d.Device).Count,
         }).ToArray());
 
+        report["paths"] = new JsonArray(Topology.Paths()
+            .Where(p => p.Active || (p.Source is not null && Desktop.VirtualDevices().Any(v => v.Device == p.Source)))
+            .Select(p => (JsonNode)new JsonObject
+            {
+                ["active"] = p.Active, ["source"] = p.Source, ["targetAvailable"] = p.TargetAvailable,
+                ["targetId"] = p.TargetId, ["monitor"] = p.Monitor,
+            }).ToArray());
+        report["pathCount"] = Topology.Paths().Count;
+
         var settings = VddSettings.DefaultPath;
         if (File.Exists(settings))
         {

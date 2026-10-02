@@ -1,5 +1,5 @@
 using System.Runtime.InteropServices;
-using static SecondScreen.App.Topology;
+using static SecondScreen.Topology;
 
 namespace SecondScreen.App;
 

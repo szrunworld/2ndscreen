@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
 
-namespace SecondScreen.App;
+namespace SecondScreen;
 
 /// <summary>
 /// The display topology (QueryDisplayConfig/SetDisplayConfig): which source outputs drive
@@ -8,7 +9,8 @@ namespace SecondScreen.App;
 /// output reports no modes, so ChangeDisplaySettingsEx cannot attach it; activating its
 /// path here can, after which ordinary mode changes work.
 /// </summary>
-internal static class Topology
+[SupportedOSPlatform("windows")]
+public static class Topology
 {
     /// <summary>Extend the desktop onto <paramref name="device"/> (such as \\.\DISPLAY5) at a mode Windows picks.</summary>
     public static string? Activate(string device)
@@ -48,6 +50,35 @@ internal static class Topology
         int result = SetDisplayConfig((uint)remaining.Length, remaining, (uint)modes.Length, modes,
             SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES | SDC_SAVE_TO_DATABASE);
         return result == 0 ? null : $"SetDisplayConfig failed with {result} detaching {device}";
+    }
+
+    /// <summary>Every path Windows could use, for diagnostics.</summary>
+    public static List<(bool Active, string? Source, bool TargetAvailable, uint TargetId, string? Monitor)> Paths()
+    {
+        var result = new List<(bool, string?, bool, uint, string?)>();
+        if (!Query(QDC_ALL_PATHS, out var paths, out _, out _)) return result;
+        foreach (var path in paths)
+        {
+            result.Add(((path.flags & PATH_ACTIVE) != 0, SourceName(path), path.targetInfo.targetAvailable != 0,
+                path.targetInfo.id, TargetName(path)));
+        }
+        return result;
+    }
+
+    /// <summary>The friendly name of the path's target monitor, such as "VDD by MTT".</summary>
+    public static string? TargetName(PATH_INFO path)
+    {
+        var name = new TARGET_DEVICE_NAME
+        {
+            header = new DEVICE_INFO_HEADER
+            {
+                type = 2, // DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME
+                size = Marshal.SizeOf<TARGET_DEVICE_NAME>(),
+                adapterId = path.targetInfo.adapterId,
+                id = path.targetInfo.id,
+            },
+        };
+        return DisplayConfigGetDeviceInfo(ref name) == 0 ? name.monitorFriendlyDeviceName : null;
     }
 
     /// <summary>The GDI device name (\\.\DISPLAYn) of the path's source.</summary>
@@ -121,6 +152,19 @@ internal static class Topology
         [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string viewGdiDeviceName;
     }
 
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct TARGET_DEVICE_NAME
+    {
+        public DEVICE_INFO_HEADER header;
+        public uint flags;
+        public int outputTechnology;
+        public ushort edidManufactureId;
+        public ushort edidProductCodeId;
+        public uint connectorInstance;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)] public string monitorFriendlyDeviceName;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string monitorDevicePath;
+    }
+
     [StructLayout(LayoutKind.Sequential)]
     public struct PATH_SOURCE_INFO { public LUID adapterId; public uint id; public uint modeInfoIdx; public uint statusFlags; }
 
@@ -143,4 +187,5 @@ internal static class Topology
     [DllImport("user32.dll")] public static extern int QueryDisplayConfig(uint flags, ref uint pathCount, [Out] PATH_INFO[] paths, ref uint modeCount, [Out] MODE_INFO[] modes, nint topology);
     [DllImport("user32.dll")] public static extern int SetDisplayConfig(uint pathCount, [In] PATH_INFO[] paths, uint modeCount, [In] MODE_INFO[] modes, uint flags);
     [DllImport("user32.dll")] public static extern int DisplayConfigGetDeviceInfo(ref SOURCE_DEVICE_NAME info);
+    [DllImport("user32.dll")] public static extern int DisplayConfigGetDeviceInfo(ref TARGET_DEVICE_NAME info);
 }
