@@ -117,6 +117,22 @@ moved onto it as they appear, instead of popping up in front of you.
 `skills/2ndscreen/SKILL.md` is the agent-facing guide; give it to an
 agent, or install it as a Claude Code skill.
 
+### MCP
+
+`2ndscreen mcp` serves the same commands as MCP tools over stdio:
+`screen_create`, `screen_list`, `screen_destroy`, `app_launch`,
+`window_move`, `screenshot`, `state`, `click`, `type` and `key`. Each tool
+runs the matching CLI command, so the guards and output are identical.
+`screenshot`, and `state` with `screenshot: true`, also return the image,
+downscaled to 1280 px as JPEG.
+
+```bash
+claude mcp add --transport stdio 2ndscreen -- 2ndscreen mcp
+```
+
+Any MCP client works: point it at `2ndscreen mcp` (use the absolute path
+if `2ndscreen` is not on its PATH).
+
 ## Agent cursor
 
 Agents act through accessibility and per-process events, so the real

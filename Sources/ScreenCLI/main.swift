@@ -20,6 +20,8 @@ usage:
   2ndscreen type  --screen NAME --pid PID --value TEXT [--index N | --text TEXT]
   2ndscreen key   --screen NAME --pid PID --key NAME [--modifiers cmd,shift]
 
+  2ndscreen mcp      serve these commands as MCP tools over stdio
+
 state, click, type and key act through cua-driver's background routes and
 only on a window that is on the named screen. Indexes come from state; click
 and type re-read the window, so run state again after the UI changes.
@@ -78,6 +80,9 @@ func parseDuration(_ text: String) -> Double? {
 }
 
 let words = Array(CommandLine.arguments.dropFirst())
+if words == ["mcp"] {
+    MCPServer.run()
+}
 guard words.count >= 1, !words.contains("--help"), !words.contains("-h") else {
     print(usage)
     exit(words.isEmpty ? 2 : 0)
