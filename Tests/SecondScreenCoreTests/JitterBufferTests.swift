@@ -90,4 +90,19 @@ struct Stream {
         #expect(first.at == grown)
         #expect(first.event == nil)
     }
+
+    @Test func extraDelayMovesTheSoundLater() {
+        var stream = Stream()
+        stream.run(seconds: 10)
+        let before = stream.buffer.next!
+        stream.buffer.setExtraDelay(0.5)
+        #expect(abs(stream.buffer.next! - (before + 0.5)) < 1e-9)
+        #expect(abs(stream.buffer.latency - 0.7) < 1e-9)
+        stream.run(seconds: 30, from: 10)
+        #expect(stream.underruns == 0)
+        #expect(stream.drops == 0)
+        #expect(stream.buffer.latency >= 0.7)
+        stream.buffer.setExtraDelay(0)
+        #expect(abs(stream.buffer.latency - 0.2) < 1e-9)
+    }
 }
