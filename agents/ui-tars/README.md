@@ -19,16 +19,19 @@ npm install
 ```
 
 You need Node 22, the 2ndscreen app running, the `2ndscreen` command (set
-`SECONDSCREEN_CLI` if it is not on PATH), and a model. By default it uses
-Doubao UI-TARS on Volcengine Ark: enable the model in the Ark console and
-set `ARK_API_KEY`. `ARK_MODEL` takes a model or endpoint ID, and
-`ARK_BASE_URL` any OpenAI-compatible server, such as a self-hosted
-UI-TARS-1.5 under vLLM (then set `UI_TARS_VERSION=1.5`).
+`SECONDSCREEN_CLI` if it is not on PATH), and a model behind an
+OpenAI-compatible API. By default it uses Doubao Seed 2.1 lite on
+Volcengine Ark: activate the model in the Ark console (开通管理; it took
+about two minutes to take effect) and set `ARK_API_KEY`. `ARK_MODEL` takes
+another model or endpoint ID, and `ARK_BASE_URL` another server, such as a
+self-hosted UI-TARS-1.5 under vLLM (then set `UI_TARS_VERSION=1.5`).
 
-The default, `doubao-1-5-ui-tars-250428`, takes no new activations since
-2026-09-24 and stops serving on 2026-11-24 (Ark's model deprecation
-notice). Set `ARK_MODEL` to its successor, or self-host the open
-UI-TARS-1.5 weights, which do not expire.
+Ark's dedicated GUI model, `doubao-1-5-ui-tars-250428`, is shut down. Seed
+2.1 lite, a general vision model, answers UI-TARS's prompt in the same
+`Thought: … Action: …` format: on a test page it placed a Send button and a
+text field within 2 of 1000 of their centers, at about 2 s a step. Now and
+then it writes a box without its comma, `[382 117]`, which the SDK's parser
+reads as one number; the operator then reads the box from the raw text.
 
 ## Use
 

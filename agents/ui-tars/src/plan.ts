@@ -70,6 +70,21 @@ export function boxPoint(box: unknown, frame: Frame): { x: number; y: number } |
   };
 }
 
+/** A box read again from the model's raw text, for when the action parser
+ * could not: models sometimes write "[383 117]" or "<point>383 117</point>",
+ * which it splits into one number. Values on the model's 0..1000 scale are
+ * normalised to 0..1, as the parser would. */
+export function recoverBox(prediction: string, name: 'start_box' | 'end_box'): string | undefined {
+  const at = prediction.lastIndexOf(name);
+  if (at < 0) return undefined;
+  const rest = prediction.slice(at + name.length).split(/end_box|direction|content|\)\s*$/)[0];
+  const numbers = (rest.match(/\d+(?:\.\d+)?/g) ?? []).slice(0, 4).map(Number);
+  if (numbers.length < 2) return undefined;
+  const scale = numbers.some((n) => n > 1) ? 1000 : 1;
+  const [x1, y1, x2 = x1, y2 = y1] = numbers.map((n) => n / scale);
+  return JSON.stringify([x1, y1, x2, y2]);
+}
+
 /** "ctrl c", "cmd+shift+n" or "enter" as a key and its modifiers. As in
  * UI-TARS's own desktop operator, ctrl means cmd on macOS. */
 export function parseKeys(text: string, platform: NodeJS.Platform): { key: string; modifiers: string[] } | undefined {
