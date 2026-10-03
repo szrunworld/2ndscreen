@@ -223,6 +223,10 @@ public struct InputAction: Codable {
     /// (cmd, shift, option, ctrl).
     public var key: String?
     public var modifiers: [String]?
+    /// `key`: press the modifiers as keys of their own around the key, all
+    /// sent to the app in the background, instead of through its menus;
+    /// iPhone Mirroring takes ⌘V only this way.
+    public var holdModifiers: Bool?
     /// `scroll`: up, down, left or right; notches (default 3); "line" or "page".
     public var direction: String?
     public var amount: Int?

@@ -312,9 +312,16 @@ if `2ndscreen` is not on its PATH).
 agent use it from the command line, like an Android phone.
 
 ```bash
-$CLI iphone setup                # a "phone" screen with iPhone Mirroring on it, kept sized to its window
+$CLI iphone show                 # a "phone" screen with iPhone Mirroring on it, kept sized to its window
+$CLI iphone screenshot --output /tmp/phone.png
+$CLI iphone tap --x 344 --y 900  # the screenshot's pixels, two to a window point
+$CLI iphone type --text "设置"
+$CLI iphone key --key home       # also switcher, spotlight, return, delete
+$CLI iphone hide                 # quit iPhone Mirroring, handing the phone back
 $CLI agent --iphone "打开微信，告诉我第一个聊天的名字"
 ```
+
+None of these moves your pointer or brings iPhone Mirroring to the front.
 
 What iPhone Mirroring allows from a Mac shapes what the agent can do:
 
@@ -324,13 +331,10 @@ What iPhone Mirroring allows from a Mac shapes what the agent can do:
   and a drag the model asks for anyway is refused, never turned into taps.
   It uses search instead.
 - Typed text reaches the phone's keyboard as key codes, which a Chinese
-  keyboard turns into pinyin. Text is pasted: once you have not touched the
-  keyboard or mouse for three seconds, iPhone Mirroring comes to the front
-  for about a second for ⌘V, and your clipboard and frontmost app are put
-  back after.
-- Without the phone it shows "iPhone in Use" or "Connection Paused"; the
-  agent presses Connect, Try Again or Resume when offered and stops
-  otherwise. Lock the phone and leave it near the Mac.
+  keyboard turns into pinyin. Text is pasted instead, in the background:
+  ⌘V with ⌘ pressed as a key of its own (a ⌘V through the menus types
+  "v", even with Mirroring in front). When the phone asks to Allow Paste,
+  that is pressed, and your clipboard is put back once the phone has it.
 
 ## Android phones
 
