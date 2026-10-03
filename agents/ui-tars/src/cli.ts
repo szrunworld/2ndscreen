@@ -18,7 +18,7 @@ Send button. Without --foreground, nothing takes the user's pointer.
 
 Environment:
   ARK_API_KEY        Volcengine Ark API key (required)
-  ARK_MODEL          model or endpoint ID (default doubao-1.5-ui-tars-250428)
+  ARK_MODEL          model or endpoint ID (default doubao-1-5-ui-tars-250428)
   ARK_BASE_URL       default https://ark.cn-beijing.volces.com/api/v3
   UI_TARS_VERSION    doubao-1.5-15B (default), doubao-1.5-20B, 1.5 or 1.0
   SECONDSCREEN_CLI   path to the 2ndscreen command (default: on PATH)`;
@@ -67,7 +67,7 @@ const agent = new GUIAgent({
   model: {
     baseURL: process.env.ARK_BASE_URL || 'https://ark.cn-beijing.volces.com/api/v3',
     apiKey,
-    model: process.env.ARK_MODEL || 'doubao-1.5-ui-tars-250428',
+    model: process.env.ARK_MODEL || 'doubao-1-5-ui-tars-250428',
   },
   uiTarsVersion: (process.env.UI_TARS_VERSION as UITarsModelVersion) || UITarsModelVersion.DOUBAO_1_5_15B,
   operator,
