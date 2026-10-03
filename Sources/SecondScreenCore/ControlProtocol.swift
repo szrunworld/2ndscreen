@@ -31,6 +31,8 @@ public struct ControlRequest: Codable {
         case screenCreate = "screen.create"
         case screenList = "screen.list"
         case screenDestroy = "screen.destroy"
+        /// Change an agent screen's size in place.
+        case screenResize = "screen.resize"
         case appLaunch = "app.launch"
         case windowMove = "window.move"
         /// Hand an app's windows back to the user's main display and stop
@@ -64,6 +66,9 @@ public struct ControlRequest: Codable {
     public var newInstance: Bool?
     /// Size the window to the screen's visible area instead of keeping its size.
     public var fill: Bool?
+    /// `app.launch`, `window.move`: keep the screen sized to the app's main
+    /// window as it changes, such as iPhone Mirroring when the phone rotates.
+    public var fitScreen: Bool?
     public var pid: Int32?
     public var windowID: UInt32?
     /// Where `screenshot` writes its PNG.

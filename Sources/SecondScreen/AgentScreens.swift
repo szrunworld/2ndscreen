@@ -15,16 +15,22 @@ final class AgentScreens {
         let deadline: Date?
         let idleTimeout: TimeInterval?
         let ownerPID: pid_t?
+        /// Whether the screen should be HiDPI wherever its size allows, kept
+        /// for when it is resized.
+        let prefersHiDPI: Bool
         var lastUsed = Date()
+        /// A resize is under way; the follow timer waits for it.
+        var resizing = false
 
         init(name: String, display: VirtualDisplay, serialNumber: UInt32,
-             deadline: Date?, idleTimeout: TimeInterval?, ownerPID: pid_t?) {
+             deadline: Date?, idleTimeout: TimeInterval?, ownerPID: pid_t?, prefersHiDPI: Bool) {
             self.name = name
             self.display = display
             self.serialNumber = serialNumber
             self.deadline = deadline
             self.idleTimeout = idleTimeout
             self.ownerPID = ownerPID
+            self.prefersHiDPI = prefersHiDPI
         }
     }
 
@@ -52,6 +58,8 @@ final class AgentScreens {
     /// Called after a screen is created or removed, so the app can add or
     /// drop its agent cursor overlay and preview.
     var onChange: (() -> Void)?
+    /// Called after a screen changes size, so its preview can follow.
+    var onResize: ((String) -> Void)?
 
     func screen(named name: String) -> Screen? {
         screens.first { $0.name == name }
@@ -132,7 +140,8 @@ final class AgentScreens {
         let idle = idleTimeout ?? Self.defaultIdleTimeout
         let screen = Screen(name: name, display: display, serialNumber: serial,
                             deadline: ttl.map { Date().addingTimeInterval($0) },
-                            idleTimeout: idle > 0 ? idle : nil, ownerPID: ownerPID)
+                            idleTimeout: idle > 0 ? idle : nil, ownerPID: ownerPID,
+                            prefersHiDPI: requestedHiDPI ?? defaultHiDPI)
         screens.append(screen)
         startReaping()
         onChange?()
@@ -168,7 +177,7 @@ final class AgentScreens {
     /// Launch an app without activating it, wait for its first window, and
     /// move that window onto `target`, any screen the app knows.
     func launch(on target: ScreenInfo, bundleID: String?, path: String?, newInstance: Bool,
-                fill: Bool) async -> ControlResponse {
+                fill: Bool, fitScreen: Bool = false) async -> ControlResponse {
         guard WindowMover.isTrusted else { return .failure("2ndscreen needs the Accessibility permission to place windows") }
 
         let url: URL
@@ -218,7 +227,7 @@ final class AgentScreens {
         }
         let moved = WindowMover.move(window, to: target.displayID, fill: fill)
         // A new process: every window it opens is the agent's.
-        bind(pid, to: target, leaving: [])
+        bind(pid, to: target, leaving: [], fit: fitScreen)
         var response = moved ? ControlResponse() : ControlResponse.failure("the app refused to move its window")
         response.pid = pid
         response.screen = target
@@ -226,7 +235,8 @@ final class AgentScreens {
         return response
     }
 
-    func moveWindows(to target: ScreenInfo, pid: pid_t, windowID: CGWindowID?, fill: Bool) async -> ControlResponse {
+    func moveWindows(to target: ScreenInfo, pid: pid_t, windowID: CGWindowID?, fill: Bool,
+                     fitScreen: Bool = false) async -> ControlResponse {
         guard WindowMover.isTrusted else { return .failure("2ndscreen needs the Accessibility permission to move windows") }
         let windows = WindowMover.windows(ofPID: pid).filter { windowID == nil || $0.windowID == windowID }
         guard !windows.isEmpty else { return .failure("pid \(pid) has no matching on-screen window") }
@@ -234,7 +244,8 @@ final class AgentScreens {
         // The app's other windows are the user's; only windows it opens from
         // now on follow the moved ones.
         let moved = Set(windows.map(\.windowID))
-        bind(pid, to: target, leaving: WindowMover.allWindowIDs(ofPID: pid).subtracting(moved), moved: moved)
+        bind(pid, to: target, leaving: WindowMover.allWindowIDs(ofPID: pid).subtracting(moved), moved: moved,
+             fit: fitScreen)
         var response = failed.isEmpty ? ControlResponse() : .failure("\(failed.count) window(s) refused to move")
         response.screen = target
         response.windows = await Self.settledSummaries(of: pid, on: target.displayID)
@@ -447,6 +458,94 @@ final class AgentScreens {
         }
     }
 
+    // MARK: Sizing to a window
+
+    /// Change a screen's size in place, keeping HiDPI where the size allows.
+    func resize(name: String, width: Int, height: Int) async -> ControlResponse {
+        guard let screen = screen(named: name) else { return .failure("no agent screen named \"\(name)\"") }
+        let largest = screen.display.largest
+        guard (320...largest.width).contains(width), (240...largest.height).contains(height) else {
+            return .failure("this screen can be resized between 320x240 and \(largest.width)x\(largest.height)"
+                + " points; create a new one for a larger size")
+        }
+        guard await apply(VirtualDisplay.Mode(width: width, height: height), to: screen) else {
+            return .failure("macOS did not switch the screen to \(width)×\(height)")
+        }
+        var response = ControlResponse()
+        response.screen = info(screen)
+        return response
+    }
+
+    /// The smallest screen that holds a window of `size` below a menu bar of
+    /// `topInset`, grown to the size macOS needs for HiDPI when the screen
+    /// prefers it, and capped at what the display reserved.
+    static func fittedMode(for size: CGSize, topInset: CGFloat, hiDPI: Bool,
+                           largest: VirtualDisplay.Mode) -> VirtualDisplay.Mode {
+        var width = Int(size.width.rounded(.up))
+        var height = Int((size.height + topInset).rounded(.up))
+        if hiDPI, !VirtualDisplay.supportsHiDPI(VirtualDisplay.Mode(width: width, height: height)) {
+            if width >= height {
+                width = max(width, 800); height = max(height, 525)
+            } else {
+                height = max(height, 800); width = max(width, 525)
+            }
+        }
+        return VirtualDisplay.Mode(width: min(max(width, 320), largest.width),
+                                   height: min(max(height, 240), largest.height))
+    }
+
+    /// Size `screen` to `pid`'s largest window once that window's size has
+    /// held for one check, then put the window at the top, centered.
+    private func fitScreen(_ screen: Screen, toWindowOf pid: pid_t, binding: Binding) {
+        guard !screen.resizing,
+              let window = WindowMover.windows(ofPID: pid)
+                .filter({ !binding.leaving.contains($0.windowID) })
+                .max(by: { $0.frame.width * $0.frame.height < $1.frame.width * $1.frame.height })
+        else { return }
+        let size = window.frame.size
+        defer { bindings[pid]?.lastSize = size }
+        guard binding.lastSize == size else { return }
+        let bounds = screen.display.bounds
+        let visible = WindowMover.visibleFrame(of: screen.display.displayID)
+        let topInset = max(0, visible.minY - bounds.minY)
+        let wanted = Self.fittedMode(for: size, topInset: topInset, hiDPI: screen.prefersHiDPI,
+                                     largest: screen.display.largest)
+        let placed = Self.topCentered(size, in: visible)
+        if wanted == screen.display.mode {
+            // Right size; put the window back if it drifted, such as after
+            // turning, when the app keeps its old origin.
+            if abs(window.frame.minX - placed.minX) > 1 || abs(window.frame.minY - placed.minY) > 1 {
+                WindowMover.restore(window, to: placed)
+            }
+            return
+        }
+        screen.resizing = true
+        Task { @MainActor in
+            _ = await self.apply(wanted, to: screen)
+            let visible = WindowMover.visibleFrame(of: screen.display.displayID)
+            if let current = WindowMover.windows(ofPID: pid).first(where: { $0.windowID == window.windowID }) {
+                WindowMover.restore(current, to: Self.topCentered(current.frame.size, in: visible))
+            }
+            screen.resizing = false
+        }
+    }
+
+    static func topCentered(_ size: CGSize, in visible: CGRect) -> CGRect {
+        CGRect(x: (visible.minX + (visible.width - size.width) / 2).rounded(), y: visible.minY,
+               width: size.width, height: size.height)
+    }
+
+    /// Switch the display's mode and wait for macOS to settle on it.
+    private func apply(_ mode: VirtualDisplay.Mode, to screen: Screen) async -> Bool {
+        let hiDPI = screen.prefersHiDPI && VirtualDisplay.supportsHiDPI(mode)
+        guard screen.display.apply(mode, hiDPI: hiDPI) else { return false }
+        for _ in 0..<40 where !screen.display.isSettled {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        onResize?(screen.name)
+        return screen.display.isSettled
+    }
+
     // MARK: Following new windows
 
     /// An app whose new windows go to an agent screen, and the windows it
@@ -454,12 +553,18 @@ final class AgentScreens {
     private struct Binding {
         var screen: String
         var leaving: Set<CGWindowID>
+        /// Keep the screen sized to the app's main window.
+        var fit = false
+        /// The main window's size at the last check: the screen follows a
+        /// size only once it holds still, not mid-animation.
+        var lastSize: CGSize?
     }
 
     /// Keep `pid`'s windows on `target`, except those in `leaving`, which
     /// were the app's before the agent took it over. Agent screens only: the
     /// primary screen is the user's, so windows moved there stay put.
-    private func bind(_ pid: pid_t, to target: ScreenInfo, leaving: Set<CGWindowID>, moved: Set<CGWindowID> = []) {
+    private func bind(_ pid: pid_t, to target: ScreenInfo, leaving: Set<CGWindowID>, moved: Set<CGWindowID> = [],
+                      fit: Bool = false) {
         guard target.kind == .agent else {
             bindings.removeValue(forKey: pid)
             return
@@ -468,8 +573,9 @@ final class AgentScreens {
         // windows it left before, less the ones moved now.
         if let existing = bindings[pid], existing.screen == target.name {
             bindings[pid]?.leaving = existing.leaving.subtracting(moved)
+            if fit { bindings[pid]?.fit = true }
         } else {
-            bindings[pid] = Binding(screen: target.name, leaving: leaving)
+            bindings[pid] = Binding(screen: target.name, leaving: leaving, fit: fit)
         }
         guard followTimer == nil else { return }
         followTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
@@ -482,6 +588,10 @@ final class AgentScreens {
             guard NSRunningApplication(processIdentifier: pid) != nil, let screen = screen(named: binding.screen) else {
                 bindings.removeValue(forKey: pid)
                 continue
+            }
+            if binding.fit {
+                fitScreen(screen, toWindowOf: pid, binding: binding)
+                if screen.resizing { continue }
             }
             let bounds = screen.display.bounds
             for window in WindowMover.windows(ofPID: pid)

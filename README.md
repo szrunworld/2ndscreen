@@ -78,11 +78,25 @@ $CLI screen create --name test-a --size 1280x800      # HiDPI follows the main d
 $CLI app launch --screen test-a --path build/MyApp.app --fill
 $CLI app launch --screen test-a --bundle com.apple.Chess
 $CLI window move --screen test-a --pid 1234 [--window-id 5678] [--fill]
+$CLI window move --screen phone --pid 1234 --fit-screen  # the screen follows the window's size
+$CLI screen resize test-a --size 1024x768              # change a screen's size in place
 $CLI window release --screen test-a --pid 1234        # give its windows back to the main display
 $CLI screenshot --screen test-a --output shot.png
 $CLI screen list
 $CLI screen destroy test-a
 ```
+
+`--fit-screen` (on `app launch` and `window move`) keeps the screen sized
+to the app's largest window plus the menu bar, so nothing else shows around
+it and its preview has the window's shape. When iPhone Mirroring turns
+landscape for a video, or is made larger or smaller, the screen follows
+about a second after the window settles, and the window is put back at the
+top, centered. A screen that prefers HiDPI is grown to the smallest size
+macOS runs at 2x (800 points on the long side, 525 on the short), so a
+phone screen stays sharp: 525x1001 upright, 944x525 turned. Windows that
+macOS keeps inside the screen can make it smaller but not larger; use
+`screen resize` for that. A screen can be resized up to 2560x1440, or its
+own size when it was created larger.
 
 Every command prints one JSON object and exits non-zero on failure.
 Frames are global, top-left-origin points, the same space accessibility

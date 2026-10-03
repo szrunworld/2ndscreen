@@ -141,6 +141,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         agentScreens.onChange = { [weak self] in self?.agentScreensChanged() }
+        agentScreens.onResize = { [weak self] name in
+            guard let preview = self?.agentPreviews[name] else { return }
+            Task { @MainActor in try? await preview.restartStream() }
+        }
         let server = ControlServer { [weak self] request in
             await self?.handle(request) ?? .failure("2ndscreen is shutting down")
         }
@@ -287,16 +291,23 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 return .failure("the primary screen is managed from the menu bar")
             }
             return agentScreens.destroy(name: name)
+        case .screenResize:
+            guard let name = request.screen else { return missingScreen }
+            guard let width = request.width, let height = request.height else {
+                return .failure("give the new size with --size WIDTHxHEIGHT")
+            }
+            return await agentScreens.resize(name: name, width: width, height: height)
         case .appLaunch:
             guard let screen = target() else { return missingScreen }
             return await agentScreens.launch(
                 on: screen, bundleID: request.bundleID, path: request.path,
-                newInstance: request.newInstance ?? false, fill: request.fill ?? false)
+                newInstance: request.newInstance ?? false, fill: request.fill ?? false,
+                fitScreen: request.fitScreen ?? false)
         case .windowMove:
             guard let screen = target() else { return missingScreen }
             guard let pid = request.pid else { return .failure("give the window's app with --pid") }
             return await agentScreens.moveWindows(to: screen, pid: pid, windowID: request.windowID,
-                                            fill: request.fill ?? false)
+                                            fill: request.fill ?? false, fitScreen: request.fitScreen ?? false)
         case .windowRelease:
             guard let screen = target() else { return missingScreen }
             guard screen.kind == .agent else {
