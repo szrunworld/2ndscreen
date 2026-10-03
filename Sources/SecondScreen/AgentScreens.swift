@@ -460,6 +460,38 @@ final class AgentScreens {
 
     // MARK: Sizing to a window
 
+    /// Whether an app on `name` keeps the screen sized to its window.
+    func fitsWindow(_ name: String) -> Bool {
+        bindings.values.contains { $0.screen == name && $0.fit }
+    }
+
+    /// Whether any app was placed on `name` (only those can be followed).
+    func hasPlacedApps(_ name: String) -> Bool {
+        bindings.values.contains { $0.screen == name }
+    }
+
+    /// Turn following the window's size on or off for the apps on `name`.
+    func setFitsWindow(_ name: String, _ on: Bool) {
+        for (pid, binding) in bindings where binding.screen == name {
+            bindings[pid]?.fit = on
+            bindings[pid]?.lastSize = nil
+        }
+    }
+
+    /// The largest window of the apps placed on `name`: what the preview's
+    /// buttons act on.
+    func mainWindow(on name: String) -> WindowInfo? {
+        guard let screen = screen(named: name) else { return nil }
+        let bounds = screen.display.bounds
+        return bindings.filter { $0.value.screen == name }
+            .flatMap { pid, binding in
+                WindowMover.windows(ofPID: pid).filter {
+                    !binding.leaving.contains($0.windowID) && bounds.intersects($0.frame)
+                }
+            }
+            .max { $0.frame.width * $0.frame.height < $1.frame.width * $1.frame.height }
+    }
+
     /// Change a screen's size in place, keeping HiDPI where the size allows.
     func resize(name: String, width: Int, height: Int) async -> ControlResponse {
         guard let screen = screen(named: name) else { return .failure("no agent screen named \"\(name)\"") }

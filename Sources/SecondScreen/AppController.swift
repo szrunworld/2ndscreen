@@ -716,6 +716,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             displayID: screen.display.displayID, title: "\(name) preview",
             framesPerSecond: 30, floating: preferences.floatPreview)
         preview.onClose = { [weak self] in self?.agentPreviews.removeValue(forKey: name) }
+        preview.setToolbar(previewButtons(for: name))
         agentPreviews[name] = preview
         Task { @MainActor in
             do {
@@ -742,6 +743,22 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                    on: agentPreviews[screen.name] != nil)
             previewItem.representedObject = screen.name
             submenu.addItem(previewItem)
+            submenu.addItem(.separator())
+            let fit = item("Fit to Window", #selector(toggleFitItem(_:)), on: agentScreens.fitsWindow(screen.name))
+            fit.representedObject = screen.name
+            fit.toolTip = "Keep the screen sized to its app's window, such as iPhone Mirroring turning landscape"
+            if !agentScreens.hasPlacedApps(screen.name) { fit.action = nil }
+            submenu.addItem(fit)
+            let sizes = NSMenuItem(title: "Size", action: nil, keyEquivalent: "")
+            let sizeMenu = NSMenu()
+            for (label, mode) in Self.agentScreenSizes {
+                let choice = item("\(label) — \(mode)", #selector(resizeAgentScreenItem(_:)),
+                                  on: screen.display.mode == mode && !agentScreens.fitsWindow(screen.name))
+                choice.representedObject = [screen.name, "\(mode.width)x\(mode.height)"]
+                sizeMenu.addItem(choice)
+            }
+            sizes.submenu = sizeMenu
+            submenu.addItem(sizes)
             let windows = WindowMover.windows(on: info.displayID)
             if !windows.isEmpty {
                 submenu.addItem(.separator())
@@ -761,6 +778,56 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if screens.count > 1 {
             menu.addItem(item("Destroy All Agent Screens", #selector(destroyAllAgentScreens), on: false))
         }
+    }
+
+    /// Sizes offered for agent screens in the menu.
+    static let agentScreenSizes: [(String, VirtualDisplay.Mode)] = [
+        ("Phone", .init(width: 525, height: 1001)),
+        ("Phone, Landscape", .init(width: 944, height: 525)),
+        ("Small", .init(width: 800, height: 600)),
+        ("Laptop", .init(width: 1280, height: 800)),
+        ("Desktop", .init(width: 1440, height: 900)),
+        ("Full HD", .init(width: 1920, height: 1080)),
+    ]
+
+    @objc private func toggleFitItem(_ sender: NSMenuItem) {
+        guard let name = sender.representedObject as? String else { return }
+        agentScreens.setFitsWindow(name, !agentScreens.fitsWindow(name))
+    }
+
+    @objc private func resizeAgentScreenItem(_ sender: NSMenuItem) {
+        guard let parts = sender.representedObject as? [String], parts.count == 2 else { return }
+        let size = parts[1].split(separator: "x").compactMap { Int($0) }
+        guard size.count == 2 else { return }
+        // A size chosen by hand would be undone by following the window.
+        agentScreens.setFitsWindow(parts[0], false)
+        Task { @MainActor in
+            let response = await agentScreens.resize(name: parts[0], width: size[0], height: size[1])
+            if !response.ok { self.presentError(response.error ?? "Resizing failed.") }
+        }
+    }
+
+    /// The preview's title bar buttons: zoom the screen's app, and for
+    /// iPhone Mirroring, its Home Screen and App Switcher.
+    private func previewButtons(for name: String) -> [DisplayPreview.ToolbarButton] {
+        func send(_ key: String, _ modifiers: [String]) {
+            guard let window = agentScreens.mainWindow(on: name) else { NSSound.beep(); return }
+            _ = try? BackgroundInput.key(key, modifiers: modifiers, in: window)
+        }
+        var buttons: [DisplayPreview.ToolbarButton] = [
+            .init(symbol: "minus.magnifyingglass", help: "Smaller (⌘-)") { send("-", ["cmd"]) },
+            .init(symbol: "plus.magnifyingglass", help: "Larger (⌘=)") { send("=", ["cmd"]) },
+        ]
+        let isMirroring = agentScreens.mainWindow(on: name).flatMap {
+            NSRunningApplication(processIdentifier: $0.pid)?.bundleIdentifier
+        } == "com.apple.ScreenContinuity"
+        if isMirroring {
+            buttons += [
+                .init(symbol: "house", help: "Home Screen (⌘1)") { send("1", ["cmd"]) },
+                .init(symbol: "square.stack", help: "App Switcher (⌘2)") { send("2", ["cmd"]) },
+            ]
+        }
+        return buttons
     }
 
     @objc private func toggleAgentPreviewItem(_ sender: NSMenuItem) {

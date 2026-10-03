@@ -33,6 +33,28 @@ public final class DisplayPreview: NSObject, SCStreamOutput, SCStreamDelegate, N
     /// Called on the main queue when the user closes the preview window.
     public var onClose: (() -> Void)?
 
+    /// A button in the preview's title bar.
+    public struct ToolbarButton {
+        public let symbol: String
+        public let help: String
+        public let action: () -> Void
+
+        public init(symbol: String, help: String, action: @escaping () -> Void) {
+            self.symbol = symbol
+            self.help = help
+            self.action = action
+        }
+    }
+
+    private final class ButtonTarget: NSObject {
+        let action: () -> Void
+        init(_ action: @escaping () -> Void) { self.action = action }
+        @objc func fire(_ sender: Any?) { action() }
+    }
+
+    private var toolbar: NSTitlebarAccessoryViewController?
+    private var buttonTargets: [ButtonTarget] = []
+
     public var isFloating: Bool {
         get { window.level == .floating }
         set { window.level = newValue ? .floating : .normal }
@@ -91,6 +113,36 @@ public final class DisplayPreview: NSObject, SCStreamOutput, SCStreamDelegate, N
         window.orderFrontRegardless()
         wantsStream = true
         try await startStream()
+    }
+
+    /// Put `buttons` at the right of the title bar, replacing any there.
+    @MainActor
+    public func setToolbar(_ buttons: [ToolbarButton]) {
+        if let toolbar, let index = window.titlebarAccessoryViewControllers.firstIndex(of: toolbar) {
+            window.removeTitlebarAccessoryViewController(at: index)
+        }
+        buttonTargets = buttons.map { ButtonTarget($0.action) }
+        guard !buttons.isEmpty else { toolbar = nil; return }
+        let stack = NSStackView()
+        stack.orientation = .horizontal
+        stack.spacing = 2
+        stack.edgeInsets = NSEdgeInsets(top: 0, left: 4, bottom: 0, right: 6)
+        for (button, target) in zip(buttons, buttonTargets) {
+            let image = NSImage(systemSymbolName: button.symbol, accessibilityDescription: button.help)
+                ?? NSImage(named: NSImage.actionTemplateName)!
+            let control = NSButton(image: image, target: target, action: #selector(ButtonTarget.fire(_:)))
+            control.bezelStyle = .accessoryBarAction
+            control.isBordered = false
+            control.toolTip = button.help
+            control.setAccessibilityLabel(button.help)
+            stack.addArrangedSubview(control)
+        }
+        stack.frame.size = stack.fittingSize
+        let controller = NSTitlebarAccessoryViewController()
+        controller.view = stack
+        controller.layoutAttribute = .trailing
+        window.addTitlebarAccessoryViewController(controller)
+        toolbar = controller
     }
 
     /// Draw the layer at the screen's pixel density, so that centered
