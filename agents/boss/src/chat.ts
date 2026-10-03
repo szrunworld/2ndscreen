@@ -30,6 +30,10 @@ export interface Chat {
 }
 
 const text = (e: Element) => (e.value ?? e.label ?? '').trim();
+/** Delivery statuses beside the recruiter's messages. */
+const STATUS = /^(送达|已读|未读|已送达)$/;
+/** Timestamps between messages: "16:25", "09-14 10:55", "昨天 09:12". */
+const STAMP = /^((\d{1,2}-\d{1,2}|昨天|前天|星期[一二三四五六日天])\s+)?\d{1,2}:\d{2}$/;
 const local = (e: Element, w: Frame) => ({ x: e.frame!.x - w.x, y: e.frame!.y - w.y });
 
 export function chat(elements: Element[], window: Frame): Chat | undefined {
@@ -64,19 +68,36 @@ export function chat(elements: Element[], window: Frame): Chat | undefined {
       .sort((a, b) => a.frame!.x - b.frame!.x).map(text).join(' ').trim();
   };
 
-  // Messages: each bubble sits beside an avatar; the candidate's avatar is
-  // on the left of the pane, the recruiter's on the right.
-  const middle = messageList ? messageList.frame!.x + messageList.frame!.width / 2 : window.x + 860;
-  const avatars = framed.filter((e) => e.role === 'AXImage' && within(e, messageList));
-  const bubbles = texts.filter((e) => within(e, messageList));
-  const messages: Message[] = [];
-  for (const avatar of avatars.sort((a, b) => a.frame!.y - b.frame!.y)) {
-    const left = avatar.frame!.x < middle;
-    const said = bubbles.filter((e) => e.frame!.y >= avatar.frame!.y - 15 && e.frame!.y < avatar.frame!.y + avatar.frame!.height + 30
-      && (left ? e.frame!.x > avatar.frame!.x : e.frame!.x < avatar.frame!.x));
-    const words = said.sort((a, b) => a.frame!.y - b.frame!.y || a.frame!.x - b.frame!.x).map(text).join('');
-    if (words) messages.push({ from: left ? 'candidate' : 'me', text: words });
+  // Messages: the candidate's sit right of their avatar on the left; the
+  // recruiter's have no avatar and are pushed against the right edge, with
+  // a delivery status (送达, 已读) beside them. Times, statuses and system
+  // cards in the middle are neither.
+  const avatars = framed.filter((e) => e.role === 'AXImage' && within(e, messageList))
+    .filter((e) => messageList && e.frame!.x < messageList.frame!.x + messageList.frame!.width / 2);
+  const right = messageList ? messageList.frame!.x + messageList.frame!.width : window.x + window.width;
+  const said: { from: Message['from']; y: number; x: number; text: string }[] = [];
+  for (const e of texts.filter((e) => within(e, messageList))) {
+    const t = text(e);
+    if (STATUS.test(t) || STAMP.test(t)) continue;
+    const besideAvatar = avatars.some((a) => e.frame!.x > a.frame!.x + a.frame!.width
+      && e.frame!.x - (a.frame!.x + a.frame!.width) < 60
+      && e.frame!.y >= a.frame!.y - 15 && e.frame!.y < a.frame!.y + a.frame!.height + 30);
+    const againstRight = right - (e.frame!.x + e.frame!.width) < 70;
+    if (besideAvatar) said.push({ from: 'candidate', y: e.frame!.y, x: e.frame!.x, text: t });
+    else if (againstRight) said.push({ from: 'me', y: e.frame!.y, x: e.frame!.x, text: t });
   }
+  // A long message wraps into several texts; join lines of the same bubble.
+  const messages: Message[] = [];
+  for (const line of said.sort((a, b) => a.y - b.y || a.x - b.x)) {
+    const last = messages.at(-1) as (Message & { y?: number }) | undefined;
+    if (last && last.from === line.from && last.y !== undefined && line.y - last.y < 24) {
+      last.text += line.text;
+      last.y = line.y;
+    } else {
+      messages.push({ from: line.from, text: line.text, y: line.y } as Message);
+    }
+  }
+  for (const m of messages) delete (m as { y?: number }).y;
 
   return {
     candidate: {
