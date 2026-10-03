@@ -52,7 +52,17 @@ public final class TarsAgent {
         public var app = ""
         /// How long a replay waits for a step's control to show up.
         public var replayPatience: TimeInterval = 6
+        /// Asked before each step; true ends the run, as the user asked.
+        public var isCancelled: () -> Bool = { false }
         public init() {}
+
+        /// For a phone: its action space, no Elements list, and swipes,
+        /// which take nothing of the user's.
+        public mutating func forPhone() {
+            actionSpaces = TarsAgent.phoneActionSpaces
+            listElements = false
+            foreground = true
+        }
     }
 
     public enum Event {
@@ -235,6 +245,7 @@ public final class TarsAgent {
         var failedShots = 0
         var replyWithoutAction = false
         for step in 1...max(options.maxSteps, 1) {
+            if options.isCancelled() { return Result(outcome: .user, reason: "stopped", steps: step - 1) }
             let frame: CGRect
             do {
                 frame = try screen.frame()
