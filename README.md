@@ -212,11 +212,17 @@ Each step prints the model's thought and the action taken on stderr; the
 last line on stdout is JSON: `{"ok": true, "outcome": "done", "reason": ...}`,
 where `reason` holds the model's answer, or why the run stopped.
 
-The model sits behind an OpenAI-compatible API. By default that is Doubao
-Seed 2.1 lite on Volcengine Ark: activate it in the Ark console and set
-`ARK_API_KEY`, or put `ARK_API_KEY=...` in `~/.config/2ndscreen/ark.env`.
-`ARK_MODEL` takes another model or endpoint ID, and `ARK_BASE_URL` another
-server, such as a self-hosted UI-TARS-1.5 under vLLM. In tests it filled
+The model sits behind an OpenAI-compatible API, named by
+`AGENT_MODEL_BASE_URL`, `AGENT_MODEL_API_KEY` and `AGENT_MODEL` in the
+environment or `~/.config/2ndscreen/model.env`. To give people the agent
+without giving them a provider key, deploy `workers/llm`, a Cloudflare
+Worker that holds the Qwen key and hands each user a revocable token of
+their own; point `AGENT_MODEL_BASE_URL` at its `/v1` and set the token as
+`AGENT_MODEL_API_KEY`. Through it, `qwen3.8-flash` filled in the order form
+in 17 steps and 64 s. With nothing set, the agent uses Doubao Seed 2.1
+lite on Volcengine Ark with your own `ARK_API_KEY` (or `ARK_*` in
+`~/.config/2ndscreen/ark.env`), and any other OpenAI-compatible server
+works the same way, such as a self-hosted UI-TARS-1.5 under vLLM. In tests it filled
 in a web order form (scroll to an item, pick it, set a select, tick a box,
 write a note) in 16 steps and 86 s, and worked Calculator in 12 steps.
 

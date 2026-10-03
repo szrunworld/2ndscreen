@@ -1,0 +1,41 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "2ndscreen-llm",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-02",
+  "compatibility_flags": ["nodejs_compat"],
+
+  "vars": {
+    // OpenAI-compatible Qwen endpoint. The key must belong to the same region:
+    // the Beijing key works only with dashscope.aliyuncs.com.
+    "QWEN_BASE_URL": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    // Chosen here, never by the caller. qwen3.8-flash placed buttons within 1% on test
+    // screenshots in about 2.5 s; gui-plus did not, with this prompt format.
+    "QWEN_MODEL": "qwen3.8-flash",
+    "UPSTREAM_TIMEOUT_MS": "60000"
+  },
+  // The DashScope key, set with `wrangler secret put QWEN_API_KEY`; never in this file.
+  "secrets": { "required": ["QWEN_API_KEY"] },
+
+  "kv_namespaces": [
+    // Tokens (`token:<sha256>` -> {user}) and the kill switch (`switch` = "off").
+    // No id: wrangler creates the namespace on the first deploy.
+    { "binding": "STATE" }
+  ],
+
+  "ratelimits": [
+    {
+      // Per user. An agent step takes 2-5 s, so this is room for one busy agent; it is
+      // counted per Cloudflare location and is not an exact budget.
+      "name": "PER_USER",
+      "namespace_id": "2401",
+      "simple": { "limit": 30, "period": 60 }
+    }
+  ],
+
+  "observability": {
+    "enabled": true,
+    "logs": { "head_sampling_rate": 1 },
+    "traces": { "enabled": true, "head_sampling_rate": 0.01 }
+  }
+}
