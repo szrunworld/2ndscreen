@@ -309,7 +309,9 @@ final class AndroidMirror: @unchecked Sendable {
         defer { audioPlayer.stop() }
         while let header = try? readExactly(audioFD, 12),
               let packet = try? readExactly(audioFD, Int(header.bigEndianUInt32(at: 8))) {
-            if header[header.startIndex] & 0x80 != 0 {
+            let flags = header[header.startIndex]
+            if flags & 0x80 != 0 { continue }  // a session packet; video's concern
+            if flags & 0x40 != 0 {
                 audioPlayer.configure(packet)
             } else {
                 audioPlayer.play(packet)

@@ -14,7 +14,7 @@ final class AndroidAudioPlayer {
     /// How far ahead of now playback restarts after running dry.
     private static let latency = CMTime(value: 60, timescale: 1000)
     /// Packets due later than this are dropped.
-    private static let maxAhead = CMTime(value: 250, timescale: 1000)
+    private static let maxAhead = CMTime(value: 150, timescale: 1000)
 
     private let renderer = AVSampleBufferAudioRenderer()
     private let synchronizer = AVSampleBufferRenderSynchronizer()
