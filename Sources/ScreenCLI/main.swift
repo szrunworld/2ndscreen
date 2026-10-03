@@ -13,12 +13,17 @@ usage:
   2ndscreen screen destroy NAME
   2ndscreen app launch --screen NAME (--bundle ID | --path APP) [--new-instance] [--fill]
   2ndscreen window move --screen NAME --pid PID [--window-id ID] [--fill]
+  2ndscreen window release --screen NAME --pid PID [--window-id ID]
   2ndscreen screenshot --screen NAME --output FILE.png
 
   2ndscreen state --screen NAME --pid PID [--window-id ID] [--query TEXT] [--screenshot FILE.png]
-  2ndscreen click --screen NAME --pid PID (--index N | --text TEXT | --x X --y Y)
-  2ndscreen type  --screen NAME --pid PID --value TEXT [--index N | --text TEXT]
+  2ndscreen click --screen NAME --pid PID (--index N | --text TEXT | --x X --y Y) [--right | --double]
+  2ndscreen type  --screen NAME --pid PID --value TEXT [--index N | --text TEXT] [--replace]
   2ndscreen key   --screen NAME --pid PID --key NAME [--modifiers cmd,shift]
+  2ndscreen scroll --screen NAME --pid PID --direction up|down|left|right [--amount N] [--by line|page]
+                   [--index N | --text TEXT | --x X --y Y]
+  2ndscreen drag  --screen NAME --pid PID --from-x X --from-y Y --to-x X --to-y Y --foreground
+                  [--modifiers shift] [--duration-ms MS]
 
   2ndscreen mcp      serve these commands as MCP tools over stdio
 
@@ -40,8 +45,10 @@ mirror open, tap, swipe and key go through it at once; without it, through
 adb. type pastes through the phone's clipboard, so it takes any text and a
 Chinese keyboard on the phone cannot turn it into pinyin.
 
-state, click, type and key act through cua-driver's background routes and
-only on a window that is on the named screen. Indexes come from state; click
+state, click, type, key, scroll and drag act through cua-driver's background routes and
+only on a window that is on the named screen. drag is the exception: macOS
+offers no background drag, so it brings the app to the front and moves the
+real pointer, and runs only with --foreground. Indexes come from state; click
 and type re-read the window, so run state again after the UI changes.
 
 Durations take s, m or h (90s, 30m, 2h). A screen is destroyed when its TTL
@@ -51,6 +58,8 @@ turns it off), or when its owner process exits.
 Sizes are in points. Without --size, a new screen matches the main display's
 full-screen area, so its full-screen preview is pixel for pixel. Frames in
 the output use global top-left coordinates, the same space as cua-driver.
+HiDPI follows the main display. macOS allows it only from 800 points on the
+long side and 525 on the short side; smaller screens are created at 1x.
 """
 
 func fail(_ message: String, code: Int32 = 2) -> Never {
@@ -69,7 +78,9 @@ struct Arguments {
                                       "--pid", "--window-id", "--output", "--query", "--screenshot",
                                       "--index", "--text", "--x", "--y", "--value", "--key",
                                       "--modifiers", "--ttl", "--idle-timeout", "--owner-pid",
-                                      "--serial", "--max-size", "--to-x", "--to-y", "--duration"]
+                                      "--serial", "--max-size", "--duration",
+                                      "--direction", "--amount", "--by", "--from-x", "--from-y",
+                                      "--to-x", "--to-y", "--duration-ms"]
 
     init(_ words: [String]) {
         var iterator = words.makeIterator()
@@ -164,6 +175,12 @@ case "window move":
     request.pid = pid
     request.windowID = args.value("--window-id").flatMap(UInt32.init)
     request.fill = args.has("--fill")
+case "window release":
+    request = ControlRequest(command: .windowRelease)
+    request.screen = args.value("--screen")
+    guard let pid = args.value("--pid").flatMap(Int32.init) else { fail("window release needs --pid") }
+    request.pid = pid
+    request.windowID = args.value("--window-id").flatMap(UInt32.init)
 default:
     if args.positional.first == "screenshot" {
         request = ControlRequest(command: .screenshot)

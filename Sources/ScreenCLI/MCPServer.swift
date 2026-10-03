@@ -40,7 +40,7 @@ enum MCPServer {
                 "instructions": """
                     Private virtual screens for testing macOS apps without touching the user's \
                     screen, pointer, or focus. Create a screen, launch the app there, look with \
-                    state or screenshot, act with click/type/key, verify, then quit the app and \
+                    state or screenshot, act with click/type/key/scroll/drag, verify, then quit the app and \
                     destroy the screen. Only act on apps you launched.
                     """,
             ])
@@ -86,7 +86,7 @@ enum MCPServer {
         base.merging(["description": text]) { $1 }
     }
 
-    /// Properties naming the window, shared by state, click, type and key.
+    /// Properties naming the window, shared by the tools that act on one.
     private static let windowTarget: [String: [String: Any]] = [
         "screen": described(string, "Agent screen name"),
         "pid": described(integer, "Process ID of the app, from app_launch"),
@@ -98,6 +98,11 @@ enum MCPServer {
         "text": described(string, "Visible text or label of the element"),
     ]
 
+    private static let pointTarget: [String: [String: Any]] = [
+        "x": described(number, "Global x, if no element"),
+        "y": described(number, "Global y, if no element"),
+    ]
+
     static let tools: [Tool] = [
         Tool(name: "screen_create",
              description: "Create a private virtual screen. Without width and height it matches the main display's full-screen area.",
@@ -105,7 +110,7 @@ enum MCPServer {
                 "name": described(string, "Unique name, e.g. after your task"),
                 "width": described(integer, "Width in points"),
                 "height": described(integer, "Height in points"),
-                "hidpi": described(boolean, "Render at 2x; defaults to the main display's scale"),
+                "hidpi": described(boolean, "Render at 2x; defaults to the main display's scale. Needs at least 800 points on the long side and 525 on the short side"),
                 "ttl": described(string, "Destroy after this long, e.g. 30m"),
                 "idle_timeout": described(string, "Destroy after this long unused; default 60m, 0 for never"),
              ],
@@ -160,6 +165,19 @@ enum MCPServer {
                  if a["fill"] as? Bool == true { w.append("--fill") }
                  return w
              }),
+        Tool(name: "window_release",
+             description: "Give an app's windows on an agent screen back to the user's main display, and stop keeping its windows on the screen.",
+             properties: [
+                "screen": described(string, "Screen name"),
+                "pid": described(integer, "Process ID"),
+                "window_id": described(integer, "Only this window"),
+             ],
+             required: ["screen", "pid"],
+             words: { a in
+                 var w = ["window", "release", "--screen", a["screen"] as? String ?? "", "--pid", "\(intValue(a["pid"]) ?? 0)"]
+                 if let v = intValue(a["window_id"]) { w += ["--window-id", "\(v)"] }
+                 return w
+             }),
         Tool(name: "screenshot",
              description: "Capture a screen. Returns the image.",
              properties: [
@@ -184,24 +202,29 @@ enum MCPServer {
              },
              image: { a in a["screenshot_path"] as? String }),
         Tool(name: "click",
-             description: "Click an element in the background, by index or text, or a global point.",
-             properties: windowTarget.merging(elementTarget) { $1 }.merging([
-                "x": described(number, "Global x, if no element"),
-                "y": described(number, "Global y, if no element"),
+             description: "Click an element in the background, by index or text, or a global point. Set button to right for a context menu, or double for a double-click.",
+             properties: windowTarget.merging(elementTarget) { $1 }.merging(pointTarget) { $1 }.merging([
+                "button": ["type": "string", "enum": ["left", "right"], "description": "Default left"],
+                "double": described(boolean, "Double-click"),
              ]) { $1 },
              required: ["screen", "pid"],
              words: { a in
-                 var w = ["click"] + targetWords(a) + elementWords(a)
-                 if let x = doubleValue(a["x"]), let y = doubleValue(a["y"]) { w += ["--x", "\(x)", "--y", "\(y)"] }
+                 var w = ["click"] + targetWords(a) + elementWords(a) + pointWords(a)
+                 if a["button"] as? String == "right" { w.append("--right") }
+                 if a["double"] as? Bool == true { w.append("--double") }
                  return w
              }),
         Tool(name: "type",
              description: "Type text into an element (by index or text), or into the focused one.",
              properties: windowTarget.merging(elementTarget) { $1 }.merging([
                 "value": described(string, "Text to type"),
+                "replace": described(boolean, "Replace the field's text instead of adding to it; needs index or text"),
              ]) { $1 },
              required: ["screen", "pid", "value"],
-             words: { a in ["type"] + targetWords(a) + elementWords(a) + ["--value", a["value"] as? String ?? ""] }),
+             words: { a in
+                 ["type"] + targetWords(a) + elementWords(a) + ["--value", a["value"] as? String ?? ""]
+                     + (a["replace"] as? Bool == true ? ["--replace"] : [])
+             }),
         Tool(name: "key",
              description: "Press a key, optionally with modifiers, e.g. key return, or key n with modifiers [cmd].",
              properties: windowTarget.merging([
@@ -214,7 +237,49 @@ enum MCPServer {
                  if let mods = a["modifiers"] as? [String], !mods.isEmpty { w += ["--modifiers", mods.joined(separator: ",")] }
                  return w
              }),
+        Tool(name: "scroll",
+             description: "Scroll with the mouse wheel over an element or global point, or without one, with arrow or page keys in the focused area.",
+             properties: windowTarget.merging(elementTarget) { $1 }.merging(pointTarget) { $1 }.merging([
+                "direction": ["type": "string", "enum": ["up", "down", "left", "right"]],
+                "amount": described(integer, "Wheel notches or key presses, 1 to 50; default 3"),
+                "by": ["type": "string", "enum": ["line", "page"], "description": "Step size; default line"],
+             ]) { $1 },
+             required: ["screen", "pid", "direction"],
+             words: { a in
+                 var w = ["scroll"] + targetWords(a) + elementWords(a) + pointWords(a)
+                 w += ["--direction", a["direction"] as? String ?? ""]
+                 if let v = intValue(a["amount"]) { w += ["--amount", "\(v)"] }
+                 if let v = a["by"] as? String { w += ["--by", v] }
+                 return w
+             }),
+        Tool(name: "drag",
+             description: "Press at one global point, move to another, and release, e.g. to move a slider or drop an item. Both points must be in the window. macOS has no background drag: this brings the app to the front and moves the user's real pointer for about a second, so it runs only with foreground set, and it can miss; check the result.",
+             properties: windowTarget.merging([
+                "from_x": described(number, "Global x to press at"),
+                "from_y": described(number, "Global y to press at"),
+                "to_x": described(number, "Global x to release at"),
+                "to_y": described(number, "Global y to release at"),
+                "modifiers": ["type": "array", "items": string, "description": "Held throughout: cmd, shift, option, ctrl"],
+                "duration_ms": described(integer, "How long the move takes; default 500"),
+                "foreground": described(boolean, "Required: accept taking the user's pointer and focus briefly"),
+             ]) { $1 },
+             required: ["screen", "pid", "from_x", "from_y", "to_x", "to_y"],
+             words: { a in
+                 var w = ["drag"] + targetWords(a)
+                 for name in ["from_x", "from_y", "to_x", "to_y"] {
+                     w += ["--" + name.replacingOccurrences(of: "_", with: "-"), "\(doubleValue(a[name]) ?? 0)"]
+                 }
+                 if let mods = a["modifiers"] as? [String], !mods.isEmpty { w += ["--modifiers", mods.joined(separator: ",")] }
+                 if let v = intValue(a["duration_ms"]) { w += ["--duration-ms", "\(v)"] }
+                 if a["foreground"] as? Bool == true { w.append("--foreground") }
+                 return w
+             }),
     ]
+
+    private static func pointWords(_ a: [String: Any]) -> [String] {
+        guard let x = doubleValue(a["x"]), let y = doubleValue(a["y"]) else { return [] }
+        return ["--x", "\(x)", "--y", "\(y)"]
+    }
 
     private static func targetWords(_ a: [String: Any]) -> [String] {
         var w = ["--screen", a["screen"] as? String ?? "", "--pid", "\(intValue(a["pid"]) ?? 0)"]

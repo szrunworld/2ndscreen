@@ -1,0 +1,670 @@
+{
+ "windowFrame": {
+  "height": 875,
+  "width": 1440,
+  "x": -1440,
+  "y": 25
+ },
+ "elements": [
+  {
+   "index": 32,
+   "role": "AXStaticText",
+   "value": "全部职位",
+   "frame": {
+    "height": 16,
+    "width": 52,
+    "x": -1285,
+    "y": 54
+   }
+  },
+  {
+   "index": 33,
+   "role": "AXStaticText",
+   "value": "",
+   "frame": {
+    "height": 12,
+    "width": 12,
+    "x": -1024,
+    "y": 56
+   }
+  },
+  {
+   "index": 34,
+   "role": "AXStaticText",
+   "value": "全部",
+   "frame": {
+    "height": 16,
+    "width": 28,
+    "x": -1300,
+    "y": 95
+   }
+  },
+  {
+   "index": 35,
+   "role": "AXStaticText",
+   "value": "新招呼",
+   "frame": {
+    "height": 16,
+    "width": 42,
+    "x": -1254,
+    "y": 95
+   }
+  },
+  {
+   "index": 36,
+   "role": "AXStaticText",
+   "value": "(485)",
+   "frame": {
+    "height": 16,
+    "width": 33,
+    "x": -1212,
+    "y": 94
+   }
+  },
+  {
+   "index": 37,
+   "role": "AXStaticText",
+   "value": "沟通中",
+   "frame": {
+    "height": 16,
+    "width": 43,
+    "x": -1162,
+    "y": 95
+   }
+  },
+  {
+   "index": 38,
+   "role": "AXStaticText",
+   "value": "已约面",
+   "frame": {
+    "height": 16,
+    "width": 43,
+    "x": -1102,
+    "y": 95
+   }
+  },
+  {
+   "index": 39,
+   "role": "AXStaticText",
+   "value": "更多",
+   "frame": {
+    "height": 16,
+    "width": 29,
+    "x": -1042,
+    "y": 95
+   }
+  },
+  {
+   "index": 40,
+   "role": "AXStaticText",
+   "value": "全部",
+   "frame": {
+    "height": 13,
+    "width": 24,
+    "x": -1300,
+    "y": 142
+   }
+  },
+  {
+   "index": 41,
+   "role": "AXStaticText",
+   "value": "未读",
+   "frame": {
+    "height": 13,
+    "width": 24,
+    "x": -1256,
+    "y": 142
+   }
+  },
+  {
+   "index": 42,
+   "role": "AXStaticText",
+   "value": "批量",
+   "frame": {
+    "height": 13,
+    "width": 24,
+    "x": -974,
+    "y": 142
+   }
+  },
+  {
+   "index": 43,
+   "role": "AXStaticText",
+   "value": "2",
+   "frame": {
+    "height": 14,
+    "width": 7,
+    "x": -1274,
+    "y": 183
+   }
+  },
+  {
+   "index": 44,
+   "role": "AXStaticText",
+   "value": "16:25",
+   "frame": {
+    "height": 14,
+    "width": 31,
+    "x": -977,
+    "y": 188
+   }
+  },
+  {
+   "index": 45,
+   "role": "AXStaticText",
+   "value": "陈一",
+   "frame": {
+    "height": 15,
+    "width": 42,
+    "x": -1248,
+    "y": 187
+   }
+  },
+  {
+   "index": 46,
+   "role": "AXStaticText",
+   "value": "前端工程师",
+   "frame": {
+    "height": 13,
+    "width": 112,
+    "x": -1200,
+    "y": 188
+   }
+  },
+  {
+   "index": 47,
+   "role": "AXStaticText",
+   "value": "示例消息：我对这个岗位感兴趣",
+   "frame": {
+    "height": 14,
+    "width": 211,
+    "x": -1248,
+    "y": 212
+   }
+  },
+  {
+   "index": 48,
+   "role": "AXStaticText",
+   "value": "2",
+   "frame": {
+    "height": 14,
+    "width": 7,
+    "x": -1274,
+    "y": 261
+   }
+  },
+  {
+   "index": 49,
+   "role": "AXStaticText",
+   "value": "16:25",
+   "frame": {
+    "height": 14,
+    "width": 31,
+    "x": -977,
+    "y": 266
+   }
+  },
+  {
+   "index": 50,
+   "role": "AXStaticText",
+   "value": "林二",
+   "frame": {
+    "height": 15,
+    "width": 42,
+    "x": -1248,
+    "y": 265
+   }
+  },
+  {
+   "index": 51,
+   "role": "AXStaticText",
+   "value": "前端工程师",
+   "frame": {
+    "height": 13,
+    "width": 112,
+    "x": -1200,
+    "y": 266
+   }
+  },
+  {
+   "index": 52,
+   "role": "AXStaticText",
+   "value": "示例消息：我对这个岗位感兴趣",
+   "frame": {
+    "height": 14,
+    "width": 211,
+    "x": -1248,
+    "y": 290
+   }
+  },
+  {
+   "index": 53,
+   "role": "AXStaticText",
+   "value": "2",
+   "frame": {
+    "height": 14,
+    "width": 7,
+    "x": -1274,
+    "y": 339
+   }
+  },
+  {
+   "index": 54,
+   "role": "AXStaticText",
+   "value": "16:25",
+   "frame": {
+    "height": 14,
+    "width": 31,
+    "x": -977,
+    "y": 344
+   }
+  },
+  {
+   "index": 55,
+   "role": "AXStaticText",
+   "value": "周三",
+   "frame": {
+    "height": 15,
+    "width": 28,
+    "x": -1248,
+    "y": 343
+   }
+  },
+  {
+   "index": 56,
+   "role": "AXStaticText",
+   "value": "前端工程师",
+   "frame": {
+    "height": 13,
+    "width": 112,
+    "x": -1214,
+    "y": 344
+   }
+  },
+  {
+   "index": 57,
+   "role": "AXStaticText",
+   "value": "示例消息：我对这个岗位感兴趣",
+   "frame": {
+    "height": 14,
+    "width": 211,
+    "x": -1248,
+    "y": 368
+   }
+  },
+  {
+   "index": 58,
+   "role": "AXStaticText",
+   "value": "2",
+   "frame": {
+    "height": 14,
+    "width": 7,
+    "x": -1274,
+    "y": 417
+   }
+  },
+  {
+   "index": 59,
+   "role": "AXStaticText",
+   "value": "16:25",
+   "frame": {
+    "height": 14,
+    "width": 31,
+    "x": -977,
+    "y": 422
+   }
+  },
+  {
+   "index": 60,
+   "role": "AXStaticText",
+   "value": "吴四",
+   "frame": {
+    "height": 15,
+    "width": 42,
+    "x": -1248,
+    "y": 421
+   }
+  },
+  {
+   "index": 61,
+   "role": "AXStaticText",
+   "value": "前端工程师",
+   "frame": {
+    "height": 13,
+    "width": 112,
+    "x": -1200,
+    "y": 422
+   }
+  },
+  {
+   "index": 62,
+   "role": "AXStaticText",
+   "value": "示例消息：我对这个岗位感兴趣",
+   "frame": {
+    "height": 14,
+    "width": 211,
+    "x": -1248,
+    "y": 446
+   }
+  },
+  {
+   "index": 63,
+   "role": "AXStaticText",
+   "value": "2",
+   "frame": {
+    "height": 14,
+    "width": 7,
+    "x": -1274,
+    "y": 495
+   }
+  },
+  {
+   "index": 64,
+   "role": "AXStaticText",
+   "value": "16:25",
+   "frame": {
+    "height": 14,
+    "width": 31,
+    "x": -977,
+    "y": 500
+   }
+  },
+  {
+   "index": 65,
+   "role": "AXStaticText",
+   "value": "郑五",
+   "frame": {
+    "height": 15,
+    "width": 42,
+    "x": -1248,
+    "y": 499
+   }
+  },
+  {
+   "index": 66,
+   "role": "AXStaticText",
+   "value": "前端工程师",
+   "frame": {
+    "height": 13,
+    "width": 112,
+    "x": -1200,
+    "y": 500
+   }
+  },
+  {
+   "index": 67,
+   "role": "AXStaticText",
+   "value": "示例消息：我对这个岗位感兴趣",
+   "frame": {
+    "height": 14,
+    "width": 211,
+    "x": -1248,
+    "y": 524
+   }
+  },
+  {
+   "index": 68,
+   "role": "AXStaticText",
+   "value": "1",
+   "frame": {
+    "height": 14,
+    "width": 7,
+    "x": -1274,
+    "y": 573
+   }
+  },
+  {
+   "index": 69,
+   "role": "AXStaticText",
+   "value": "13:26",
+   "frame": {
+    "height": 14,
+    "width": 31,
+    "x": -977,
+    "y": 578
+   }
+  },
+  {
+   "index": 70,
+   "role": "AXStaticText",
+   "value": "冯六",
+   "frame": {
+    "height": 15,
+    "width": 42,
+    "x": -1248,
+    "y": 577
+   }
+  },
+  {
+   "index": 71,
+   "role": "AXStaticText",
+   "value": "前端工程师",
+   "frame": {
+    "height": 13,
+    "width": 112,
+    "x": -1200,
+    "y": 578
+   }
+  },
+  {
+   "index": 72,
+   "role": "AXStaticText",
+   "value": "示例消息：我对这个岗位感兴趣",
+   "frame": {
+    "height": 14,
+    "width": 216,
+    "x": -1248,
+    "y": 602
+   }
+  },
+  {
+   "index": 73,
+   "role": "AXStaticText",
+   "value": "2",
+   "frame": {
+    "height": 14,
+    "width": 7,
+    "x": -1274,
+    "y": 651
+   }
+  },
+  {
+   "index": 74,
+   "role": "AXStaticText",
+   "value": "12:20",
+   "frame": {
+    "height": 14,
+    "width": 31,
+    "x": -977,
+    "y": 656
+   }
+  },
+  {
+   "index": 75,
+   "role": "AXStaticText",
+   "value": "褚七",
+   "frame": {
+    "height": 15,
+    "width": 42,
+    "x": -1248,
+    "y": 655
+   }
+  },
+  {
+   "index": 76,
+   "role": "AXStaticText",
+   "value": "前端工程师",
+   "frame": {
+    "height": 13,
+    "width": 112,
+    "x": -1200,
+    "y": 656
+   }
+  },
+  {
+   "index": 77,
+   "role": "AXStaticText",
+   "value": "示例消息：我对这个岗位感兴趣",
+   "frame": {
+    "height": 14,
+    "width": 266,
+    "x": -1248,
+    "y": 680
+   }
+  },
+  {
+   "index": 78,
+   "role": "AXStaticText",
+   "value": "1",
+   "frame": {
+    "height": 14,
+    "width": 7,
+    "x": -1274,
+    "y": 729
+   }
+  },
+  {
+   "index": 79,
+   "role": "AXStaticText",
+   "value": "11:17",
+   "frame": {
+    "height": 14,
+    "width": 30,
+    "x": -976,
+    "y": 734
+   }
+  },
+  {
+   "index": 80,
+   "role": "AXStaticText",
+   "value": "卫八",
+   "frame": {
+    "height": 15,
+    "width": 42,
+    "x": -1248,
+    "y": 733
+   }
+  },
+  {
+   "index": 81,
+   "role": "AXStaticText",
+   "value": "前端工程师",
+   "frame": {
+    "height": 13,
+    "width": 112,
+    "x": -1200,
+    "y": 734
+   }
+  },
+  {
+   "index": 82,
+   "role": "AXStaticText",
+   "value": "示例消息：我对这个岗位感兴趣",
+   "frame": {
+    "height": 14,
+    "width": 268,
+    "x": -1248,
+    "y": 758
+   }
+  },
+  {
+   "index": 83,
+   "role": "AXStaticText",
+   "value": "1",
+   "frame": {
+    "height": 14,
+    "width": 7,
+    "x": -1274,
+    "y": 807
+   }
+  },
+  {
+   "index": 84,
+   "role": "AXStaticText",
+   "value": "10:38",
+   "frame": {
+    "height": 14,
+    "width": 31,
+    "x": -977,
+    "y": 812
+   }
+  },
+  {
+   "index": 85,
+   "role": "AXStaticText",
+   "value": "蒋九",
+   "frame": {
+    "height": 15,
+    "width": 42,
+    "x": -1248,
+    "y": 811
+   }
+  },
+  {
+   "index": 86,
+   "role": "AXStaticText",
+   "value": "前端工程师",
+   "frame": {
+    "height": 13,
+    "width": 112,
+    "x": -1200,
+    "y": 812
+   }
+  },
+  {
+   "index": 87,
+   "role": "AXStaticText",
+   "value": "示例消息：我对这个岗位感兴趣",
+   "frame": {
+    "height": 14,
+    "width": 267,
+    "x": -1248,
+    "y": 836
+   }
+  },
+  {
+   "index": 88,
+   "role": "AXStaticText",
+   "value": "1",
+   "frame": {
+    "height": 14,
+    "width": 7,
+    "x": -1274,
+    "y": 885
+   }
+  },
+  {
+   "index": 89,
+   "role": "AXStaticText",
+   "value": "09:43",
+   "frame": {
+    "height": 10,
+    "width": 31,
+    "x": -977,
+    "y": 890
+   }
+  },
+  {
+   "index": 90,
+   "role": "AXStaticText",
+   "value": "韩十一",
+   "frame": {
+    "height": 11,
+    "width": 42,
+    "x": -1248,
+    "y": 889
+   }
+  },
+  {
+   "index": 91,
+   "role": "AXStaticText",
+   "value": "前端工程师",
+   "frame": {
+    "height": 10,
+    "width": 112,
+    "x": -1200,
+    "y": 890
+   }
+  }
+ ]
+}

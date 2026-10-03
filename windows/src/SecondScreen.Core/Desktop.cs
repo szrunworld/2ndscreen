@@ -173,6 +173,19 @@ public static class Desktop
 
     public static List<WindowInfo> WindowsOf(int pid) => Windows(w => w.Pid == pid);
 
+    /// <summary>IDs of every top-level window <paramref name="pid"/> has, shown or not: minimized, hidden or cloaked.</summary>
+    public static HashSet<long> AllWindowIds(int pid)
+    {
+        var ids = new HashSet<long>();
+        Native.EnumWindows((hwnd, _) =>
+        {
+            Native.GetWindowThreadProcessId(hwnd, out int owner);
+            if (owner == pid) ids.Add(hwnd);
+            return true;
+        }, 0);
+        return ids;
+    }
+
     public static List<WindowInfo> WindowsOn(Rect bounds) => Windows(w => bounds.ContainsCenterOf(w.Frame));
 
     public static WindowInfo? Window(long id) => Windows(w => w.Id == id).FirstOrDefault();
@@ -197,4 +210,6 @@ public static class Desktop
 
     public static (int X, int Y) CursorPosition() =>
         Native.GetCursorPos(out var p) ? (p.X, p.Y) : (0, 0);
+
+    public static void SetCursorPosition((int X, int Y) point) => Native.SetCursorPos(point.X, point.Y);
 }

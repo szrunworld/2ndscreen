@@ -17,9 +17,13 @@ usage:
   2ndscreen screenshot --screen NAME --output FILE.png
 
   2ndscreen state --screen NAME --pid PID [--window-id ID] [--query TEXT] [--screenshot FILE.png]
-  2ndscreen click --screen NAME --pid PID (--index N | --text TEXT | --x X --y Y)
+  2ndscreen click --screen NAME --pid PID (--index N | --text TEXT | --x X --y Y) [--right | --double]
   2ndscreen type  --screen NAME --pid PID --value TEXT [--index N | --text TEXT]
   2ndscreen key   --screen NAME --pid PID --key NAME [--modifiers ctrl,shift]
+  2ndscreen scroll --screen NAME --pid PID --direction up|down|left|right [--amount N] [--by line|page]
+                   [--index N | --text TEXT | --x X --y Y --foreground]
+  2ndscreen drag  --screen NAME --pid PID --from-x X --from-y Y --to-x X --to-y Y
+                  [--modifiers shift] [--duration-ms MS] [--foreground]
 
   2ndscreen mcp      serve these commands as MCP tools over stdio
   2ndscreen doctor   report displays, the virtual display driver, and cua-driver
@@ -33,8 +37,11 @@ pixels at 200% scale. Without --size, a screen matches the main display.
 Frames in the output are physical pixels on the virtual desktop, the same
 space as cua-driver.
 
-state, click, type and key act through cua-driver's background routes and
-only on a window that is on the named screen. Indexes come from state; click
+state, click, type, key, scroll and drag act through cua-driver's background
+routes and only on a window that is on the named screen. A wheel at a point,
+and drags that a program ignores in the background, need --foreground, which
+brings the program to the front and moves the real pointer (2ndscreen puts it
+back afterwards). Indexes come from state; click
 and type re-read the window, so run state again after the UI changes.
 """;
 
@@ -152,7 +159,8 @@ namespace SecondScreen.Cli
         {
             "--name", "--size", "--screen", "--bundle", "--path", "--arg", "--pid", "--window-id", "--output",
             "--query", "--screenshot", "--index", "--text", "--x", "--y", "--value", "--key", "--modifiers",
-            "--ttl", "--idle-timeout", "--owner-pid",
+            "--ttl", "--idle-timeout", "--owner-pid", "--direction", "--amount", "--by",
+            "--from-x", "--from-y", "--to-x", "--to-y", "--duration-ms",
         };
 
         public List<string> Positional { get; } = new();

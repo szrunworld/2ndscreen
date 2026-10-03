@@ -37,7 +37,12 @@ internal static class AppLauncher
 
     /// <summary>For <paramref name="duration"/>, give the foreground back to <paramref name="previous"/>
     /// whenever a window of <paramref name="pid"/> takes it.</summary>
-    public static void GuardForeground(nint previous, int pid, TimeSpan duration)
+    public static void GuardForeground(nint previous, int pid, TimeSpan duration) =>
+        GuardForeground(previous, (_, owner) => owner == pid, duration);
+
+    /// <summary>For <paramref name="duration"/>, give the foreground back to <paramref name="previous"/>
+    /// whenever a window that <paramref name="taken"/> (window, owning pid) accepts takes it.</summary>
+    public static void GuardForeground(nint previous, Func<nint, int, bool> taken, TimeSpan duration)
     {
         if (previous == 0) return;
         var deadline = DateTime.UtcNow + duration;
@@ -49,7 +54,7 @@ internal static class AppLauncher
                 if (front != previous && front != 0)
                 {
                     GetWindowThreadProcessId(front, out int frontPid);
-                    if (frontPid == pid && Desktop.IsAlive(previous)) Restore(previous, front);
+                    if (taken(front, frontPid) && Desktop.IsAlive(previous)) Restore(previous, front);
                 }
                 await Task.Delay(50);
             }
@@ -65,6 +70,10 @@ internal static class AppLauncher
         uint currentThread = GetWindowThreadProcessId(current, out _);
         uint ownThread = GetCurrentThreadId();
         bool attached = currentThread != ownThread && AttachThreadInput(ownThread, currentThread, true);
+        // Windows lets the process that sent the last input set the foreground. A mouse
+        // input that moves nothing qualifies without disturbing the pointer.
+        var input = new INPUT { type = INPUT_MOUSE };
+        SendInput(1, new[] { input }, Marshal.SizeOf<INPUT>());
         Desktop.SetForeground(previous);
         if (attached) AttachThreadInput(ownThread, currentThread, false);
     }
@@ -88,6 +97,40 @@ internal static class AppLauncher
         return false;
     }
 
+    /// <summary>The executable a process runs, or null if Windows will not say.</summary>
+    public static string? ExecutablePath(int pid)
+    {
+        nint process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+        if (process == 0) return null;
+        try
+        {
+            var path = new StringBuilder(1024);
+            int size = path.Capacity;
+            return QueryFullProcessImageName(process, 0, path, ref size) ? path.ToString(0, size) : null;
+        }
+        finally
+        {
+            CloseHandle(process);
+        }
+    }
+
+    /// <summary>Whether <paramref name="pid"/> is the shell's host for packaged (UWP) app windows.</summary>
+    public static bool IsFrameHost(int pid) =>
+        string.Equals(Path.GetFileName(ExecutablePath(pid)), "ApplicationFrameHost.exe", StringComparison.OrdinalIgnoreCase);
+
+    public static bool HasExited(int pid)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(pid);
+            return process.HasExited;
+        }
+        catch (ArgumentException)
+        {
+            return true;
+        }
+    }
+
     /// <summary>Resolve a bare program name, such as notepad.exe, through PATH.</summary>
     public static string? Resolve(string path)
     {
@@ -109,6 +152,15 @@ internal static class AppLauncher
     private static string Quote(string argument) =>
         argument.Length > 0 && argument.IndexOfAny(new[] { ' ', '\t', '"' }) < 0 ? argument : "\"" + argument.Replace("\"", "\\\"") + "\"";
 
+    private const int PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+    private const int INPUT_MOUSE = 0;
+
+    /// <summary>INPUT on x64 (40 bytes); left zero, its mouse member moves nothing.</summary>
+    [StructLayout(LayoutKind.Explicit, Size = 40)]
+    private struct INPUT
+    {
+        [FieldOffset(0)] public int type;
+    }
     private const int STARTF_USESHOWWINDOW = 1;
     private const short SW_SHOWNOACTIVATE = 4;
 
@@ -127,7 +179,11 @@ internal static class AppLauncher
     private static extern bool CreateProcess(string? application, StringBuilder commandLine, nint processAttributes, nint threadAttributes,
         bool inheritHandles, uint flags, nint environment, string? directory, ref STARTUPINFO startup, out PROCESS_INFORMATION info);
     [DllImport("kernel32.dll")] private static extern bool CloseHandle(nint handle);
+    [DllImport("kernel32.dll")] private static extern nint OpenProcess(int access, bool inherit, int pid);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    private static extern bool QueryFullProcessImageName(nint process, int flags, StringBuilder path, ref int size);
     [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(nint hwnd, out int pid);
     [DllImport("user32.dll")] private static extern bool AttachThreadInput(uint attach, uint to, bool doAttach);
+    [DllImport("user32.dll")] private static extern uint SendInput(uint count, INPUT[] inputs, int size);
 }

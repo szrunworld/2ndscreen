@@ -60,10 +60,12 @@ work in the background while you keep your own screen.
 CLI=.build/release/2ndscreen
 
 $CLI screen create --name test-a --size 1280x800      # HiDPI follows the main display;
-                                                      # add --hidpi or --no-hidpi to choose
+                                                      # add --hidpi or --no-hidpi to choose;
+                                                      # under 800x525 (either way up) it is 1x
 $CLI app launch --screen test-a --path build/MyApp.app --fill
 $CLI app launch --screen test-a --bundle com.apple.Chess
 $CLI window move --screen test-a --pid 1234 [--window-id 5678] [--fill]
+$CLI window release --screen test-a --pid 1234        # give its windows back to the main display
 $CLI screenshot --screen test-a --output shot.png
 $CLI screen list
 $CLI screen destroy test-a
@@ -98,15 +100,55 @@ Things to know:
 - The menu lists agent screens, each with its own preview, its windows,
   and **Destroy**.
 
-Agents then look and act with `state`, `click`, `type` and `key`, which
-run through [cua-driver](https://github.com/trycua/cua)'s background
-routes and show the agent cursor:
+Agents then look and act with `state`, `click`, `type`, `key` and
+`scroll`, which run through [cua-driver](https://github.com/trycua/cua)'s
+background routes and show the agent cursor:
 
 ```bash
 $CLI state --screen test-a --pid 1234 [--screenshot before.png]   # elements + accessibility tree
 $CLI click --screen test-a --pid 1234 --text "Sign In"            # or --index N, or --x/--y
 $CLI type  --screen test-a --pid 1234 --index 7 --value "hello"
 $CLI key   --screen test-a --pid 1234 --key n --modifiers cmd
+$CLI click --screen test-a --pid 1234 --text "Message" --right     # or --double
+$CLI scroll --screen test-a --pid 1234 --index 5 --direction down [--amount N] [--by page]
+```
+
+`scroll` turns the wheel over an element or point (`--x/--y`), so it
+reaches a list nested inside a larger window. Without either it sends
+arrow or page keys to the focused area. cua-driver 0.32's background wheel
+scrolls the opposite way to the direction it is given, in AppKit and
+WebKit and whatever the natural scrolling setting; 2ndscreen sends the
+opposite direction to correct this.
+
+cua-driver will not scroll Electron or Chromium windows in the background
+at all. For those, 2ndscreen posts the wheel to the app itself, through the
+same per-process route cua-driver uses for clicks, with the window-local
+point Chromium routes it by and a mouse move there first. It scrolled lists
+in Electron 22 and 33 test apps, including inside a `<webview>`, and the
+recommendations list in BOSS直聘 (Electron 22), without moving the pointer
+or changing the frontmost app. The result's `route` is then
+`2ndscreen_wheel`.
+
+Typing into those apps is refused the same way. Their text fields take a
+value set through accessibility, which the page receives as an `input`
+event, so `type` with `--index` or `--text` sets the field to its text plus
+the new text (`route` `accessibility_value`). It needs the field named. In
+BOSS直聘 a reply drafted this way showed in the message box and enabled its
+Send button, so the page took it as typed.
+
+A right-click at a point reaches the app twice (a web page saw two
+`contextmenu` events), because cua-driver posts each event through two
+routes so that it reaches backgrounded apps. A context menu usually just
+opens again; check the result before acting on it.
+
+`drag` is the exception to working in the background. cua-driver has no
+background drag on macOS: its foreground drag brings the app to the front
+and moves the real pointer for about a second. So `drag` runs only with
+`--foreground`, and 2ndscreen puts the pointer back afterwards. In testing,
+3 of 5 drags in a row reached a web view, so verify each one.
+
+```bash
+$CLI drag --screen test-a --pid 1234 --from-x 2200 --from-y 500 --to-x 2500 --to-y 600 --foreground
 ```
 
 These refuse any window that is not on the named screen, so an agent
@@ -123,6 +165,8 @@ switching apps during background clicks was undone 4 times in 8 with
 upstream and 0 times in 10 with the patch. Apps placed with `app launch` or
 `window move` stay bound to their screen: windows they open later are
 moved onto it as they appear, instead of popping up in front of you.
+`window release` ends that and moves the windows to the main display, for
+when you need to use one yourself, such as to type a password.
 
 `skills/2ndscreen/SKILL.md` is the agent-facing guide; give it to an
 agent, or install it as a Claude Code skill.
@@ -131,7 +175,8 @@ agent, or install it as a Claude Code skill.
 
 `2ndscreen mcp` serves the same commands as MCP tools over stdio:
 `screen_create`, `screen_list`, `screen_destroy`, `app_launch`,
-`window_move`, `screenshot`, `state`, `click`, `type` and `key`. Each tool
+`window_move`, `screenshot`, `state`, `click`, `type`, `key`, `scroll` and
+`drag`. Each tool
 runs the matching CLI command, so the guards and output are identical.
 `screenshot`, and `state` with `screenshot: true`, also return the image,
 downscaled to 1280 px as JPEG.

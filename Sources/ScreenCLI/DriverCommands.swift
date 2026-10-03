@@ -1,10 +1,12 @@
+import CoreGraphics
 import Foundation
 import SecondScreenCore
 
-/// `state`, `click`, `type` and `key`: observe and drive a window on an
-/// agent screen. Each prints one JSON object and exits non-zero on failure.
+/// `state`, `click`, `type`, `key`, `scroll` and `drag`: observe and drive a
+/// window on an agent screen. Each prints one JSON object and exits non-zero
+/// on failure.
 enum DriverCommands {
-    static let verbs: Set<String> = ["state", "click", "type", "key"]
+    static let verbs: Set<String> = ["state", "click", "type", "key", "scroll", "drag"]
 
     static func run(_ verb: String, _ args: Arguments) -> Never {
         do {
@@ -15,6 +17,8 @@ enum DriverCommands {
             case "state": output = try state(target, driver, args)
             case "click": output = try click(target, driver, args)
             case "type": output = try type(target, driver, args)
+            case "scroll": output = try scroll(target, driver, args)
+            case "drag": output = try drag(target, driver, args)
             default: output = try key(target, driver, args)
             }
             output["ok"] = output["ok"] ?? true
@@ -42,39 +46,37 @@ enum DriverCommands {
     }
 
     private static func click(_ target: Target, _ driver: Driver, _ args: Arguments) throws -> [String: Any] {
+        guard !(args.has("--right") && args.has("--double")) else {
+            throw DriverError("give --right or --double, not both")
+        }
+        let tool = args.has("--right") ? "right_click" : args.has("--double") ? "double_click" : "click"
         var arguments: [String: Any] = ["pid": target.pid, "window_id": target.window.windowID]
         let point: CGPoint
-        var described: [String: Any]
+        var described: [String: Any] = ["button": args.has("--right") ? "right" : "left",
+                                        "count": args.has("--double") ? 2 : 1]
 
-        if let x = args.value("--x").flatMap(Double.init), let y = args.value("--y").flatMap(Double.init) {
-            // A global point. cua-driver's pixel route wants coordinates in
-            // the window screenshot it captured last, so take one to learn
-            // its scale.
-            point = CGPoint(x: x, y: y)
-            guard target.window.frame.contains(point) else {
-                throw DriverError("(\(x), \(y)) is outside the window \(frameString(target.window.frame))")
-            }
-            let scratch = NSTemporaryDirectory() + "2ndscreen-click-\(getpid()).png"
-            defer { try? FileManager.default.removeItem(atPath: scratch) }
-            let snapshot = try driver.state(pid: target.pid, windowID: target.window.windowID, screenshot: scratch)
-            let width = snapshot.raw["screenshot_width"] as? Double ?? Double(target.window.frame.width)
-            let scale = width / Double(target.window.frame.width)
-            arguments["x"] = (x - Double(target.window.frame.minX)) * scale
-            arguments["y"] = (y - Double(target.window.frame.minY)) * scale
-            described = ["point": ["x": x, "y": y]]
+        if let global = try globalPoint(args, "--x", "--y") {
+            point = global
+            let local = try windowPixels([global], target, driver)[0]
+            arguments["x"] = local.x
+            arguments["y"] = local.y
+            described["point"] = ["x": global.x, "y": global.y]
         } else {
             let (element, snapshot) = try resolve(target, driver, args, required: true)
             guard let element, let center = element.center else {
-                throw DriverError("the element has no frame to click")
+                // Menu bar items have no frame until their menu opens, and
+                // cua-driver refuses them as outside the window.
+                throw DriverError("the element has no frame to click; for a menu item, press its keyboard shortcut with key")
             }
             point = center
             arguments["element_token"] = element.token
-            described = ["element": element.json, "snapshot": snapshot.id]
+            described["element"] = element.json
+            described["snapshot"] = snapshot.id
         }
 
         AgentCursorEvent(action: .click, point: point).post()
         Thread.sleep(forTimeInterval: 0.4)  // let the cursor arrive first
-        let result = try driver.act("click", arguments)
+        let result = try driver.act(tool, arguments)
         return report(result, target, described)
     }
 
@@ -91,22 +93,160 @@ enum DriverCommands {
                 AgentCursorEvent(action: .move, point: center).post()
             }
         }
+        // --replace sets the field's whole text through accessibility,
+        // so it needs the field named.
+        if args.has("--replace") {
+            guard let element else { throw DriverError("--replace needs the field named with --index or --text") }
+            return try setValue(text, of: element, target, driver, described)
+        }
         let result = try driver.act("type_text", arguments)
+        // cua-driver will not type into Electron and Chromium windows in the
+        // background. Their text fields take a value set through
+        // accessibility, which the page sees as input: so set the field to
+        // its text plus the new text. That needs the field named.
+        if Driver.describe(result, fallback: "").contains("background_unavailable") {
+            guard let element else {
+                throw DriverError("this app takes background typing only into a named field; give --index or --text")
+            }
+            return try setValue(element.value + text, of: element, target, driver, described)
+        }
+        return report(result, target, described)
+    }
+
+    /// Set a field's text through accessibility, and read it back.
+    private static func setValue(_ value: String, of element: Element, _ target: Target, _ driver: Driver,
+                                 _ described: [String: Any]) throws -> [String: Any] {
+        let setting: [String: Any] = ["pid": target.pid, "window_id": target.window.windowID,
+                                      "element_token": element.token, "value": value]
+        var result = try driver.act("set_value", setting)
+        // set_value reports "unverifiable" even when it lands, so read the field back.
+        let now = try driver.state(pid: target.pid, windowID: target.window.windowID)
+            .elements.first { $0.index == element.index }?.value ?? ""
+        result["effect"] = now == value ? "confirmed" : (result["effect"] ?? "unverifiable")
+        result["route"] = "accessibility_value"
         return report(result, target, described)
     }
 
     private static func key(_ target: Target, _ driver: Driver, _ args: Arguments) throws -> [String: Any] {
         guard let key = args.value("--key") else { throw DriverError("key needs --key NAME, such as return") }
-        let modifiers = args.value("--modifiers")?
-            .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces).lowercased() } ?? []
+        let modifiers = modifierList(args)
         let base: [String: Any] = ["pid": target.pid, "window_id": target.window.windowID]
         let result: [String: Any]
         if modifiers.isEmpty {
-            result = try driver.act("press_key", base.merging(["key": key]) { $1 })
+            let pressed = try driver.act("press_key", base.merging(["key": key]) { $1 })
+            // press_key knows key names, not shifted symbols such as "*";
+            // a single character still arrives when typed as text.
+            if key.count == 1, Driver.describe(pressed, fallback: "").contains("delivery_failed") {
+                result = try driver.act("type_text", base.merging(["text": key]) { $1 })
+            } else {
+                result = pressed
+            }
         } else {
             result = try driver.act("hotkey", base.merging(["keys": modifiers + [key]]) { $1 })
         }
         return report(result, target, ["key": key, "modifiers": modifiers])
+    }
+
+    /// A mouse wheel over an element or point, or with neither, arrow or page
+    /// keys to the focused scroller.
+    private static func scroll(_ target: Target, _ driver: Driver, _ args: Arguments) throws -> [String: Any] {
+        let directions = ["up", "down", "left", "right"]
+        guard let direction = args.value("--direction")?.lowercased(), directions.contains(direction) else {
+            throw DriverError("scroll needs --direction up, down, left or right")
+        }
+        var arguments: [String: Any] = ["pid": target.pid, "window_id": target.window.windowID, "direction": direction]
+        var described: [String: Any] = ["direction": direction]
+        if let amount = args.value("--amount") {
+            guard let notches = Int(amount), (1...50).contains(notches) else {
+                throw DriverError("--amount takes a number from 1 to 50")
+            }
+            arguments["amount"] = notches
+            described["amount"] = notches
+        }
+        if let by = args.value("--by") {
+            guard ["line", "page"].contains(by) else { throw DriverError("--by takes line or page") }
+            arguments["by"] = by
+            described["by"] = by
+        }
+
+        // Where a wheel goes if 2ndscreen has to turn it itself.
+        var wheelPoint: CGPoint?
+        if let global = try globalPoint(args, "--x", "--y") {
+            wheelPoint = global
+            let local = try windowPixels([global], target, driver)[0]
+            arguments["x"] = local.x
+            arguments["y"] = local.y
+            // cua-driver's background wheel (0.32) scrolls opposite to the
+            // direction it is given, in AppKit and WebKit alike, whatever the
+            // natural scrolling setting; its element and key routes do not.
+            let opposite = ["up": "down", "down": "up", "left": "right", "right": "left"]
+            arguments["direction"] = opposite[direction]
+            described["point"] = ["x": global.x, "y": global.y]
+            AgentCursorEvent(action: .move, point: global).post()
+        } else {
+            let (element, snapshot) = try resolve(target, driver, args, required: false)
+            if let element {
+                arguments["element_token"] = element.token
+                described["element"] = element.json
+                described["snapshot"] = snapshot.id
+                wheelPoint = element.center
+                if let center = element.center { AgentCursorEvent(action: .move, point: center).post() }
+            }
+        }
+        let result = try driver.act("scroll", arguments)
+        // cua-driver will not scroll Electron and Chromium windows in the
+        // background; a wheel posted to the app does, so send one, at the
+        // point or element, else mid-window.
+        if Driver.describe(result, fallback: "").contains("background_unavailable") {
+            let frame = target.window.frame
+            let point = wheelPoint ?? CGPoint(x: frame.midX, y: frame.midY)
+            let notches = (arguments["amount"] as? Int ?? 3) * (arguments["by"] as? String == "page" ? 10 : 1)
+            AgentCursorEvent(action: .move, point: point).post()
+            try BackgroundWheel.scroll(pid: target.pid, window: target.window, at: point, direction: direction, notches: notches)
+            return report(["effect": "unverifiable", "route": "2ndscreen_wheel",
+                           "summary": "posted \(notches) wheel line(s) \(direction) to the app at (\(Int(point.x)), \(Int(point.y)))"],
+                          target, described)
+        }
+        return report(result, target, described)
+    }
+
+    /// Press at one global point, move to another, release. Both ends must be
+    /// in the window.
+    private static func drag(_ target: Target, _ driver: Driver, _ args: Arguments) throws -> [String: Any] {
+        guard let from = try globalPoint(args, "--from-x", "--from-y"), let to = try globalPoint(args, "--to-x", "--to-y") else {
+            throw DriverError("drag needs --from-x X --from-y Y --to-x X --to-y Y")
+        }
+        // cua-driver has no background drag on macOS. Its foreground drag
+        // brings the app to the front and moves the real pointer for the
+        // gesture, so it is the agent's explicit choice, never a fallback.
+        guard args.has("--foreground") else {
+            throw DriverError("drag on macOS needs --foreground (foreground: true over MCP): it brings the app to the front and moves "
+                + "the real pointer for about a second, so ask the user first")
+        }
+        let local = try windowPixels([from, to], target, driver)
+        var arguments: [String: Any] = ["pid": target.pid, "window_id": target.window.windowID,
+                                        "from_x": local[0].x, "from_y": local[0].y,
+                                        "to_x": local[1].x, "to_y": local[1].y,
+                                        "delivery_mode": "foreground"]
+        let modifiers = modifierList(args)
+        if !modifiers.isEmpty { arguments["modifier"] = modifiers }
+        if let duration = args.value("--duration-ms") {
+            guard let milliseconds = Int(duration), (0...10000).contains(milliseconds) else {
+                throw DriverError("--duration-ms takes a number from 0 to 10000")
+            }
+            arguments["duration_ms"] = milliseconds
+        }
+
+        AgentCursorEvent(action: .move, point: from).post()
+        Thread.sleep(forTimeInterval: 0.4)
+        AgentCursorEvent(action: .move, point: to).post()
+        // cua-driver restores the frontmost app but leaves the real pointer
+        // where the drag ended, on a screen the user may not be watching.
+        let pointer = CGEvent(source: nil)?.location
+        defer { if let pointer { CGWarpMouseCursorPosition(pointer) } }
+        let result = try driver.act("drag", arguments)
+        return report(result, target, ["from": ["x": from.x, "y": from.y], "to": ["x": to.x, "y": to.y],
+                                       "modifiers": modifiers])
     }
 
     // MARK: Helpers
@@ -124,13 +264,50 @@ enum DriverCommands {
             return (element, snapshot)
         }
         if let text {
-            guard let element = snapshot.element(text: text) else {
+            if let element = snapshot.element(text: text) { return (element, snapshot) }
+            // Electron and Chromium build the page's tree only once something
+            // reads it, so the first read of a fresh window can come back
+            // without its content. Read once more.
+            Thread.sleep(forTimeInterval: 0.7)
+            let again = try driver.state(pid: target.pid, windowID: target.window.windowID)
+            guard let element = again.element(text: text) else {
                 throw DriverError("no element matches \"\(text)\"; run state to see what is there")
             }
-            return (element, snapshot)
+            return (element, again)
         }
         if required { throw DriverError("give --index N, --text TEXT, or --x X --y Y") }
         return (nil, snapshot)
+    }
+
+    /// The global point in two options, nil if neither is given.
+    private static func globalPoint(_ args: Arguments, _ xName: String, _ yName: String) throws -> CGPoint? {
+        let (x, y) = (args.value(xName), args.value(yName))
+        if x == nil, y == nil { return nil }
+        guard let x = x.flatMap(Double.init), let y = y.flatMap(Double.init) else {
+            throw DriverError("give both \(xName) and \(yName) as numbers")
+        }
+        return CGPoint(x: x, y: y)
+    }
+
+    /// Global points as pixels in the window screenshot cua-driver captured
+    /// last, which its pixel routes take. Takes one to learn its scale.
+    private static func windowPixels(_ points: [CGPoint], _ target: Target, _ driver: Driver) throws -> [CGPoint] {
+        let frame = target.window.frame
+        for point in points where !frame.contains(point) {
+            throw DriverError("(\(point.x), \(point.y)) is outside the window \(frameString(frame))")
+        }
+        let scratch = NSTemporaryDirectory() + "2ndscreen-pixels-\(getpid()).png"
+        defer { try? FileManager.default.removeItem(atPath: scratch) }
+        let snapshot = try driver.state(pid: target.pid, windowID: target.window.windowID, screenshot: scratch)
+        let width = snapshot.raw["screenshot_width"] as? Double ?? Double(frame.width)
+        let scale = width / Double(frame.width)
+        return points.map { CGPoint(x: (Double($0.x) - Double(frame.minX)) * scale,
+                                    y: (Double($0.y) - Double(frame.minY)) * scale) }
+    }
+
+    private static func modifierList(_ args: Arguments) -> [String] {
+        args.value("--modifiers")?
+            .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces).lowercased() } ?? []
     }
 
     /// Fold cua-driver's result into the output. `effect` says how sure the
