@@ -183,10 +183,6 @@ pointer through the gesture, then puts both back. It runs only with
 $CLI drag --screen test-a --pid 1234 --from-x 2200 --from-y 500 --to-x 2500 --to-y 600 --foreground
 ```
 
-The event recipes follow [cua-driver](https://github.com/trycua/cua) (MIT),
-which found by experiment what AppKit, Chromium and Catalyst windows accept
-from the background.
-
 ### Vision agent
 
 `agent` runs an instruction with a [UI-TARS](https://github.com/bytedance/UI-TARS-desktop)

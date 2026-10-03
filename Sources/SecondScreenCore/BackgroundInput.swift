@@ -5,10 +5,8 @@ import ApplicationServices
 /// user's pointer or bringing the app to the front. Each call returns the
 /// route it took. Points are global, top-left-origin points.
 ///
-/// The event recipes follow cua-driver (MIT, trycua/cua), which found by
-/// experiment what AppKit, Chromium and Catalyst windows accept from the
-/// background. Nothing reads back whether an event landed; check with a
-/// screenshot or `state`.
+/// Nothing reads back whether an event landed; check with a screenshot or
+/// `state`.
 public enum BackgroundInput {
     public enum Button { case left, right }
 

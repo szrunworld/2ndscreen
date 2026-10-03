@@ -3,7 +3,7 @@ import ApplicationServices
 
 /// Private WindowServer calls that reach a window without bringing its app
 /// to the front. Loaded at run time; a missing symbol turns that route off.
-/// The recipes follow cua-driver (MIT, trycua/cua) and yabai.
+/// The focus records follow yabai's.
 enum SkyLight {
     private static let handle: UnsafeMutableRawPointer? = dlopen(
         "/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight", RTLD_LAZY | RTLD_GLOBAL)
