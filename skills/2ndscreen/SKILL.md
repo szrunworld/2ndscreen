@@ -10,9 +10,9 @@ testing on one, drive it in the background, and verify it with
 screenshots, while the user keeps their screen, pointer and frontmost app.
 
 It needs the 2ndscreen menu bar app running (`open build/2ndscreen.app` in
-the repository) and cua-driver installed for `state`, `click`, `type`,
-`key`, `scroll` and `drag`. Every command prints one JSON object; `ok` is false, and the exit
-status non-zero, on failure.
+the repository), with the Accessibility permission for `state`, `click`,
+`type`, `key`, `scroll` and `drag`. Every command prints one JSON object;
+`ok` is false, and the exit status non-zero, on failure.
 
 ```bash
 CLI=2ndscreen   # or <repo>/.build/release/2ndscreen
@@ -69,10 +69,10 @@ CLI=2ndscreen   # or <repo>/.build/release/2ndscreen
 
    Scroll with the wheel over the area that should move, such as a list
    or chat history inside a larger window; give its element or a point.
-   With neither, arrow or page keys scroll the focused area. Electron and
-   Chromium apps take a wheel posted by 2ndscreen instead, mid-window when
-   you give no point. Name the field when you `type` into them (`--index`
-   or `--text`): they only take text set on a named field.
+   With neither, the wheel turns over the middle of the window. Name the
+   field when you `type` into an Electron or Chromium app (`--index` or
+   `--text`): if it ignores keys from the background, 2ndscreen sets the
+   field's text instead, which needs the field.
 
    ```bash
    $CLI scroll --screen login-test --pid PID --index 5 --direction down --amount 5
@@ -90,9 +90,19 @@ CLI=2ndscreen   # or <repo>/.build/release/2ndscreen
    $CLI drag --screen login-test --pid PID --from-x 2200 --from-y 500 --to-x 2500 --to-y 600 --foreground
    ```
 
-5. **Verify.** `effect` is often `unverifiable` (normal for clicks and web
-   content), so success means the UI changed. Run `state` again, or take a
-   screenshot, and check for what you expected.
+5. **Verify.** `ok` means the action was delivered, not that the app did
+   what you wanted: success means the UI changed. Run `state` again, or
+   take a screenshot, and check for what you expected.
+
+   For apps whose controls accessibility cannot read, `agent` runs a
+   whole task with a vision model, if the user has set one up:
+
+   ```bash
+   $CLI agent --screen login-test --pid PID "Open the settings and read the version number"
+   ```
+
+   It stops before sending anything unless given `--allow-submit`; only
+   pass that when the user asked for exactly that.
 
    ```bash
    $CLI screenshot --screen login-test --output /tmp/after.png
@@ -110,14 +120,16 @@ CLI=2ndscreen   # or <repo>/.build/release/2ndscreen
 - Act only on windows of apps you launched. `state`, `click`, `type`,
   `key`, `scroll` and `drag` refuse windows that are not on the named screen; do not move the
   user's windows onto your screen to get around that.
-- Indexes come from the latest `state`, and `click`/`type` re-read the
-  window. Run `state` again after the UI changes before reusing an index.
+- Indexes come from the window's latest `state`. Run `state` again after
+  the UI changes before reusing an index.
 - Frames are global, top-left-origin points. macOS rearranges displays
   whenever a screen is added or removed; call `screen list` before using
   a screen's frame.
-- When an app has several windows, keyboard input without a target is
-  refused (`same_pid_keyboard_ambiguity`): pass `--window-id`, and name
-  the field with `--index` or `--text`.
+- Shortcuts with cmd (cmd+a, cmd+v) do nothing in a window that has never
+  been clicked, such as one just launched: click into it first.
+- Keys without a target go to the app's key window. When an app has
+  several windows, pass `--window-id`, and click into the field or name it
+  with `--index` or `--text` first.
 - Do not send messages, submit forms, buy, or delete data in a real
   account unless the user asked for exactly that.
 - At most 8 agent screens exist at once. Destroy yours when finished.
@@ -130,6 +142,6 @@ CLI=2ndscreen   # or <repo>/.build/release/2ndscreen
 | `needs the Accessibility permission` | Ask the user to grant it from the 2ndscreen menu |
 | `needs the Screen Recording permission` | Same, for screenshots |
 | `no window on screen` | `app launch` or `window move` the app there first |
-| `cua-driver not found` | Install cua-driver, or set `CUA_DRIVER` to its path |
+| `set ARK_API_KEY` | `agent` needs a model; ask the user to set one up |
 | `... already running` | Add `--new-instance`, or `window move` a window you own |
 | The user must type into a window (a password) | `window release` it to their main display, then `window move` it back |

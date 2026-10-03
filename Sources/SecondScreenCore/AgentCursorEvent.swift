@@ -20,7 +20,7 @@ public struct AgentCursorEvent {
 
     public let action: Action
     /// Global point in CoreGraphics coordinates (top-left origin), the same
-    /// space cua-driver reports element frames in.
+    /// space accessibility reports element frames in.
     public let point: CGPoint
 
     public init(action: Action, point: CGPoint = .zero) {

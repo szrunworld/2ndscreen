@@ -14,7 +14,7 @@ usage:
   2ndscreen app launch --screen NAME (--bundle ID | --path APP) [--new-instance] [--fill]
   2ndscreen window move --screen NAME --pid PID [--window-id ID] [--fill]
   2ndscreen window release --screen NAME --pid PID [--window-id ID]
-  2ndscreen screenshot --screen NAME --output FILE.png
+  2ndscreen screenshot --screen NAME --output FILE.png [--windows]
 
   2ndscreen state --screen NAME --pid PID [--window-id ID] [--query TEXT] [--screenshot FILE.png]
   2ndscreen click --screen NAME --pid PID (--index N | --text TEXT | --x X --y Y) [--right | --double]
@@ -25,21 +25,33 @@ usage:
   2ndscreen drag  --screen NAME --pid PID --from-x X --from-y Y --to-x X --to-y Y --foreground
                   [--modifiers shift] [--duration-ms MS]
 
+  2ndscreen agent --screen NAME --pid PID [--window-id ID] [--allow-submit] [--foreground]
+                  [--max-steps N] INSTRUCTION
   2ndscreen mcp      serve these commands as MCP tools over stdio
 
-state, click, type, key, scroll and drag act through cua-driver's background routes and
-only on a window that is on the named screen. drag is the exception: macOS
-offers no background drag, so it brings the app to the front and moves the
-real pointer, and runs only with --foreground. Indexes come from state; click
-and type re-read the window, so run state again after the UI changes.
+state, click, type, key, scroll and drag act in the background, through
+accessibility or input events posted to the app, and only on a window that is
+on the named screen. drag is the exception: macOS offers no background drag,
+so it brings the app to the front and moves the real pointer, and runs only
+with --foreground. Indexes come from the window's last state; run state again
+after the UI changes.
+
+agent runs INSTRUCTION with a UI-TARS vision model, which reads screenshots of
+the screen and acts by sight. Without --allow-submit it stops before anything
+that would send: Enter, typed text ending in a newline, or a click on Send.
+It reads ARK_API_KEY, ARK_MODEL and ARK_BASE_URL from the environment or
+~/.config/2ndscreen/ark.env.
 
 Durations take s, m or h (90s, 30m, 2h). A screen is destroyed when its TTL
 passes, when no command has named it for its idle timeout (default 60m; 0
 turns it off), or when its owner process exits.
 
+screenshot --windows composes the screen from its windows, each captured on its
+own, instead of capturing the display; agent and state --screenshot use it.
+
 Sizes are in points. Without --size, a new screen matches the main display's
 full-screen area, so its full-screen preview is pixel for pixel. Frames in
-the output use global top-left coordinates, the same space as cua-driver.
+the output use global top-left coordinates.
 HiDPI follows the main display. macOS allows it only from 800 points on the
 long side and 525 on the short side; smaller screens are created at 1x.
 """
@@ -61,7 +73,7 @@ struct Arguments {
                                       "--index", "--text", "--x", "--y", "--value", "--key",
                                       "--modifiers", "--ttl", "--idle-timeout", "--owner-pid",
                                       "--direction", "--amount", "--by", "--from-x", "--from-y",
-                                      "--to-x", "--to-y", "--duration-ms"]
+                                      "--to-x", "--to-y", "--duration-ms", "--max-steps"]
 
     init(_ words: [String]) {
         var iterator = words.makeIterator()
@@ -101,6 +113,9 @@ guard words.count >= 1, !words.contains("--help"), !words.contains("-h") else {
 let args = Arguments(words)
 if let first = args.positional.first, DriverCommands.verbs.contains(first) {
     DriverCommands.run(first, args)
+}
+if args.positional.first == "agent" {
+    AgentCommand.run(args)
 }
 let verb = args.positional.prefix(2).joined(separator: " ")
 
@@ -163,6 +178,7 @@ default:
         request = ControlRequest(command: .screenshot)
         request.screen = args.value("--screen")
         request.output = args.value("--output")
+        if args.has("--windows") { request.windowsOnly = true }
     } else {
         fail("unknown command\n\n" + usage)
     }

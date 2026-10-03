@@ -16,7 +16,7 @@ import SecondScreenCore
 //   vdisplay cursor hide
 //
 // Shows the menu bar app's agent cursor at a global point (top-left origin,
-// the coordinates cua-driver reports). Visual only: the real pointer and the
+// the coordinates accessibility reports). Visual only: the real pointer and the
 // app under the point are untouched.
 
 if CommandLine.arguments.dropFirst().first == "cursor" {

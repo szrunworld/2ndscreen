@@ -161,7 +161,7 @@ public enum WindowMover {
     }
 
     /// The AX element for `window`, matched by window ID, else by frame.
-    private static func axWindow(for window: WindowInfo) -> AXUIElement? {
+    static func axWindow(for window: WindowInfo) -> AXUIElement? {
         let app = AXUIElementCreateApplication(window.pid)
         guard let windows: [AXUIElement] = copyAttribute(app, kAXWindowsAttribute) else { return nil }
         if window.windowID != 0 {
@@ -175,7 +175,12 @@ public enum WindowMover {
         return windows.first { frame(of: $0) == window.frame }
     }
 
-    private static func frame(of element: AXUIElement) -> CGRect? {
+    static func windowID(of element: AXUIElement) -> CGWindowID? {
+        var id: CGWindowID = 0
+        return _AXUIElementGetWindow(element, &id) == .success && id != 0 ? id : nil
+    }
+
+    static func frame(of element: AXUIElement) -> CGRect? {
         guard let positionValue: AXValue = copyAttribute(element, kAXPositionAttribute),
               let sizeValue: AXValue = copyAttribute(element, kAXSizeAttribute)
         else { return nil }
@@ -187,7 +192,7 @@ public enum WindowMover {
         return CGRect(origin: origin, size: size)
     }
 
-    private static func copyAttribute<T>(_ element: AXUIElement, _ attribute: String) -> T? {
+    static func copyAttribute<T>(_ element: AXUIElement, _ attribute: String) -> T? {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success
         else { return nil }
