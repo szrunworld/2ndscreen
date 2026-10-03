@@ -209,7 +209,7 @@ final class AndroidMirrorWindow: NSObject, NSWindowDelegate {
             button("circle", "Home", #selector(homePressed)),
             button("square", "Recents", #selector(recentsPressed)),
         ])
-        stack.spacing = 2
+        stack.spacing = 14
         stack.edgeInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 8)
         stack.frame.size = stack.fittingSize
         let controller = NSTitlebarAccessoryViewController()
