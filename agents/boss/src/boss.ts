@@ -71,8 +71,16 @@ export class Boss {
   async draft(text: string): Promise<void> {
     const open = await this.chat();
     if (!open?.input) throw new BossError('no conversation is open');
-    const result = await this.run(['type', '--index', String(open.input.index), '--value', text, '--replace']);
-    if (result.effect !== 'confirmed') throw new BossError('the draft did not land in the message box');
+    await this.run(['type', '--index', String(open.input.index), '--value', text, '--replace']);
+    // BOSS直聘 takes the text at once but its accessibility tree can lag by
+    // seconds, so read the box again until it shows the draft. Never write
+    // it a second time: the first write may simply not show yet.
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const box = (await this.chat())?.input;
+      if ((box?.value ?? box?.label ?? '').trim() === text.trim()) return;
+      await sleep(500);
+    }
+    throw new BossError('the draft was written but the message box does not show it yet; check BOSS直聘 before writing again');
   }
 
   /**
@@ -82,7 +90,8 @@ export class Boss {
   async send(expected: string): Promise<void> {
     const open = await this.chat();
     if (!open?.send) throw new BossError('no Send button');
-    if ((open.input?.value ?? '').trim() !== expected.trim()) {
+    // Readers report a field's text as its value or, failing that, its label.
+    if ((open.input?.value ?? open.input?.label ?? '').trim() !== expected.trim()) {
       throw new BossError('the message box no longer holds the approved draft; not sending');
     }
     await this.run(['click', '--index', String(open.send.index)]);

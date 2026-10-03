@@ -279,51 +279,68 @@ public enum AXActions {
         return false
     }
 
-    /// Insert `text` at the element's caret, as typing would, replacing any
-    /// selection. Falls back to appending to the value. Returns false if the
-    /// element takes neither, so the caller can type with keys instead.
-    public static func insert(_ text: String, into snapshot: AXSnapshot, index: Int) -> Bool {
-        guard let element = snapshot.handle(index) else { return false }
-        AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
-        let before: String = WindowMover.copyAttribute(element, kAXValueAttribute) ?? ""
-        // Some apps accept a write and drop it; only the value read back counts.
-        func landed() -> Bool {
-            let after: String = WindowMover.copyAttribute(element, kAXValueAttribute) ?? ""
-            return after != before && after.contains(text)
-        }
-        var settable: DarwinBoolean = false
-        if AXUIElementIsAttributeSettable(element, kAXSelectedTextAttribute as CFString, &settable) == .success,
-           settable.boolValue,
-           AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, text as CFString) == .success,
-           landed() {
-            return true
-        }
-        if AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settable) == .success,
-           settable.boolValue,
-           AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, (before + text) as CFString) == .success {
-            return landed()
+    /// How a write through accessibility went. Chromium (Electron apps,
+    /// web views) applies a write to the page at once, so the page sees an
+    /// `input` event, but its accessibility tree catches up later: a few
+    /// hundred milliseconds for a visible window, seconds for a busy app or
+    /// a covered one. Until then the field reads back its old text, which
+    /// is not a sign the write failed.
+    public enum Write {
+        /// The field reads back the text.
+        case landed
+        /// The app took the write, but the field had not caught up when the
+        /// wait ran out. Treat it as written: writing again could double it.
+        case unconfirmed
+        /// The field does not take writes.
+        case refused
+    }
+
+    /// Read `element`'s value until `done` holds, for up to three seconds.
+    private static func settle(_ element: AXUIElement, _ done: (String) -> Bool) -> Bool {
+        for attempt in 0..<60 {
+            let now: String = WindowMover.copyAttribute(element, kAXValueAttribute) ?? ""
+            if done(now) { return true }
+            if attempt < 59 { Thread.sleep(forTimeInterval: 0.05) }
         }
         return false
     }
 
+    /// Insert `text` at the element's caret, as typing would, replacing any
+    /// selection. Falls back to appending to the value. Refused if the
+    /// element takes neither, so the caller can type with keys instead.
+    public static func insert(_ text: String, into snapshot: AXSnapshot, index: Int) -> Write {
+        guard let element = snapshot.handle(index) else { return .refused }
+        AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+        let before: String = WindowMover.copyAttribute(element, kAXValueAttribute) ?? ""
+        let landed = { (now: String) in now != before && now.contains(text) }
+        var settable: DarwinBoolean = false
+        if AXUIElementIsAttributeSettable(element, kAXSelectedTextAttribute as CFString, &settable) == .success,
+           settable.boolValue,
+           AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, text as CFString) == .success {
+            // Some apps accept a selected-text write and drop it; only a
+            // change shows it went in. Without one, try the value instead.
+            if settle(element, landed) { return .landed }
+        }
+        if AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settable) == .success,
+           settable.boolValue,
+           AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, (before + text) as CFString) == .success {
+            return settle(element, landed) ? .landed : .unconfirmed
+        }
+        return .refused
+    }
+
     /// Set the element's whole text to `value`, and read it back. The page in
     /// an Electron or Chromium window receives the write as an `input` event.
-    public static func replace(with value: String, in snapshot: AXSnapshot, index: Int) -> Bool {
-        guard let element = snapshot.handle(index) else { return false }
+    public static func replace(with value: String, in snapshot: AXSnapshot, index: Int) -> Write {
+        guard let element = snapshot.handle(index) else { return .refused }
         var settable: DarwinBoolean = false
         guard AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settable) == .success,
               settable.boolValue,
               AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, value as CFString) == .success
-        else { return false }
-        // Chromium applies the write a moment later: an immediate read can
-        // still return the old text (BOSS直聘 cleared its box yet read back
-        // the draft), so give it half a second.
-        for attempt in 0..<10 {
-            let now: String = WindowMover.copyAttribute(element, kAXValueAttribute) ?? ""
-            if now == value { return true }
-            if attempt < 9 { Thread.sleep(forTimeInterval: 0.05) }
-        }
-        return false
+        else { return .refused }
+        // BOSS直聘 took a draft this way while its box read back the old text,
+        // and then half the new one, for more than half a second.
+        return settle(element) { $0 == value } ? .landed : .unconfirmed
     }
 
     /// The element's current text value, read live rather than from the snapshot.

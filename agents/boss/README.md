@@ -9,19 +9,36 @@ frontmost app are left alone.
 
 ```bash
 cd agents/boss && npm install
-2ndscreen screen create --name boss --ttl 8h
-2ndscreen app launch --screen boss --bundle com.zhipin.www --fill   # note the pid
+swift build -c release && ./scripts/bundle-app.sh    # from the repository root, once
 ```
 
-Log in to BOSS直聘 first if it asks. It needs `ARK_API_KEY` for Volcengine
-Ark; replies come from `doubao-seed-2-1-lite-260915` unless
+Log in to BOSS直聘 once by hand if it asks. It needs `ARK_API_KEY` for
+Volcengine Ark; replies come from `doubao-seed-2-1-lite-260915` unless
 `ARK_TEXT_MODEL` names another model.
 
 ## Use
 
 ```bash
-npx tsx src/cli.ts --screen boss --pid PID --brief "先请对方发简历，看完后约电话"
+npx tsx src/cli.ts --auto --brief "先请对方发简历，看完后约电话"
 ```
+
+`--auto` looks after its surroundings before every check, so it can run
+for hours:
+
+- a 2ndscreen **side instance** on its own socket
+  (`~/Library/Caches/2ndscreen/boss.sock`), started if it is not running.
+  Other 2ndscreen users restarting the usual instance do not take its
+  screen away;
+- a screen named `boss` on it that never expires, created again if lost;
+- BOSS直聘 on that screen: launched if it is not running, moved back if
+  its window strays. A BOSS直聘 the assistant did not launch, such as one
+  you opened yourself, is left alone and the assistant waits; pass
+  `--take-over` to move it onto the screen instead.
+
+What it has handled is kept in `~/.config/2ndscreen/boss-state.json`
+(`--state` to change), so a restart does not open or draft a
+conversation twice. Without `--auto`, give `--screen` and BOSS直聘's
+`--pid` yourself.
 
 Every 60 seconds it reads the message list. For each conversation with
 unread messages it opens it (the candidate then sees it as read), reads
