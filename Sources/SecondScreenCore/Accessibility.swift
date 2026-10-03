@@ -272,8 +272,15 @@ public enum AXActions {
               settable.boolValue,
               AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, value as CFString) == .success
         else { return false }
-        let now: String = WindowMover.copyAttribute(element, kAXValueAttribute) ?? ""
-        return now == value
+        // Chromium applies the write a moment later: an immediate read can
+        // still return the old text (BOSS直聘 cleared its box yet read back
+        // the draft), so give it half a second.
+        for attempt in 0..<10 {
+            let now: String = WindowMover.copyAttribute(element, kAXValueAttribute) ?? ""
+            if now == value { return true }
+            if attempt < 9 { Thread.sleep(forTimeInterval: 0.05) }
+        }
+        return false
     }
 
     /// The element's current text value, read live rather than from the snapshot.
