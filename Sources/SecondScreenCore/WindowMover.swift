@@ -43,6 +43,11 @@ public enum WindowMover {
         normalWindows().filter { $0.pid == pid }
     }
 
+    /// Every normal on-screen window of other apps, front to back.
+    public static func allWindows() -> [WindowInfo] {
+        normalWindows()
+    }
+
     /// IDs of every layer-0 window `pid` has, on screen or not: minimized,
     /// hidden, or on another Space.
     public static func allWindowIDs(ofPID pid: pid_t) -> Set<CGWindowID> {
@@ -115,7 +120,19 @@ public enum WindowMover {
         let destination = visibleFrame(of: displayID)
         let source = display(containing: window.frame).map(visibleFrame) ?? window.frame
         let target = fill ? destination : placement(of: window.frame, from: source, into: destination)
+        return setFrame(element, from: window.frame, to: target)
+    }
 
+    /// Put `window` back at `frame`, for example where it was before a
+    /// display change carried it off. Returns false without permission or if
+    /// the app refuses.
+    @discardableResult
+    public static func restore(_ window: WindowInfo, to frame: CGRect) -> Bool {
+        guard isTrusted, let element = axWindow(for: window) else { return false }
+        return setFrame(element, from: window.frame, to: frame)
+    }
+
+    private static func setFrame(_ element: AXUIElement, from current: CGRect, to target: CGRect) -> Bool {
         // Position first so a shrink cannot push the window off the target.
         var origin = target.origin
         var size = target.size
@@ -123,7 +140,7 @@ public enum WindowMover {
               let dimensions = AXValueCreate(.cgSize, &size)
         else { return false }
         let moved = AXUIElementSetAttributeValue(element, kAXPositionAttribute as CFString, position)
-        if size != window.frame.size {
+        if size != current.size {
             AXUIElementSetAttributeValue(element, kAXSizeAttribute as CFString, dimensions)
         }
         return moved == .success
@@ -149,8 +166,13 @@ public enum WindowMover {
         else { return CGDisplayBounds(displayID) }
         let visible = screen.visibleFrame
         // AppKit's origin is bottom-left of the primary display; CG's is top-left.
-        return CGRect(x: visible.minX, y: primaryHeight - visible.maxY,
-                      width: visible.width, height: visible.height)
+        let frame = CGRect(x: visible.minX, y: primaryHeight - visible.maxY,
+                           width: visible.width, height: visible.height)
+        // AppKit learns of display changes a run loop turn late, and until
+        // then can describe another display under this ID (a --fill once came
+        // out the width of a neighbouring screen). Trust CoreGraphics then.
+        let bounds = CGDisplayBounds(displayID)
+        return bounds.contains(frame) ? frame : bounds
     }
 
     private static func activeDisplays() -> [CGDirectDisplayID] {

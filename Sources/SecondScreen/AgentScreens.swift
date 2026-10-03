@@ -72,8 +72,12 @@ final class AgentScreens {
     }
 
     func destroyAll() {
+        var arrangement = DisplayLayout.origins()
+        for screen in screens { arrangement.removeValue(forKey: screen.display.displayID) }
         screens.removeAll()
+        bindings.removeAll()
         onChange?()
+        Task { await keepArrangement(arrangement, adding: nil, windows: []) }
     }
 
     // MARK: Requests
@@ -104,6 +108,8 @@ final class AgentScreens {
                 + " on its long side and 525 on its short side; use --no-hidpi or a larger --size")
         }
         let hiDPI = requestedHiDPI ?? (defaultHiDPI && hiDPIAllowed)
+        let arrangement = DisplayLayout.origins()
+        let windowsBefore = WindowMover.allWindows()
         // A serial whose remembered unit number is already taken gives a
         // screen that captures as another one; try the next serial instead.
         var tried: Set<UInt32> = []
@@ -133,6 +139,9 @@ final class AgentScreens {
         // macOS places a new display and settles its mode a moment after
         // creating it; agents need the final frame.
         for _ in 0..<60 where display.bounds.isEmpty || !display.isSettled {
+            // Undo macOS' shuffle of the other displays right away rather than
+            // once the mode settles: windows ride along while it lasts.
+            if !display.bounds.isEmpty { DisplayLayout.place(display.displayID, restoring: arrangement) }
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
         // macOS can accept the settings yet run the display in another mode.
@@ -143,6 +152,7 @@ final class AgentScreens {
             remove(named: name)
             return .failure("macOS ran the screen at \(actual) instead of \(mode)\(hiDPI ? " HiDPI" : "")")
         }
+        await keepArrangement(arrangement, adding: display.displayID, windows: windowsBefore)
         var response = ControlResponse()
         response.screen = info(screen)
         return response
@@ -298,10 +308,42 @@ final class AgentScreens {
     // MARK: Helpers
 
     private func remove(named name: String) {
-        guard screens.contains(where: { $0.name == name }) else { return }
+        guard let removed = screen(named: name) else { return }
+        var arrangement = DisplayLayout.origins()
+        arrangement.removeValue(forKey: removed.display.displayID)
         screens.removeAll { $0.name == name }
         bindings = bindings.filter { $0.value.screen != name }
         onChange?()
+        // The display goes once nothing holds it; macOS may then close the
+        // gap by shifting the displays beside it.
+        Task { await keepArrangement(arrangement, adding: nil, windows: []) }
+    }
+
+    /// Undo what adding or removing a display did to the rest of the
+    /// arrangement: return the other displays to `arrangement`, put `newDisplay`
+    /// beside them, and send back any of `windows` that the shuffle left on
+    /// another display than before. Most windows ride along with their
+    /// display and come back with it, but some (iPhone Mirroring) jump to a
+    /// fixed point instead and can land on another app's agent screen.
+    private func keepArrangement(_ arrangement: [CGDirectDisplayID: CGPoint], adding newDisplay: CGDirectDisplayID?,
+                                 windows: [WindowInfo]) async {
+        // macOS applies a rearrangement a few frames late, and a display it
+        // is still settling can be shifted once more.
+        var stableChecks = 0
+        for _ in 0..<30 where stableChecks < 3 {
+            stableChecks = DisplayLayout.place(newDisplay, restoring: arrangement) ? stableChecks + 1 : 0
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        let earlier = Dictionary(windows.map { ($0.windowID, $0.frame) }, uniquingKeysWith: { first, _ in first })
+        for window in WindowMover.allWindows() {
+            // The displays are back where they were, so `frame` names the
+            // display the window was on.
+            guard let frame = earlier[window.windowID], frame != window.frame,
+                  let home = WindowMover.display(containing: frame), home != newDisplay,
+                  WindowMover.display(containing: window.frame) != home
+            else { continue }
+            WindowMover.restore(window, to: frame)
+        }
     }
 
     // MARK: Expiry
