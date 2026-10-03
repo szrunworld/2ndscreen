@@ -49,10 +49,11 @@ holds the model's answer when it finishes, or why the run stopped.
 
 - **Nothing is sent unless you pass `--allow-submit`.** The run stops,
   with the text typed but not sent, when the model presses Enter, types
-  text ending in a newline, or clicks a control labelled 发送 or Send.
-  Apps that hide their controls from accessibility pass that last check,
-  so keep the first two in mind: an app that sends on a click of an
-  unlabelled button is not stopped.
+  text ending in a newline, clicks a control labelled 发送 or Send, or
+  clicks while its thought or action mentions sending (发送, send, 提交,
+  submit). WeChat, for one, hides its Send button from accessibility, so
+  there only the model's own words give a click away; a click it does not
+  describe as sending is not stopped.
 - **Nothing takes the user's pointer unless you pass `--foreground`.**
   Without it, a drag on macOS stops the run, and a wheel at a point on
   Windows scrolls the focused area with keys instead.
