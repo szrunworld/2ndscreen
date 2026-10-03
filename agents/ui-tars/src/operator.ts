@@ -33,6 +33,9 @@ export interface Stop {
   reason: string;
 }
 
+/** Words in a prediction that mean the click would send or submit. */
+const SUBMIT_INTENT = /发送|發送|提交|\bsend\b|\bsubmit\b/i;
+
 export class SecondScreenOperator extends Operator {
   static MANUAL = {
     ACTION_SPACES: [
@@ -107,6 +110,13 @@ export class SecondScreenOperator extends Operator {
         this.options.onStep?.(step);
         await new Promise((resolve) => setTimeout(resolve, step.ms));
         continue;
+      }
+      // Apps that draw their own controls hide a Send button from
+      // accessibility, so also go by what the model says it is doing.
+      if (step.words[0] === 'click' && !context.allowSubmit && SUBMIT_INTENT.test(params.prediction)) {
+        const reason = 'stopped before a click the model describes as sending';
+        this.options.onStep?.({ kind: 'stop', outcome: 'done', reason });
+        return this.end('done', reason);
       }
       if (step.words[0] === 'click' && step.point && !context.allowSubmit && (await this.isSubmitControl(step.point))) {
         const reason = 'stopped before clicking a control that submits';
