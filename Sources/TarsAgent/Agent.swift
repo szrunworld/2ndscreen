@@ -42,6 +42,9 @@ public final class TarsAgent {
                                                            options: .caseInsensitive)
         /// Show the model the app's controls each step. On by default.
         public var listElements = true
+        /// Whether the screen takes swipes and drags; off for iPhone
+        /// Mirroring, which ignores them.
+        public var gestures = true
         /// The actions offered to the model; `TarsAgent.phoneActionSpaces`
         /// for a phone.
         public var actionSpaces = TarsAgent.actionSpaces
@@ -62,6 +65,14 @@ public final class TarsAgent {
             actionSpaces = TarsAgent.phoneActionSpaces
             listElements = false
             foreground = true
+        }
+
+        /// For an iPhone through iPhone Mirroring: taps, typing and Home,
+        /// and no Elements list (Mirroring exposes none).
+        public mutating func forIPhone() {
+            actionSpaces = TarsAgent.iPhoneActionSpaces
+            listElements = false
+            gestures = false
         }
     }
 
@@ -112,6 +123,18 @@ public final class TarsAgent {
         drag(start_box='[x1, y1, x2, y2]', end_box='[x3, y3, x4, y4]')
         press_home()
         press_back()
+        wait() #Sleep for 5s and take a screenshot to check for any changes.
+        finished(content='') #Use this when the task is done; put any answer in content.
+        call_user() # Submit the task and call the user when the task is unsolvable, or when you need the user's help.
+        """
+
+    /// For an iPhone through iPhone Mirroring: taps, typing and Home only.
+    /// Mirroring ignores every swipe and scroll from the Mac, and an iPhone
+    /// has no Back key.
+    public static let iPhoneActionSpaces = """
+        click(start_box='[x1, y1, x2, y2]')
+        type(content='') #Tap the text field first. If you want to submit your input, use "\\n" at the end of `content`.
+        press_home()
         wait() #Sleep for 5s and take a screenshot to check for any changes.
         finished(content='') #Use this when the task is done; put any answer in content.
         call_user() # Submit the task and call the user when the task is unsolvable, or when you need the user's help.
@@ -291,6 +314,7 @@ public final class TarsAgent {
             replyWithoutAction = false
 
             var context = PlanContext(frame: frame, allowSubmit: options.allowSubmit, foreground: options.foreground)
+            context.gestures = options.gestures
             for var action in prediction.actions {
                 context.menuOpen = screen.menuOpen()
                 // An element the model named stands in for any box it gave.

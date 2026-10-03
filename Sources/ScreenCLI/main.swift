@@ -11,8 +11,9 @@ usage:
                           [--ttl DURATION] [--idle-timeout DURATION] [--owner-pid PID]
   2ndscreen screen list
   2ndscreen screen destroy NAME
-  2ndscreen app launch --screen NAME (--bundle ID | --path APP) [--new-instance] [--fill]
-  2ndscreen window move --screen NAME --pid PID [--window-id ID] [--fill]
+  2ndscreen screen resize NAME --size WxH
+  2ndscreen app launch --screen NAME (--bundle ID | --path APP) [--new-instance] [--fill | --fit-screen]
+  2ndscreen window move --screen NAME --pid PID [--window-id ID] [--fill | --fit-screen]
   2ndscreen window release --screen NAME --pid PID [--window-id ID]
   2ndscreen screenshot --screen NAME --output FILE.png [--windows]
 
@@ -83,6 +84,10 @@ full-screen area, so its full-screen preview is pixel for pixel. Frames in
 the output use global top-left coordinates.
 HiDPI follows the main display. macOS allows it only from 800 points on the
 long side and 525 on the short side; smaller screens are created at 1x.
+screen resize changes a screen's size in place, up to the largest size it
+was created to allow (2560x1440 or its own size, whichever is larger).
+--fit-screen keeps the screen sized to the app's main window, plus the menu
+bar, as the window changes: iPhone Mirroring turning landscape, or resized.
 """
 
 func fail(_ message: String, code: Int32 = 2) -> Never {
@@ -151,6 +156,9 @@ if let first = args.positional.first, DriverCommands.verbs.contains(first) {
 if args.positional.first == "agent" {
     AgentCommand.run(args)
 }
+if args.positional.first == "iphone" {
+    IPhoneCommands.run(args)
+}
 let verb = args.positional.prefix(2).joined(separator: " ")
 
 var request: ControlRequest
@@ -186,6 +194,16 @@ case "screen destroy":
         fail("screen destroy needs a screen name")
     }
     request.screen = name
+case "screen resize":
+    request = ControlRequest(command: .screenResize)
+    guard let name = args.positional.dropFirst(2).first ?? args.value("--name") else {
+        fail("screen resize needs a screen name")
+    }
+    request.screen = name
+    let parts = (args.value("--size") ?? "").lowercased().split(separator: "x").compactMap { Int($0) }
+    guard parts.count == 2 else { fail("screen resize needs --size WIDTHxHEIGHT, such as 1280x800") }
+    request.width = parts[0]
+    request.height = parts[1]
 case "app launch":
     request = ControlRequest(command: .appLaunch)
     request.screen = args.value("--screen")
@@ -193,6 +211,7 @@ case "app launch":
     request.path = args.value("--path")
     request.newInstance = args.has("--new-instance")
     request.fill = args.has("--fill")
+    request.fitScreen = args.has("--fit-screen")
     guard request.bundleID != nil || request.path != nil else { fail("app launch needs --bundle or --path") }
 case "window move":
     request = ControlRequest(command: .windowMove)
@@ -201,6 +220,7 @@ case "window move":
     request.pid = pid
     request.windowID = args.value("--window-id").flatMap(UInt32.init)
     request.fill = args.has("--fill")
+    request.fitScreen = args.has("--fit-screen")
 case "window release":
     request = ControlRequest(command: .windowRelease)
     request.screen = args.value("--screen")
