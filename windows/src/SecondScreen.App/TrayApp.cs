@@ -7,6 +7,11 @@ namespace SecondScreen.App;
 internal sealed class Preferences
 {
     public bool Enabled { get; set; } = true;
+    /// <summary>The 2ndscreen display's physical size and scale; unset matches the main display.</summary>
+    public int? PixelWidth { get; set; }
+    public int? PixelHeight { get; set; }
+    public int? Scale { get; set; }
+    /// <summary>Older settings: a logical size, at 200% when HiDpi.</summary>
     public int? Width { get; set; }
     public int? Height { get; set; }
     public bool? HiDpi { get; set; }
@@ -16,7 +21,9 @@ internal sealed class Preferences
     /// <summary>The desktop the preview is on, so one left by a crash can be removed.</summary>
     public Guid? PreviewDesktop { get; set; }
 
-    private static string FilePath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "2ndscreen", "settings.json");
+    private static string Folder => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "2ndscreen");
+    private static string FilePath => Path.Combine(Folder, "settings.json");
+    public static string ErrorLog => Path.Combine(Folder, "errors.log");
 
     public static Preferences Load()
     {
@@ -49,6 +56,7 @@ internal sealed class TrayApp : ApplicationContext
 
     public TrayApp()
     {
+        Application.ThreadException += (_, e) => Report(e.Exception);
         screens = new Screens(driver);
         screens.Changed += ClosePreviewsOfDestroyedScreens;
 
@@ -81,27 +89,29 @@ internal sealed class TrayApp : ApplicationContext
 
     // MARK: Primary screen
 
-    private (int Width, int Height, bool HiDpi) PrimaryMode()
+    private Screens.Mode PrimaryMode()
     {
+        if (preferences is { PixelWidth: int w, PixelHeight: int h, Scale: int scale }) return new(w, h, scale);
+        if (preferences is { Width: int width, Height: int height }) return Screens.Mode.Logical(width, height, preferences.HiDpi ?? false);
         // By default match the main display, so the full-screen preview fills it pixel for pixel.
-        var main = Desktop.Primary();
-        return (preferences.Width ?? main.LogicalWidth, preferences.Height ?? main.LogicalHeight, preferences.HiDpi ?? main.HiDpi);
+        return Screens.Mode.Of(Desktop.Primary());
     }
 
     private void EnablePrimary(bool quiet = false)
     {
         if (screens.Primary is not null) return;
-        var (width, height, hiDpi) = PrimaryMode();
-        var response = screens.Create(Screens.PrimaryName, ScreenInfo.Primary, width, height, hiDpi, null, null, null);
+        var response = screens.Create(Screens.PrimaryName, ScreenInfo.Primary, PrimaryMode(), null, null, null);
         if (!response.Ok && !quiet) Notify(response.Error!);
         if (response.Ok && preferences.ShowPreview) TogglePreview(Screens.PrimaryName);
     }
 
-    private void SetPrimaryMode(int width, int height, bool hiDpi)
+    private void SetPrimaryMode(Screens.Mode mode)
     {
-        preferences.Width = width;
-        preferences.Height = height;
-        preferences.HiDpi = hiDpi;
+        preferences.PixelWidth = mode.PixelWidth;
+        preferences.PixelHeight = mode.PixelHeight;
+        preferences.Scale = mode.Scale;
+        preferences.Width = preferences.Height = null;
+        preferences.HiDpi = null;
         preferences.Save();
         if (screens.Primary is null) return;
         bool showing = previews.ContainsKey(Screens.PrimaryName);
@@ -123,9 +133,10 @@ internal sealed class TrayApp : ApplicationContext
             case ControlRequest.ScreenCreate:
             {
                 var main = Desktop.Primary();
-                return screens.Create(request.Screen, ScreenInfo.Agent,
-                    request.Width ?? main.LogicalWidth, request.Height ?? main.LogicalHeight,
-                    request.HiDpi ?? main.HiDpi, request.Ttl, request.IdleTimeout, request.OwnerPid);
+                var mode = request.Width is null && request.Height is null && request.HiDpi is null
+                    ? Screens.Mode.Of(main)
+                    : Screens.Mode.Logical(request.Width ?? main.LogicalWidth, request.Height ?? main.LogicalHeight, request.HiDpi ?? main.HiDpi);
+                return screens.Create(request.Screen, ScreenInfo.Agent, mode, request.Ttl, request.IdleTimeout, request.OwnerPid);
             }
             case ControlRequest.ScreenList:
                 return new ControlResponse { Screens = screens.All.Select(screens.Info).ToList() };
@@ -265,21 +276,22 @@ internal sealed class TrayApp : ApplicationContext
             if (primary is null) EnablePrimary(); else screens.Destroy(Screens.PrimaryName);
         }));
 
-        var (width, height, hiDpi) = PrimaryMode();
+        var current = PrimaryMode();
         var resolution = new ToolStripMenuItem("Resolution");
         foreach (var display in Desktop.Displays().Where(d => !d.IsVirtual))
         {
-            var label = $"Match {display.Device.TrimStart('\\', '.')} — {display.LogicalWidth}x{display.LogicalHeight}{(display.HiDpi ? " HiDPI" : "")}";
-            bool matches = display.LogicalWidth == width && display.LogicalHeight == height && display.HiDpi == hiDpi;
-            resolution.DropDownItems.Add(Check(label, matches, () => SetPrimaryMode(display.LogicalWidth, display.LogicalHeight, display.HiDpi)));
+            var match = Screens.Mode.Of(display);
+            resolution.DropDownItems.Add(Check($"Match {display.Device.TrimStart('\\', '.')} — {match}", match == current, () => SetPrimaryMode(match)));
         }
         resolution.DropDownItems.Add(new ToolStripSeparator());
         foreach (var (w, h) in Presets)
         {
-            resolution.DropDownItems.Add(Check($"{w}x{h}", w == width && h == height, () => SetPrimaryMode(w, h, hiDpi)));
+            var preset = Screens.Mode.Logical(w, h, current.Scale >= 200);
+            resolution.DropDownItems.Add(Check($"{w}x{h}", preset == current, () => SetPrimaryMode(preset)));
         }
         menu.Items.Add(resolution);
-        menu.Items.Add(Check("HiDPI (200%)", hiDpi, () => SetPrimaryMode(width, height, !hiDpi)));
+        menu.Items.Add(Check("HiDPI (200%)", current.Scale >= 200,
+            () => SetPrimaryMode(Screens.Mode.Logical(current.Width, current.Height, current.Scale < 200))));
         menu.Items.Add(new ToolStripSeparator());
 
         var preview = Check("Show Preview", previews.ContainsKey(Screens.PrimaryName), () => TogglePreview(Screens.PrimaryName));
@@ -349,7 +361,7 @@ internal sealed class TrayApp : ApplicationContext
     {
         if (!driver.IsInstalled) return driver.Status();
         if (primary?.Display is not { } display) return "Virtual display off";
-        return $"{primary.Width}x{primary.Height}{(display.HiDpi ? " HiDPI" : "")} · at ({display.Bounds.X}, {display.Bounds.Y})";
+        return $"{display.Bounds.Width}x{display.Bounds.Height} at {display.ScalePercent}% · at ({display.Bounds.X}, {display.Bounds.Y})";
     }
 
     private static ToolStripMenuItem Check(string text, bool on, Action action) =>
@@ -358,6 +370,17 @@ internal sealed class TrayApp : ApplicationContext
     private static void Open(string target) => Process.Start(new ProcessStartInfo(target) { UseShellExecute = true });
 
     private void Notify(string message) => tray.ShowBalloonTip(5000, "2ndscreen", message, ToolTipIcon.Warning);
+
+    /// <summary>Show an unexpected failure and keep its details in %APPDATA%\2ndscreen\errors.log.</summary>
+    private void Report(Exception error)
+    {
+        try
+        {
+            File.AppendAllText(Preferences.ErrorLog, $"{DateTime.Now:O} {error}{Environment.NewLine}{Environment.NewLine}");
+        }
+        catch (IOException) { }
+        Notify($"Something went wrong: {error.Message} (details in {Preferences.ErrorLog})");
+    }
 
     protected override void ExitThreadCore()
     {

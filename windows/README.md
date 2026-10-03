@@ -88,9 +88,11 @@ window that is not on the named screen, so your foreground window stays put.
   monitor by itself. After a reload 2ndscreen detaches the ones no screen
   uses; a clone reports the other display's adapter, so they are matched by
   monitor device path.
-- **HiDPI.** A `--hidpi` screen has twice the physical pixels at 200% scale,
-  set through the same undocumented DisplayConfig call Settings uses. The
-  default follows the main display.
+- **Scale.** A screen is a size in physical pixels plus a scale, set through
+  the same undocumented DisplayConfig call Settings uses. By default, and
+  with **Resolution > Match**, it copies the main display's pixels and scale
+  (say 1920x1080 at 150%), so a full-screen preview there is one to one. A
+  `--hidpi` screen has twice the pixels of its `--size` at 200%.
 - **Coordinates.** Frames are physical pixels on the virtual desktop, the
   space cua-driver uses (macOS reports points).
 

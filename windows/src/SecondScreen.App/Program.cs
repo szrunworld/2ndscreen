@@ -17,6 +17,9 @@ internal static class Program
         using var mutex = new Mutex(true, $@"Local\2ndscreen-app-{Environment.UserName}", out bool first);
         if (!first) return 0;
 
+        // A failure in a menu action or a timer is reported (see TrayApp) instead of
+        // ending the app, which would leave its virtual screens attached.
+        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
         ApplicationConfiguration.Initialize();
         Application.Run(new TrayApp());
         return 0;

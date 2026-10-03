@@ -10,6 +10,23 @@ namespace SecondScreen.App;
 /// </summary>
 internal sealed class Screens
 {
+    /// <summary>A screen's size in physical pixels and its scale, such as 1920x1080 at 150%.</summary>
+    public readonly record struct Mode(int PixelWidth, int PixelHeight, int Scale)
+    {
+        public int Width => PixelWidth * 100 / Scale;
+        public int Height => PixelHeight * 100 / Scale;
+
+        /// <summary>A logical size at 100%, or at 200% for HiDPI.</summary>
+        public static Mode Logical(int width, int height, bool hiDpi) =>
+            hiDpi ? new(width * 2, height * 2, 200) : new(width, height, 100);
+
+        /// <summary>The same pixels and scale as <paramref name="display"/>, so a full-screen preview on it is one to one.</summary>
+        public static Mode Of(DisplayInfo display) =>
+            new(display.Bounds.Width, display.Bounds.Height, Math.Max(display.ScalePercent, 100));
+
+        public override string ToString() => $"{PixelWidth}x{PixelHeight}" + (Scale == 100 ? "" : $" at {Scale}%");
+    }
+
     public sealed class Screen
     {
         public required string Name { get; init; }
@@ -17,7 +34,8 @@ internal sealed class Screens
         public required string Device { get; init; }
         public required int Width { get; init; }
         public required int Height { get; init; }
-        public required bool HiDpi { get; init; }
+        public required int Scale { get; init; }
+        public bool HiDpi => Scale >= 200;
         public DateTime? Deadline { get; init; }
         public TimeSpan? IdleTimeout { get; init; }
         public int? OwnerPid { get; init; }
@@ -72,7 +90,7 @@ internal sealed class Screens
 
     // MARK: Lifecycle
 
-    public ControlResponse Create(string? requestedName, string kind, int width, int height, bool hiDpi,
+    public ControlResponse Create(string? requestedName, string kind, Mode mode,
                                   double? ttl, double? idleTimeout, int? ownerPid)
     {
         if (kind == ScreenInfo.Agent && Agents.Count() >= AgentLimit)
@@ -80,7 +98,7 @@ internal sealed class Screens
         var name = requestedName ?? NextName();
         if (name.Length == 0 || Named(name) is not null || (kind == ScreenInfo.Agent && name == PrimaryName))
             return ControlResponse.Failure($"a screen named \"{name}\" already exists");
-        if (width is < 320 or > 7680 || height is < 240 or > 4320)
+        if (mode.PixelWidth is < 320 or > 7680 || mode.PixelHeight is < 240 or > 4320)
             return ControlResponse.Failure("size must be between 320x240 and 7680x4320");
         if (ownerPid is int owner && !IsRunning(owner))
             return ControlResponse.Failure($"owner pid {owner} is not running");
@@ -94,7 +112,7 @@ internal sealed class Screens
             var standIn = new Screen
             {
                 Name = name, Kind = kind, Device = testDevice, Width = existing.LogicalWidth, Height = existing.LogicalHeight,
-                HiDpi = existing.HiDpi, Deadline = ttl is double s ? DateTime.UtcNow.AddSeconds(s) : null,
+                Scale = existing.ScalePercent, Deadline = ttl is double s ? DateTime.UtcNow.AddSeconds(s) : null,
                 IdleTimeout = idleTimeout is double i && i > 0 ? TimeSpan.FromSeconds(i) : null, OwnerPid = ownerPid,
                 TestStandIn = true,
             };
@@ -103,8 +121,7 @@ internal sealed class Screens
             return new ControlResponse { Screen = Info(standIn) };
         }
 
-        int scale = hiDpi ? 2 : 1;
-        var physical = new VddSettings.Resolution(width * scale, height * scale);
+        var physical = new VddSettings.Resolution(mode.PixelWidth, mode.PixelHeight);
         // A reload detaches every virtual monitor, so only allow one while none is in use.
         if (driver.Prepare(new[] { physical }, allowReload: screens.Count == 0) is { } problem)
             return ControlResponse.Failure(problem);
@@ -117,16 +134,16 @@ internal sealed class Screens
             driver.Release(device);
             return ControlResponse.Failure(attachProblem ?? $"Windows refused to attach a {physical} display");
         }
-        bool scaled = hiDpi && DisplayScale.Set(device, 200);
-        if (hiDpi && !scaled)
+        if (mode.Scale != 100 && !DisplayScale.Set(device, mode.Scale))
         {
-            // Without the scale a 2x display would look twice as big; fall back to 1x.
-            driver.Attach(device, width, height, out _);
+            // Without its scale everything would look too small; fall back to the logical size at 100%.
+            mode = new Mode(mode.Width, mode.Height, 100);
+            driver.Attach(device, mode.PixelWidth, mode.PixelHeight, out _);
         }
 
         var screen = new Screen
         {
-            Name = name, Kind = kind, Device = device, Width = width, Height = height, HiDpi = scaled,
+            Name = name, Kind = kind, Device = device, Width = mode.Width, Height = mode.Height, Scale = mode.Scale,
             Deadline = ttl is double seconds ? DateTime.UtcNow.AddSeconds(seconds) : null,
             IdleTimeout = kind == ScreenInfo.Primary ? null
                 : idleTimeout is double idle ? (idle > 0 ? TimeSpan.FromSeconds(idle) : null) : DefaultIdleTimeout,
