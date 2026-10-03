@@ -7,20 +7,30 @@ import CoreMedia
 /// due right after the one before, a little ahead of now. The two clocks
 /// drift apart, and the phone sends nothing while it is silent, so playing to
 /// the phone's timestamps would slowly add delay or leave gaps. Instead,
-/// running dry starts a fresh short buffer, and running too far ahead drops
+/// running dry starts a fresh buffer, and running too far ahead drops
 /// packets.
+///
+/// Over Wi-Fi, packets come in bursts after pauses of up to half a second
+/// (the phone's power saving holds them back), so the buffer starts short
+/// and grows each time it runs dry, and the burst after a pause is kept.
 /// Thread use: the mirror's audio reader thread only.
 final class AndroidAudioPlayer {
-    /// How far ahead of now playback restarts after running dry.
-    private static let latency = CMTime(value: 60, timescale: 1000)
-    /// Packets due later than this are dropped.
-    private static let maxAhead = CMTime(value: 150, timescale: 1000)
+    /// How far ahead of now playback restarts after running dry: at first,
+    /// at most, and how much more each time.
+    private static let initialLatency = CMTime(value: 100, timescale: 1000)
+    private static let maxLatency = CMTime(value: 500, timescale: 1000)
+    private static let latencyStep = CMTime(value: 80, timescale: 1000)
+    /// Packets due this much later than the latency are dropped. The burst
+    /// after a pause refills what the pause used, so this covers the
+    /// longest pause.
+    private static let burstAllowance = CMTime(value: 400, timescale: 1000)
 
     private let renderer = AVSampleBufferAudioRenderer()
     private let synchronizer = AVSampleBufferRenderSynchronizer()
     private var format: CMAudioFormatDescription?
     private var packetDuration = CMTime(value: 1024, timescale: 48000)
     private var next = CMTime.invalid
+    private var latency = initialLatency
 
     init() {
         synchronizer.addRenderer(renderer)
@@ -58,10 +68,11 @@ final class AndroidAudioPlayer {
         let now = synchronizer.currentTime()
         if synchronizer.rate == 0 {
             synchronizer.setRate(1, time: .zero)
-            next = Self.latency
+            next = latency
         } else if !next.isValid || next < now + CMTime(value: 10, timescale: 1000) {
-            next = now + Self.latency
-        } else if next > now + Self.maxAhead {
+            latency = min(latency + Self.latencyStep, Self.maxLatency)
+            next = now + latency
+        } else if next > now + latency + Self.burstAllowance {
             return
         }
         guard let sample = sampleBuffer(packet, format: format, at: next) else { return }
