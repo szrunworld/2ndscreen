@@ -1,4 +1,6 @@
 import CoreMedia
+import os
+import QuartzCore
 import Foundation
 import SecondScreenCore
 
@@ -55,6 +57,7 @@ final class AndroidMirror: @unchecked Sendable {
     private let controlQueue = DispatchQueue(label: "2ndscreen.android.control")
     private let lock = NSLock()
     private var stopped = false
+    private let avSkew = AVSkew()
     private var video = true
     private var audio = true
 
@@ -293,6 +296,7 @@ final class AndroidMirror: @unchecked Sendable {
                 units.removeAll { [7, 8].contains(H264.type(of: $0)) }
                 guard !isConfig, !units.isEmpty, let format,
                       let sample = H264.sampleBuffer(units: units, format: format) else { continue }
+                avSkew.video(pts: header.pts, at: CACurrentMediaTime())
                 onFrame?(sample)
             }
         } catch {
@@ -314,7 +318,10 @@ final class AndroidMirror: @unchecked Sendable {
             if flags & 0x40 != 0 {
                 audioPlayer.configure(packet)
             } else {
-                audioPlayer.play(packet)
+                let arrival = CACurrentMediaTime()
+                if let queued = audioPlayer.play(packet) {
+                    avSkew.audio(pts: header.pts, playsAt: arrival + queued)
+                }
             }
         }
     }
@@ -637,5 +644,46 @@ private extension Sequence where Element == UInt8 {
         }
         if !current.isEmpty { chunks.append(current) }
         return chunks
+    }
+}
+
+/// How far the phone's sound plays ahead of or behind its picture. Both
+/// streams carry the phone's own microsecond clock, so (when shown on the
+/// Mac) - (when taken on the phone) is comparable between them.
+final class AVSkew: @unchecked Sendable {
+    private static let log = Logger(subsystem: "io.github.szrunworld.2ndscreen", category: "android-av")
+    private let lock = NSLock()
+    private var videoOffsets: [Double] = []
+    private var audioOffsets: [Double] = []
+    private var lastReport = CACurrentMediaTime()
+
+    func video(pts: UInt64, at host: Double) {
+        add(host - Double(pts) / 1e6, video: true)
+    }
+
+    func audio(pts: UInt64, playsAt host: Double) {
+        add(host - Double(pts) / 1e6, video: false)
+    }
+
+    private func add(_ offset: Double, video: Bool) {
+        lock.withLock {
+            if video { videoOffsets.append(offset) } else { audioOffsets.append(offset) }
+            let now = CACurrentMediaTime()
+            guard now - lastReport >= 2, !videoOffsets.isEmpty, !audioOffsets.isEmpty else { return }
+            func median(_ values: [Double]) -> Double { values.sorted()[values.count / 2] }
+            let v = median(videoOffsets), a = median(audioOffsets)
+            let vMin = videoOffsets.min()!, vMax = videoOffsets.max()!
+            Self.log.info("audio \(Int((a - v) * 1000)) ms vs video (negative: sound early); video lag spread \(Int((vMax - vMin) * 1000)) ms over \(self.videoOffsets.count) frames")
+            videoOffsets.removeAll()
+            audioOffsets.removeAll()
+            lastReport = now
+        }
+    }
+}
+
+private extension Data {
+    /// A packet header's timestamp, in the phone's microseconds, without its flags.
+    var pts: UInt64 {
+        self[startIndex..<startIndex + 8].reduce(0) { $0 << 8 | UInt64($1) } & ((1 << 60) - 1)
     }
 }

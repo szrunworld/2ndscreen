@@ -66,11 +66,18 @@ final class AndroidAudioPlayer {
         packetDuration = CMTime(value: 1024, timescale: CMTimeScale(rates[rateIndex]))
     }
 
-    /// Queue one AAC packet.
-    func play(_ packet: Data) {
-        guard let format, !packet.isEmpty else { return }
+    /// Queue one AAC packet; returns how long until it plays, or nil if dropped.
+    @discardableResult
+    func play(_ packet: Data) -> Double? {
+        guard let format, !packet.isEmpty else { return nil }
         if renderer.status == .failed { renderer.flush() }
         if rate == 0 { setRate(1, time: .zero) }
+        // The phone's player holds its picture back by its speaker's
+        // latency, which the captured sound skips, so the sound comes early:
+        // 1 s lined it up by ear on a Honor phone over Wi-Fi.
+        // `defaults write io.github.szrunworld.2ndscreen androidAudioDelay
+        // -float SECONDS` sets another, taking effect at once.
+        jitter.setExtraDelay(UserDefaults.standard.object(forKey: "androidAudioDelay") as? Double ?? 1)
         var now = synchronizer.currentTime()
         let host = CACurrentMediaTime()
         if now.seconds != lastClock {
@@ -100,8 +107,9 @@ final class AndroidAudioPlayer {
         if decision.rate != rate { setRate(decision.rate, time: now) }
         guard let at = decision.at,
               let sample = sampleBuffer(packet, format: format, at: CMTime(seconds: at, preferredTimescale: 48000))
-        else { return }
+        else { return nil }
         renderer.enqueue(sample)
+        return (at - now.seconds) / Double(rate == 0 ? 1 : rate)
     }
 
     func stop() {
