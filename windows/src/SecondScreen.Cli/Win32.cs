@@ -17,7 +17,7 @@ internal static class Win32
     public const uint MOUSEEVENTF_MOVE = 0x1, MOUSEEVENTF_LEFTDOWN = 0x2, MOUSEEVENTF_LEFTUP = 0x4;
     public const uint MOUSEEVENTF_WHEEL = 0x800, MOUSEEVENTF_HWHEEL = 0x1000;
     public const uint MOUSEEVENTF_ABSOLUTE = 0x8000, MOUSEEVENTF_VIRTUALDESK = 0x4000;
-    public const uint KEYEVENTF_KEYUP = 0x2;
+    public const uint KEYEVENTF_KEYUP = 0x2, KEYEVENTF_EXTENDEDKEY = 0x1;
 
     [StructLayout(LayoutKind.Sequential)]
     public struct POINT { public int X, Y; }

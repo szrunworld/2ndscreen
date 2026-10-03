@@ -231,8 +231,9 @@ public static class Mcp
                 return w;
             }),
         new("key", "Press a key, optionally with modifiers, e.g. key enter, or key s with modifiers [ctrl]. " +
-            "Name the control with index or text when the program has not been clicked yet, so nothing has focus.",
-            Merge(WindowTarget, ElementTarget, new JsonObject
+            "Name the control with index or text when the program has not been clicked yet, so nothing has focus. " +
+            "Shortcuts in WPF and Chromium programs need foreground, which brings the program forward for a moment.",
+            Merge(WindowTarget, ElementTarget, Foreground, new JsonObject
             {
                 ["key"] = Prop("string", "Key name, e.g. enter, escape, tab, a"),
                 ["modifiers"] = new JsonObject { ["type"] = "array", ["items"] = new JsonObject { ["type"] = "string" }, ["description"] = "ctrl, shift, alt, win" },
@@ -244,6 +245,7 @@ public static class Mcp
                 w.AddRange(ElementWords(a));
                 w.AddRange(new[] { "--key", S(a, "key") });
                 if (a["modifiers"] is JsonArray mods && mods.Count > 0) w.AddRange(new[] { "--modifiers", string.Join(',', mods.Select(m => m?.ToString())) });
+                if (B(a, "foreground")) w.Add("--foreground");
                 return w;
             }),
         new("scroll", "Scroll an element, or turn the mouse wheel at a point, in the background; without either, the window's middle. " +

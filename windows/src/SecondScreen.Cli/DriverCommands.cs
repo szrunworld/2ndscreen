@@ -182,8 +182,10 @@ public static class DriverCommands
         var window = target.Window.Handle;
         // A named control takes the key directly: its own window, else focus through UI Automation.
         nint control = 0;
+        AutomationElement? focusTarget = null;
         if (Resolve(target, args, required: false) is ({ } element, { } handle))
         {
+            focusTarget = handle;
             described["element"] = JsonSerializer.SerializeToNode(element.ToJson());
             control = Automation.NativeWindow(handle);
             if (Automation.IsWeb(handle))
@@ -200,6 +202,17 @@ public static class DriverCommands
         // Symbols with no key of their own, such as "*", arrive when typed as text.
         if (KeyCodes.VirtualKey(key) is null && key.Length == 1 && modifiers.Count == 0)
             return Report(target, described, Input.Type(window, key, control));
+        if (args.Has("--foreground"))
+        {
+            var focus = focusTarget;
+            return Report(target, described, Input.ForegroundKey(window, key, modifiers,
+                focus is null ? null : () => { try { focus.SetFocus(); } catch (InvalidOperationException) { } }));
+        }
+        // WPF and Chromium read held modifiers from the keyboard itself, so a background
+        // shortcut would do nothing there, or the key alone; say so rather than pretend.
+        if (modifiers.Count > 0 && ReadsRealKeyboard(window))
+            throw new InvalidOperationException($"{Win32.ClassName(window)} ignores shortcuts in the background; " +
+                "rerun with --foreground, which brings the program forward for a moment, so ask the user first");
         return Report(target, described, Input.Key(window, key, modifiers, control));
     }
 
@@ -243,8 +256,9 @@ public static class DriverCommands
 
         if (!args.Has("--foreground"))
         {
-            // Chromium ignores a posted wheel; scroll what lies under the point instead.
-            if (IsChromium(window) && Automation.At(point, window) is { } under
+            // Scroll what lies under the point through UI Automation where it can: WPF wheels
+            // follow the real pointer, and Chromium ignores a posted wheel.
+            if (Automation.At(point, window) is { } under
                 && Pattern(window, () => Automation.Scroll(under, direction, notches, by == "page")) is { } route)
                 return Report(target, described, route);
             return Report(target, described, Input.Wheel(window, point, direction, notches, by == "page"));
@@ -335,6 +349,10 @@ public static class DriverCommands
         });
         return route;
     }
+
+    /// <summary>Whether the program takes modifiers from the real keyboard: WPF and Chromium.</summary>
+    private static bool ReadsRealKeyboard(nint window) =>
+        IsChromium(window) || Win32.ClassName(window).StartsWith("HwndWrapper", StringComparison.Ordinal);
 
     /// <summary>Whether the window is a Chromium browser or Electron program.</summary>
     private static bool IsChromium(nint window)

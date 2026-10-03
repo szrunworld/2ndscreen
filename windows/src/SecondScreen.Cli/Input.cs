@@ -219,6 +219,48 @@ public static class Input
         return "sendinput";
     }
 
+    /// <summary>
+    /// Press a key with modifiers as real keyboard input, with the window brought forward
+    /// for the moment and the user's window put back after. For programs that read the
+    /// keyboard's state rather than their messages (WPF, Chromium). <paramref name="focus"/>
+    /// runs once the window is in front, to put the keys in the right control.
+    /// </summary>
+    public static string ForegroundKey(nint window, string name, IReadOnlyList<string> modifiers, Action? focus = null)
+    {
+        var key = KeyCodes.VirtualKey(name) ?? throw new InvalidOperationException($"unknown key \"{name}\"");
+        var held = modifiers.Select(KeyCodes.Modifier).Distinct().ToList();
+        var previous = Win32.GetForegroundWindow();
+        TakeForeground(window);
+        try
+        {
+            Thread.Sleep(60);
+            focus?.Invoke();
+            Thread.Sleep(40);
+            var inputs = new List<Win32.INPUT>();
+            void Add(ushort vk, bool up, bool extended)
+            {
+                var input = new Win32.INPUT { type = Win32.INPUT_KEYBOARD };
+                input.u.ki = new Win32.KEYBDINPUT
+                {
+                    wVk = vk, wScan = (ushort)Win32.MapVirtualKey(vk, Win32.MAPVK_VK_TO_VSC),
+                    dwFlags = (up ? Win32.KEYEVENTF_KEYUP : 0) | (extended ? Win32.KEYEVENTF_EXTENDEDKEY : 0),
+                };
+                inputs.Add(input);
+            }
+            foreach (var vk in held) Add(vk, up: false, extended: false);
+            Add(key.Vk, up: false, key.Extended);
+            Add(key.Vk, up: true, key.Extended);
+            for (int i = held.Count - 1; i >= 0; i--) Add(held[i], up: true, extended: false);
+            Win32.SendInput((uint)inputs.Count, inputs.ToArray(), Marshal.SizeOf<Win32.INPUT>());
+            Thread.Sleep(80);
+        }
+        finally
+        {
+            if (previous != 0) TakeForeground(previous);
+        }
+        return "sendinput.key";
+    }
+
     // MARK: Helpers
 
     /// <summary>

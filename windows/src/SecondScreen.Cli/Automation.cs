@@ -171,7 +171,37 @@ public sealed class Automation
             double target = Math.Clamp(before + step, 0, 100);
             if (vertical) pattern.SetScrollPercent(ScrollPattern.NoScroll, target);
             else pattern.SetScrollPercent(target, ScrollPattern.NoScroll);
-            return Percent() != before ? "uia.scrollpercent" : null;
+            if (Percent() != before) return "uia.scrollpercent";
+        }
+        return RevealNext(element, direction, notches);
+    }
+
+    /// <summary>
+    /// Scroll a list by bringing its next hidden item into view, a notch at a time: the one
+    /// route Chromium takes for a background page, where it ignores Scroll and the wheel.
+    /// </summary>
+    private static string? RevealNext(AutomationElement element, string direction, int notches)
+    {
+        if (direction is not ("up" or "down")) return null;
+        bool down = direction == "down";
+        for (var container = element; container is not null; container = TreeWalker.ControlViewWalker.GetParent(container))
+        {
+            var area = container.Current.BoundingRectangle;
+            var items = container.FindAll(TreeScope.Children, Condition.TrueCondition).Cast<AutomationElement>()
+                .Where(item => item.GetCurrentPropertyValue(AutomationElement.IsScrollItemPatternAvailableProperty) is true).ToList();
+            if (items.Count < 2 || area.IsEmpty) continue;
+            bool moved = false;
+            for (int notch = 0; notch < notches * 3; notch++)
+            {
+                area = container.Current.BoundingRectangle;
+                var hidden = down
+                    ? items.FirstOrDefault(item => item.Current.BoundingRectangle.Bottom > area.Bottom + 1)
+                    : items.LastOrDefault(item => item.Current.BoundingRectangle.Top < area.Top - 1);
+                if (hidden is null) break;
+                ((ScrollItemPattern)hidden.GetCurrentPattern(ScrollItemPattern.Pattern)).ScrollIntoView();
+                moved = true;
+            }
+            if (moved) return "uia.scrollintoview";
         }
         return null;
     }

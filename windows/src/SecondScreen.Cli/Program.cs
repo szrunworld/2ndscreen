@@ -20,6 +20,7 @@ usage:
   2ndscreen click --screen NAME --pid PID (--index N | --text TEXT | --x X --y Y) [--right | --double]
   2ndscreen type  --screen NAME --pid PID --value TEXT [--index N | --text TEXT]
   2ndscreen key   --screen NAME --pid PID --key NAME [--modifiers ctrl,shift] [--index N | --text TEXT]
+                  [--foreground]
   2ndscreen scroll --screen NAME --pid PID --direction up|down|left|right [--amount N] [--by line|page]
                    [--index N | --text TEXT | --x X --y Y] [--foreground]
   2ndscreen drag  --screen NAME --pid PID --from-x X --from-y Y --to-x X --to-y Y
@@ -42,9 +43,10 @@ space as UI Automation.
 
 state, click, type, key, scroll and drag act in the background, through UI
 Automation patterns or input posted to the window, and only on a window that
-is on the named screen. For programs that ignore background input, scroll and
-drag take --foreground, which brings the program to the front and moves the
-real pointer (2ndscreen puts both back afterwards). Indexes come from state;
+is on the named screen. For programs that ignore background input, key, scroll
+and drag take --foreground, which brings the program to the front for a moment
+and uses the real keyboard or pointer (2ndscreen puts both back afterwards);
+shortcuts in WPF and Chromium programs need it. Indexes come from state;
 click and type re-read the window, so run state again after the UI changes.
 
 agent runs INSTRUCTION with a UI-TARS vision model, which reads screenshots of

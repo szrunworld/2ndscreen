@@ -230,7 +230,8 @@ if (-not $launched.ok) {
 # window, and a web page in Edge, which is Chromium. Each has a text box named Input, a
 # button "Press me" with a "Pressed N" count, and a list named Rows that reports "Top N".
 function Test-Program([string] $kind, $launched) {
-    $names = "click", "type", "ctrl+a", "scroll an element", "wheel at a point", "foreground left alone"
+    $names = "click", "type", "background shortcut refused", "ctrl+a with --foreground", "foreground put back after --foreground",
+             "scroll an element", "wheel at a point", "foreground left alone"
     if (-not $launched.ok) {
         foreach ($name in $names) { Skip "${kind}: $name" "launch failed: $($launched.error)" }
         return
@@ -256,12 +257,20 @@ function Test-Program([string] $kind, $launched) {
 
     # ctrl+a then backspace empties the box only if the shortcut selected everything.
     if (-not (Value-Of $state "Input")) {
-        Skip "${kind}: ctrl+a" "the box is empty, so emptying it would prove nothing"
+        foreach ($name in "background shortcut refused", "ctrl+a with --foreground", "foreground put back after --foreground") {
+            Skip "${kind}: $name" "the box is empty, so emptying it would prove nothing"
+        }
     } else {
-    $selected = Invoke-2ndscreen (@("key") + $on + @("--text", "Input", "--key", "a", "--modifiers", "ctrl"))
-    $erased = Invoke-2ndscreen (@("key") + $on + @("--text", "Input", "--key", "backspace"))
+    # WPF and Chromium read held modifiers from the real keyboard: a background shortcut
+    # is refused, and --foreground brings the program forward for the moment of the keys.
+    $refused = Invoke-2ndscreen (@("key") + $on + @("--text", "Input", "--key", "a", "--modifiers", "ctrl"))
+    Check "${kind}: background shortcut refused" ([bool](-not $refused.ok -and $refused.error -match "--foreground")) "$($refused.route) $($refused.error)"
+    $frontBefore = [Fg]::Pid()
+    $selected = Invoke-2ndscreen (@("key") + $on + @("--text", "Input", "--key", "a", "--modifiers", "ctrl", "--foreground"))
+    $erased = Invoke-2ndscreen (@("key") + $on + @("--text", "Input", "--key", "backspace", "--foreground"))
     $state = Read-State
-    Check "${kind}: ctrl+a" ([bool]($selected.ok -and $erased.ok -and -not (Value-Of $state "Input"))) "value '$(Value-Of $state "Input")' $($selected.route) $($selected.error) $($erased.error)"
+    Check "${kind}: ctrl+a with --foreground" ([bool]($selected.ok -and $erased.ok -and -not (Value-Of $state "Input"))) "value '$(Value-Of $state "Input")' $($selected.route) $($selected.error) $($erased.error)"
+    Check "${kind}: foreground put back after --foreground" ([Fg]::Pid() -eq $frontBefore) "before $frontBefore, after $([Fg]::Pid())"
     }
 
     $scrolled = Invoke-2ndscreen (@("scroll") + $on + @("--text", "Rows", "--direction", "down", "--amount", "5"))
