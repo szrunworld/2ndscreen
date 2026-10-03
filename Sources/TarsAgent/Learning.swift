@@ -249,6 +249,7 @@ extension TarsAgent {
 
     func replay(_ procedure: Procedure, _ bindings: [String], instruction: String) -> ReplayEnd {
         for (number, step) in procedure.steps.enumerated() {
+            if options.isCancelled() { return .handOver("stopped", failed: false) }
             let what = "step \(number + 1) (\(step.summary(bindings)))"
             if step.kind == "wait" {
                 // A wait only gave the app time, which finding the next

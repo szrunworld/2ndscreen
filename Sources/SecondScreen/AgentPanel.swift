@@ -1,26 +1,43 @@
 import AppKit
+import SecondScreenCore
+import TarsAgent
 
-/// A side panel in the mirror window that runs an instruction with UI-TARS
-/// on the phone (`2ndscreen agent --android`) and shows each step. When the
-/// run stops short of sending, the held-back action waits for Confirm.
+/// A side panel that runs an instruction with UI-TARS, in this app, on the
+/// screen beside it, and shows each step. When the run stops short of
+/// sending, the held-back action waits for Confirm. Any `AgentScreen`
+/// will do: a phone's mirror window has one for the phone.
 @MainActor
-final class AndroidAgentPanel: NSView {
+final class AgentPanel: NSView {
     static let width: CGFloat = 340
 
-    private let serial: String
+    private let makeScreen: () -> AgentScreen
+    private let options: TarsAgent.Options
+    private let example: String
     private let instruction = NSTextField()
     private let runButton = NSButton()
     private let log = NSTextView()
     private let pendingBox = NSStackView()
     private let pendingLabel = NSTextField(wrappingLabelWithString: "")
-    private var run: AndroidAgentRun?
-    /// The 2ndscreen command the run held back, such as a tap on Send.
-    private var pending: [String]?
+    private var run: AgentRun?
+    /// What the run held back, such as a tap on Send, and where.
+    private var pending: (action: InputAction, screen: AgentScreen)?
 
-    init(serial: String) {
-        self.serial = serial
+    init(options: TarsAgent.Options, example: String, makeScreen: @escaping () -> AgentScreen) {
+        self.makeScreen = makeScreen
+        self.options = options
+        self.example = example
         super.init(frame: NSRect(x: 0, y: 0, width: Self.width, height: 600))
         build()
+    }
+
+    /// For an Android phone, by its adb serial.
+    static func android(serial: String) -> AgentPanel {
+        var options = TarsAgent.Options()
+        options.forPhone()
+        return AgentPanel(options: options, example: text("例如：给文件传输助手写一句早安",
+                                                          "e.g. Open Settings and find the Android version")) {
+            AndroidAgentScreen(serial: serial)
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -44,7 +61,7 @@ final class AndroidAgentPanel: NSView {
         hint.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         hint.textColor = .secondaryLabelColor
 
-        instruction.placeholderString = text("例如：给文件传输助手写一句早安", "e.g. Open Settings and find the Android version")
+        instruction.placeholderString = example
         instruction.target = self
         instruction.action = #selector(runPressed)
         instruction.lineBreakMode = .byWordWrapping
@@ -118,6 +135,7 @@ final class AndroidAgentPanel: NSView {
     @objc private func runPressed() {
         if let run {
             run.stop()
+            append(text("正在停止，等这一步做完…", "Stopping after this step…"), color: .secondaryLabelColor)
             return
         }
         let task = instruction.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -125,16 +143,12 @@ final class AndroidAgentPanel: NSView {
         hidePending()
         log.string = ""
         append("▶ \(task)", color: .systemBlue)
-        do {
-            let run = try AndroidAgentRun(serial: serial, instruction: task)
-            run.onLine = { [weak self] line in self?.show(line) }
-            run.onFinish = { [weak self] result in self?.finished(result) }
-            try run.start()
-            self.run = run
-            setRunning(true)
-        } catch {
-            append(error.localizedDescription, color: .systemRed)
-        }
+        let run = AgentRun(screen: makeScreen(), options: options, instruction: task)
+        run.onLine = { [weak self] line in line.split(separator: "\n").forEach { self?.show(String($0)) } }
+        run.onFinish = { [weak self, screen = run.screen] result in self?.finished(result, on: screen) }
+        run.start()
+        self.run = run
+        setRunning(true)
     }
 
     /// The runner's progress lines: thoughts (·), actions (→), commands ($),
@@ -151,15 +165,15 @@ final class AndroidAgentPanel: NSView {
         }
     }
 
-    private func finished(_ result: AndroidAgentRun.Result) {
+    private func finished(_ result: AgentRun.Result, on screen: AgentScreen) {
         run = nil
         setRunning(false)
         let color: NSColor = result.ok ? .systemGreen : .systemOrange
         append("■ \(result.reason)", color: color)
-        if let pending = result.pending {
-            self.pending = pending
+        if let held = result.held {
+            pending = (held, screen)
             pendingLabel.stringValue = text("它停在了发送之前。确认后由它执行：", "It stopped before sending. Confirm to run:")
-                + "\n" + pending.prefix(while: { $0 != "--serial" }).joined(separator: " ")
+                + "\n" + TarsAgent.describe(held)
             pendingBox.isHidden = false
         }
     }
@@ -168,8 +182,9 @@ final class AndroidAgentPanel: NSView {
         guard let pending else { return }
         hidePending()
         append("✓ " + text("已确认，执行中…", "Confirmed, running…"), color: .systemGreen)
+        let (action, screen) = pending
         Task { [weak self] in
-            let result = await Task.detached { AndroidAgentRun.runCommand(pending) }.value
+            let result = await Task.detached { AgentRun.perform(action, on: screen) }.value
             self?.append(result ?? text("已执行", "Done"), color: result == nil ? .systemGreen : .systemRed)
         }
     }
@@ -185,131 +200,68 @@ final class AndroidAgentPanel: NSView {
     }
 }
 
-/// One UI-TARS run on a phone: `2ndscreen agent --android`, from the
-/// repository's release build. It reads the model's key from
-/// ~/.config/2ndscreen/ark.env itself.
-final class AndroidAgentRun: @unchecked Sendable {
+/// One UI-TARS run, in this app: the agent works on its screen on a thread
+/// of its own and reports each step on the main queue. It reads the
+/// model's key from ~/.config/2ndscreen/model.env or ark.env.
+final class AgentRun: @unchecked Sendable {
     struct Result {
         var ok: Bool
         var reason: String
-        var pending: [String]?
-    }
-
-    enum Failure: LocalizedError {
-        case notFound
-
-        var errorDescription: String? {
-            text("找不到 2ndscreen 命令行工具。请从仓库的 build/2ndscreen.app 运行，并先执行 swift build -c release。",
-                 "The 2ndscreen command was not found. Run build/2ndscreen.app from the repository, after swift build -c release.")
-        }
+        /// What it stopped before because it would send.
+        var held: InputAction?
     }
 
     /// Called on the main queue.
     var onLine: ((String) -> Void)?
     var onFinish: ((Result) -> Void)?
 
-    private let process = Process()
-    private var stdout = Data()
-    private var stderrBuffer = Data()
+    let screen: AgentScreen
+    private let options: TarsAgent.Options
+    private let instruction: String
     private let lock = NSLock()
+    private var cancelled = false
 
-    init(serial: String, instruction: String) throws {
-        guard let repository = Self.repository() else { throw Failure.notFound }
-        process.executableURL = repository.appendingPathComponent(Self.cli)
-        process.arguments = ["agent", "--android", "--serial", serial, instruction]
+    init(screen: AgentScreen, options: TarsAgent.Options, instruction: String) {
+        self.screen = screen
+        self.options = options
+        self.instruction = instruction
     }
 
-    func start() throws {
-        let out = Pipe()
-        let err = Pipe()
-        process.standardOutput = out
-        process.standardError = err
-        process.standardInput = FileHandle.nullDevice
-        out.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
-            if data.isEmpty { handle.readabilityHandler = nil; return }
-            self?.lock.withLock { self?.stdout.append(data) }
-        }
-        err.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
-            if data.isEmpty { handle.readabilityHandler = nil; return }
-            self?.lines(from: data)
-        }
-        process.terminationHandler = { [weak self] process in
-            // Let the pipes drain before reading the result.
-            DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) { self?.finish(process) }
-        }
-        try process.run()
-    }
-
-    func stop() {
-        if process.isRunning { process.terminate() }
-    }
-
-    private func lines(from data: Data) {
-        let complete: [String] = lock.withLock {
-            stderrBuffer.append(data)
-            var lines: [String] = []
-            while let newline = stderrBuffer.firstIndex(of: 0x0A) {
-                lines.append(String(decoding: stderrBuffer[stderrBuffer.startIndex..<newline], as: UTF8.self))
-                stderrBuffer.removeSubrange(stderrBuffer.startIndex...newline)
+    func start() {
+        Thread.detachNewThread { [self] in
+            let result: Result
+            do {
+                var options = options
+                options.isCancelled = { [weak self] in self?.lock.withLock { self?.cancelled ?? true } ?? true }
+                let model = ChatCompletionsModel(try ModelConfig.fromEnvironment())
+                let agent = TarsAgent(screen: screen, model: model, options: options) { [weak self] event in
+                    let line = TarsAgent.describe(event)
+                    DispatchQueue.main.async { self?.onLine?(line) }
+                }
+                let ended = agent.run(instruction)
+                result = Result(ok: ended.outcome == .done, reason: ended.reason, held: ended.held)
+            } catch {
+                result = Result(ok: false, reason: error.localizedDescription)
             }
-            return lines
-        }
-        guard !complete.isEmpty else { return }
-        DispatchQueue.main.async { [weak self] in complete.forEach { self?.onLine?($0) } }
-    }
-
-    private func finish(_ process: Process) {
-        let output = lock.withLock { String(decoding: stdout, as: UTF8.self) }
-        var result = Result(ok: false, reason: process.terminationReason == .uncaughtSignal
-            ? text("已停止", "Stopped") : text("运行失败", "The run failed"))
-        if let line = output.split(separator: "\n").last(where: { $0.hasPrefix("{") }),
-           let json = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any] {
-            result.ok = json["ok"] as? Bool ?? false
-            result.reason = json["reason"] as? String ?? result.reason
-            result.pending = json["pending"] as? [String]
-        }
-        DispatchQueue.main.async { [weak self] in
-            self?.onFinish?(result)
-            self?.onFinish = nil
+            DispatchQueue.main.async { [weak self] in
+                self?.onFinish?(result)
+                self?.onFinish = nil
+            }
         }
     }
 
-    /// Run a held-back 2ndscreen command; returns an error message, or nil.
-    static func runCommand(_ words: [String]) -> String? {
-        guard let repository = repository() else { return Failure.notFound.localizedDescription }
-        let process = Process()
-        process.executableURL = repository.appendingPathComponent(cli)
-        process.arguments = words
-        let out = Pipe()
-        process.standardOutput = out
-        process.standardError = out
+    /// Ends the run once the step under way is done.
+    func stop() {
+        lock.withLock { cancelled = true }
+    }
+
+    /// Run a held-back action; returns an error message, or nil.
+    static func perform(_ action: InputAction, on screen: AgentScreen) -> String? {
         do {
-            try process.run()
+            let response = try screen.perform(action)
+            return response.ok ? nil : response.error ?? "failed"
         } catch {
             return error.localizedDescription
-        }
-        let data = out.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        guard process.terminationStatus != 0 else { return nil }
-        let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        return json?["error"] as? String ?? String(decoding: data, as: UTF8.self)
-    }
-
-    /// The repository this app was built from: build/2ndscreen.app sits in
-    /// it. `defaults write io.github.szrunworld.2ndscreen repository PATH`
-    /// points elsewhere.
-    private static let cli = ".build/release/2ndscreen"
-
-    static func repository() -> URL? {
-        var candidates: [URL] = []
-        if let path = UserDefaults.standard.string(forKey: "repository") {
-            candidates.append(URL(fileURLWithPath: path))
-        }
-        candidates.append(Bundle.main.bundleURL.deletingLastPathComponent().deletingLastPathComponent())
-        return candidates.first {
-            FileManager.default.isExecutableFile(atPath: $0.appendingPathComponent(cli).path)
         }
     }
 }

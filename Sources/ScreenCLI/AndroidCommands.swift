@@ -73,13 +73,6 @@ enum AndroidCommands {
         _ = try? sendControlRequest(ControlRequest(command: .androidList), timeout: 15)
     }
 
-    /// The request for `android` words such as ["tap", "--x", "540", "--y", "1200"].
-    static func request(_ words: [String], serial: String?) -> ControlRequest {
-        var request = action(words.first ?? "", Arguments(Array(words.dropFirst())))
-        request.serial = serial
-        return request
-    }
-
     private static func action(_ verb: String, _ args: Arguments) -> ControlRequest {
         func number(_ flag: String) -> Double {
             guard let value = args.value(flag).flatMap(Double.init) else { fail("android \(verb) needs \(flag)") }

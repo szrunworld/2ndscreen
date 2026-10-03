@@ -365,3 +365,9 @@ public func readLine(_ fd: Int32, limit: Int = 1 << 20) throws -> Data {
     guard !data.isEmpty else { throw ControlClientError.io("connection closed without a response") }
     return data
 }
+
+extension CGRect {
+    public init(_ frame: Frame) {
+        self.init(x: frame.x, y: frame.y, width: frame.width, height: frame.height)
+    }
+}

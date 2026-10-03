@@ -11,8 +11,8 @@ final class AndroidMirrorWindow: NSObject, NSWindowDelegate {
     let mirror: AndroidMirror
     private let window: NSWindow
     private let screenView: AndroidScreenView
-    private let panel: AndroidAgentPanel
-    private var panelWidth: CGFloat { panel.isHidden ? 0 : AndroidAgentPanel.width }
+    private let panel: AgentPanel
+    private var panelWidth: CGFloat { panel.isHidden ? 0 : AgentPanel.width }
     /// Where the window was placed with `place(on:)`, so rotation keeps it there.
     private var displayID: CGDirectDisplayID?
 
@@ -24,7 +24,7 @@ final class AndroidMirrorWindow: NSObject, NSWindowDelegate {
     init(mirror: AndroidMirror) {
         self.mirror = mirror
         screenView = AndroidScreenView(mirror: mirror)
-        panel = AndroidAgentPanel(serial: mirror.serial)
+        panel = AgentPanel.android(serial: mirror.serial)
         panel.isHidden = true
         window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 360, height: 780),
@@ -178,7 +178,7 @@ final class AndroidMirrorWindow: NSObject, NSWindowDelegate {
         panel.isHidden = !opening
         if !window.styleMask.contains(.fullScreen) {
             var frame = window.frame
-            frame.size.width += opening ? AndroidAgentPanel.width : -AndroidAgentPanel.width
+            frame.size.width += opening ? AgentPanel.width : -AgentPanel.width
             window.setFrame(frame, display: true, animate: true)
         }
         window.contentView?.needsLayout = true
@@ -235,7 +235,7 @@ private final class MirrorContentView: NSView {
 
     override func layout() {
         super.layout()
-        let width = panel.isHidden ? 0 : AndroidAgentPanel.width
+        let width = panel.isHidden ? 0 : AgentPanel.width
         screen.frame = NSRect(x: 0, y: 0, width: bounds.width - width, height: bounds.height)
         panel.frame = NSRect(x: bounds.width - width, y: 0, width: width, height: bounds.height)
     }
