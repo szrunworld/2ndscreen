@@ -82,7 +82,8 @@ export class Boss {
   async send(expected: string): Promise<void> {
     const open = await this.chat();
     if (!open?.send) throw new BossError('no Send button');
-    if ((open.input?.value ?? '').trim() !== expected.trim()) {
+    // Readers report a field's text as its value or, failing that, its label.
+    if ((open.input?.value ?? open.input?.label ?? '').trim() !== expected.trim()) {
       throw new BossError('the message box no longer holds the approved draft; not sending');
     }
     await this.run(['click', '--index', String(open.send.index)]);

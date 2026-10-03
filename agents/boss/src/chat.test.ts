@@ -36,3 +36,24 @@ test('a list with no conversation open is not a chat', () => {
   const list = JSON.parse(readFileSync(new URL('./fixtures/list.json', import.meta.url), 'utf8'));
   assert.equal(chat(list.elements, list.windowFrame), undefined);
 });
+
+// The same kind of read from 2ndscreen's own reader, which reports text as
+// labels and no AXList containers; the candidate and messages made up.
+const labelled = JSON.parse(readFileSync(new URL('./fixtures/chat-labels.json', import.meta.url), 'utf8'));
+
+test('reads a conversation from a reader that reports labels and no lists', () => {
+  const c = chat(labelled.elements, labelled.windowFrame)!;
+  assert.deepEqual(c.candidate, {
+    name: '周三',
+    summary: '27岁 4年 本科',
+    history: ['2025.01-至今 示例科技 · 全栈工程师', '2022.01-2024.12 样例网络 · 移动端开发', '2017-2021 某某大学 · 信息管理 · 本科'],
+    position: '前端工程师',
+    expects: '杭州 · Android 面议',
+  });
+  assert.deepEqual(c.messages, [
+    { from: 'candidate', text: '您好，在吗' },
+    { from: 'me', text: '收到' },
+  ]);
+  assert.equal(c.input?.role, 'AXTextArea');
+  assert.equal(c.send?.value ?? c.send?.label, '发送');
+});
