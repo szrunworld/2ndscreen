@@ -96,6 +96,14 @@ async function handle(boss: Boss, conversation: Conversation): Promise<void> {
   console.error(`\n── ${c.name}（${c.summary}）· ${c.position}${c.expects ? ` · 期望 ${c.expects}` : ''}`);
   for (const m of open.messages.slice(-6)) console.error(`  ${m.from === 'me' ? '我' : '他'}：${m.text}`);
 
+  // Text already in the box is someone's: a reply the user started, or a
+  // draft not yet sent. Writing a draft would replace it, so leave it.
+  const typed = (open.input?.value ?? open.input?.label ?? '').trim();
+  if (typed) {
+    console.error(`  输入框里已有文字，没有动它：${typed.slice(0, 40)}${typed.length > 40 ? '…' : ''}`);
+    return;
+  }
+
   let draft = await draftReply(open, { brief: values.brief });
   for (;;) {
     await boss.draft(draft);
@@ -131,7 +139,12 @@ for (;;) {
       await sleep(Number(values.interval) * 1000);
       continue;
     }
-    const listed = await boss.conversations();
+    let listed = await boss.conversations();
+    // Just after launch the list is still loading; give a named candidate time to show.
+    for (let attempt = 0; values.name && attempt < 10 && !listed.some((c) => c.name === values.name); attempt++) {
+      await sleep(1000);
+      listed = await boss.conversations();
+    }
     const waiting = values.name
       ? listed.filter((c) => c.name === values.name)
       : listed.filter((c) => c.unread > 0 && !store.has(key(c)));
