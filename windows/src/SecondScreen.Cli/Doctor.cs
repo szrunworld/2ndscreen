@@ -53,7 +53,6 @@ public static class Doctor
             report["driverSettings"] = $"{settings} missing: the Virtual Display Driver is not installed";
         }
 
-        report["cuaDriver"] = new Driver("doctor").Executable;
         try
         {
             var list = ControlPipe.Send(new ControlRequest { Command = ControlRequest.ScreenList });

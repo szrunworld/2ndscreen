@@ -1,16 +1,27 @@
 import AppKit
+import CoreImage
+import Metal
 import ScreenCaptureKit
 
 /// A live, scaled view of one display, drawn in a window on another display.
 ///
-/// Frames come from ScreenCaptureKit as IOSurfaces and are handed straight to
-/// a CALayer, so nothing is copied or encoded. Capturing requires the Screen
-/// Recording permission for the process that owns the preview.
+/// Frames come from ScreenCaptureKit as IOSurfaces. One that fits the window
+/// is handed straight to a CALayer and shown pixel for pixel; a larger one is
+/// shrunk with a Lanczos filter first, since the compositor's own bilinear
+/// scaling softens small text (an iPhone Mirroring screen squeezed by 5%
+/// was visibly blurry). Capturing requires the Screen Recording permission
+/// for the process that owns the preview.
 public final class DisplayPreview: NSObject, SCStreamOutput, SCStreamDelegate, NSWindowDelegate {
     private let displayID: CGDirectDisplayID
     private let framesPerSecond: Int32
     private let window: NSWindow
     private let imageLayer = CALayer()
+    private let scaler: CIContext = {
+        if let device = MTLCreateSystemDefaultDevice() {
+            return CIContext(mtlDevice: device, options: [.cacheIntermediates: false])
+        }
+        return CIContext()
+    }()
     private var stream: SCStream?
     /// Whether the owner wants frames. Capture still pauses while the window
     /// is fully hidden, such as on another Space, to save power.
@@ -63,6 +74,7 @@ public final class DisplayPreview: NSObject, SCStreamOutput, SCStreamDelegate, N
         window.contentView = view
         super.init()
         window.delegate = self
+        matchBackingScale()
         isFloating = floating
     }
 
@@ -72,12 +84,40 @@ public final class DisplayPreview: NSObject, SCStreamOutput, SCStreamDelegate, N
     public func start() async throws {
         if let other = NSScreen.screens.first(where: { $0.displayID != displayID }) {
             let visible = other.visibleFrame
+            showActualSizeIfItFits(in: visible)
             window.setFrameTopLeftPoint(NSPoint(x: visible.maxX - window.frame.width - 24,
                                                 y: visible.maxY - 24))
         }
         window.orderFrontRegardless()
         wantsStream = true
         try await startStream()
+    }
+
+    /// Draw the layer at the screen's pixel density, so that centered
+    /// contents land pixel for pixel.
+    private func matchBackingScale() {
+        let scale = window.backingScaleFactor
+        imageLayer.contentsScale = scale
+        window.contentView?.layer?.contentsScale = scale
+    }
+
+    public func windowDidChangeBackingProperties(_ notification: Notification) {
+        matchBackingScale()
+    }
+
+    /// Show the display point for point when the window fits on the screen
+    /// it opens on. Any other size resamples the image, and a slight shrink,
+    /// such as a phone-sized screen squeezed to fit the window's default
+    /// width, blurs small text.
+    @MainActor
+    private func showActualSizeIfItFits(in visible: NSRect) {
+        let bounds = CGDisplayBounds(displayID)
+        let margin: CGFloat = 24
+        let titleBar = window.frame.height - window.contentLayoutRect.height
+        guard bounds.width > 0, bounds.width + 2 * margin <= visible.width,
+              bounds.height + titleBar + margin <= visible.height
+        else { return }
+        window.setContentSize(NSSize(width: bounds.width, height: bounds.height))
     }
 
     /// Re-capture after the virtual display changes resolution. The window,
@@ -221,10 +261,31 @@ public final class DisplayPreview: NSObject, SCStreamOutput, SCStreamDelegate, N
               let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer),
               let surface = CVPixelBufferGetIOSurface(pixelBuffer)?.takeUnretainedValue()
         else { return }
+        let contents = fitted(surface)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        imageLayer.contents = surface
+        imageLayer.contentsGravity = contents.exact ? .center : .resizeAspect
+        imageLayer.contents = contents.image
         CATransaction.commit()
+    }
+
+    /// The surface itself when it fits the layer's pixels (drawn centered,
+    /// without scaling), else a Lanczos-shrunk copy that fits.
+    private func fitted(_ surface: IOSurfaceRef) -> (image: Any, exact: Bool) {
+        let scale = imageLayer.contentsScale
+        let target = CGSize(width: imageLayer.bounds.width * scale, height: imageLayer.bounds.height * scale)
+        let source = CGSize(width: CGFloat(IOSurfaceGetWidth(surface)), height: CGFloat(IOSurfaceGetHeight(surface)))
+        guard target.width > 0, target.height > 0, source.width > 0, source.height > 0 else { return (surface, false) }
+        if source.width <= target.width, source.height <= target.height { return (surface, true) }
+        let factor = min(target.width / source.width, target.height / source.height)
+        let filter = CIFilter(name: "CILanczosScaleTransform")!
+        filter.setValue(CIImage(ioSurface: surface), forKey: kCIInputImageKey)
+        filter.setValue(factor, forKey: kCIInputScaleKey)
+        filter.setValue(1.0, forKey: kCIInputAspectRatioKey)
+        guard let output = filter.outputImage,
+              let image = scaler.createCGImage(output, from: output.extent.integral)
+        else { return (surface, false) }
+        return (image, false)
     }
 
     public func stream(_ stream: SCStream, didStopWithError error: Error) {

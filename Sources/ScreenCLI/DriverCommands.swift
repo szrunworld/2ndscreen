@@ -195,9 +195,3 @@ struct CommandError: LocalizedError {
     init(_ message: String) { self.message = message }
     var errorDescription: String? { message }
 }
-
-extension CGRect {
-    init(_ frame: Frame) {
-        self.init(x: frame.x, y: frame.y, width: frame.width, height: frame.height)
-    }
-}

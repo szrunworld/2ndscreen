@@ -35,11 +35,15 @@ let package = Package(
         // Menu bar app; scripts/bundle-app.sh wraps it in 2ndscreen.app.
         .executableTarget(
             name: "SecondScreen",
-            dependencies: ["SecondScreenCore"]
+            dependencies: ["SecondScreenCore", "TarsAgent"]
         ),
         .testTarget(
             name: "TarsAgentTests",
             dependencies: ["TarsAgent"]
+        ),
+        .testTarget(
+            name: "SecondScreenCoreTests",
+            dependencies: ["SecondScreenCore"]
         ),
     ]
 )

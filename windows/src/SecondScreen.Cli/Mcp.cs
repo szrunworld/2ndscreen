@@ -230,8 +230,10 @@ public static class Mcp
                 w.AddRange(new[] { "--value", S(a, "value") });
                 return w;
             }),
-        new("key", "Press a key, optionally with modifiers, e.g. key enter, or key s with modifiers [ctrl].",
-            Merge(WindowTarget, new JsonObject
+        new("key", "Press a key, optionally with modifiers, e.g. key enter, or key s with modifiers [ctrl]. " +
+            "Name the control with index or text when the program has not been clicked yet, so nothing has focus. " +
+            "Shortcuts in WPF and Chromium programs need foreground, which brings the program forward for a moment.",
+            Merge(WindowTarget, ElementTarget, Foreground, new JsonObject
             {
                 ["key"] = Prop("string", "Key name, e.g. enter, escape, tab, a"),
                 ["modifiers"] = new JsonObject { ["type"] = "array", ["items"] = new JsonObject { ["type"] = "string" }, ["description"] = "ctrl, shift, alt, win" },
@@ -240,12 +242,14 @@ public static class Mcp
             {
                 var w = new List<string> { "key" };
                 w.AddRange(TargetWords(a));
+                w.AddRange(ElementWords(a));
                 w.AddRange(new[] { "--key", S(a, "key") });
                 if (a["modifiers"] is JsonArray mods && mods.Count > 0) w.AddRange(new[] { "--modifiers", string.Join(',', mods.Select(m => m?.ToString())) });
+                if (B(a, "foreground")) w.Add("--foreground");
                 return w;
             }),
-        new("scroll", "Scroll with the mouse wheel over an element, or without one, with arrow or page keys in the focused area. " +
-            "A wheel at a point needs foreground, which brings the program to the front and moves the user's pointer briefly.",
+        new("scroll", "Scroll an element, or turn the mouse wheel at a point, in the background; without either, the window's middle. " +
+            "If the program ignores that, retry with foreground, which moves the user's pointer briefly.",
             Merge(WindowTarget, ElementTarget, PointTarget, Foreground, new JsonObject
             {
                 ["direction"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("up", "down", "left", "right") },

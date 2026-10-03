@@ -34,6 +34,12 @@ struct Preferences {
         nonmutating set { defaults.set(newValue, forKey: "showPreview") }
     }
 
+    /// Where Android phones were last connected, most recent first.
+    var androidAddresses: [String] {
+        get { defaults.stringArray(forKey: "androidAddresses") ?? [] }
+        nonmutating set { defaults.set(newValue, forKey: "androidAddresses") }
+    }
+
     var floatPreview: Bool {
         get { defaults.object(forKey: "floatPreview") as? Bool ?? true }
         nonmutating set { defaults.set(newValue, forKey: "floatPreview") }
@@ -82,14 +88,34 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Live previews of agent screens, keyed by screen name.
     private var agentPreviews: [String: DisplayPreview] = [:]
     private var controlServer: ControlServer?
-
-    func applicationDidFinishLaunching(_ notification: Notification) {
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.button?.image = NSImage(
-            systemSymbolName: "display.2", accessibilityDescription: Self.displayName)
+    /// Open Android mirror windows, keyed by adb serial.
+    private var androidMirrors: [String: AndroidMirrorWindow] = [:]
+    /// Control-only sessions, for agents typing on phones whose mirror is
+    /// not open, keyed by serial.
+    private var androidControls: [String: AndroidMirror] = [:]
+    /// Serials whose mirror is starting, so a second request waits its turn.
+    private var androidStarting: Set<String> = []
+    private var androidPairing: AndroidPairingWindow?
+    /// Filled when opened, so adb only runs for people who look at it.
+    private lazy var androidMenu: NSMenu = {
         let menu = NSMenu()
         menu.delegate = self
-        statusItem.menu = menu
+        return menu
+    }()
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        if ControlProtocol.isSideInstance {
+            // Kept off the menu bar, where the usual app lists it under
+            // Test Copies; it quits once its agent has left it idle.
+            quitWhenIdle()
+        } else {
+            statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+            statusItem.button?.image = NSImage(
+                systemSymbolName: "display.2", accessibilityDescription: Self.displayName)
+            let menu = NSMenu()
+            menu.delegate = self
+            statusItem.menu = menu
+        }
 
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(agentCursorEvent(_:)),
@@ -114,6 +140,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             enableDisplay()
         }
 
+        let known = preferences.androidAddresses
+        DispatchQueue.global().async {
+            ADB.restartStaleServer()
+            Self.reconnect(known, keeping: [])
+        }
+
         agentScreens.onChange = { [weak self] in self?.agentScreensChanged() }
         let server = ControlServer { [weak self] request in
             await self?.handle(request) ?? .failure("2ndscreen is shutting down")
@@ -128,6 +160,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         controlServer?.stop()
+        // Stops each mirror's server on its phone.
+        for window in androidMirrors.values {
+            window.close()
+        }
+        for control in androidControls.values {
+            control.stop()
+        }
     }
 
     // MARK: Display lifecycle
@@ -223,6 +262,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func handle(_ request: ControlRequest) async -> ControlResponse {
+        lastRequest = Date()
         func target() -> ScreenInfo? {
             guard let name = request.screen else { return nil }
             return allScreens().first { $0.name == name }
@@ -296,7 +336,435 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     return .failure(error.localizedDescription)
                 }
             }.value
+        case .androidList:
+            return await androidList()
+        case .androidShow:
+            if request.screen != nil, target() == nil { return missingScreen }
+            // Agents never pull the user away from their work.
+            return await showAndroid(serial: request.serial, on: target()?.displayID,
+                                     maxSize: request.maxSize ?? Self.androidMaxSize, presentation: .background)
+        case .androidHide:
+            let serials = request.serial.map { [$0] } ?? Array(androidMirrors.keys)
+            for serial in serials {
+                androidMirrors[serial]?.close()
+            }
+            return await androidList()
+        case .androidScreenshot, .androidTap, .androidSwipe, .androidType, .androidKey:
+            return await androidAction(request)
         }
+    }
+
+    // MARK: Test copies
+
+    /// When an agent last sent a request.
+    private var lastRequest = Date()
+    /// A side instance quits after this long without requests, unless it
+    /// still has an agent screen or a phone's mirror open.
+    private static let sideInstanceIdleQuit: TimeInterval = 30 * 60
+
+    private func quitWhenIdle() {
+        Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, Date().timeIntervalSince(self.lastRequest) > Self.sideInstanceIdleQuit,
+                      self.agentScreens.screens.isEmpty, self.androidMirrors.isEmpty else { return }
+                NSApp.terminate(nil)
+            }
+        }
+    }
+
+    /// Side instances agents run to test builds of 2ndscreen, which keep off
+    /// the menu bar; each can be quit from here.
+    private func testCopiesItem() -> NSMenuItem? {
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        let copies = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
+            .filter { $0.processIdentifier != ownPID }
+        guard !copies.isEmpty else { return nil }
+        let parent = NSMenuItem(title: "Test Copies (\(copies.count))", action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+        let note = NSMenuItem(title: "Run by agents to test their builds", action: nil, keyEquivalent: "")
+        note.isEnabled = false
+        submenu.addItem(note)
+        for copy in copies {
+            var title = "Quit " + Self.copyName(copy.bundleURL)
+            if let launched = copy.launchDate {
+                title += " (since \(launched.formatted(date: .omitted, time: .shortened)))"
+            }
+            let entry = item(title, #selector(quitTestCopy(_:)), on: false)
+            entry.representedObject = copy.processIdentifier
+            entry.toolTip = copy.bundleURL?.path
+            submenu.addItem(entry)
+        }
+        parent.submenu = submenu
+        return parent
+    }
+
+    /// "2ndscreen-uitars" for …/2ndscreen-uitars/build/2ndscreen.app, the
+    /// folder it was built in; otherwise its folder and name.
+    static func copyName(_ url: URL?) -> String {
+        guard let url else { return "unknown" }
+        let folder = url.deletingLastPathComponent()
+        if folder.lastPathComponent == "build" {
+            return folder.deletingLastPathComponent().lastPathComponent
+        }
+        return folder.lastPathComponent + "/" + url.deletingPathExtension().lastPathComponent
+    }
+
+    @objc private func quitTestCopy(_ sender: NSMenuItem) {
+        guard let pid = sender.representedObject as? pid_t else { return }
+        NSRunningApplication(processIdentifier: pid)?.terminate()
+    }
+
+    // MARK: Android
+
+    private func addAndroidItems(to menu: NSMenu) {
+        do {
+            let devices = try ADB.devices()
+            remember(devices)
+            // Bring back remembered phones for the next look at the menu.
+            let known = preferences.androidAddresses
+            if known.contains(where: { address in !devices.contains { $0.serial == address } }) {
+                let inUse = Set(androidMirrors.keys).union(androidControls.keys)
+                DispatchQueue.global().async { Self.reconnect(known, keeping: inUse) }
+            }
+            if devices.isEmpty {
+                let none = NSMenuItem(title: "No Phone Connected", action: nil, keyEquivalent: "")
+                none.isEnabled = false
+                menu.addItem(none)
+            }
+            for device in devices {
+                let usable = device.state == "device"
+                let title = usable ? "Show \(device.label)" : "\(device.label) (\(device.state))"
+                let entry = item(title, #selector(showAndroidMirror(_:)), on: androidMirrors[device.serial] != nil)
+                entry.representedObject = device.serial
+                entry.toolTip = device.serial
+                entry.isEnabled = usable
+                menu.addItem(entry)
+                if let mirror = androidMirrors[device.serial] {
+                    let panel = item("UI-TARS Panel", #selector(toggleAndroidPanel(_:)), on: mirror.isPanelShown)
+                    panel.representedObject = device.serial
+                    panel.indentationLevel = 1
+                    menu.addItem(panel)
+                    let stop = item("Stop Mirroring \(device.label)", #selector(stopAndroidMirror(_:)), on: false)
+                    stop.representedObject = device.serial
+                    stop.indentationLevel = 1
+                    menu.addItem(stop)
+                }
+            }
+        } catch {
+            let failed = NSMenuItem(title: error.localizedDescription, action: nil, keyEquivalent: "")
+            failed.isEnabled = false
+            menu.addItem(failed)
+        }
+        menu.addItem(.separator())
+        menu.addItem(item("Connect Phone…", #selector(showAndroidPairing), on: false))
+        menu.addItem(soundDelayItem())
+    }
+
+    /// How long the phone's sound is held back to match its picture; see
+    /// `AndroidAudioPlayer.extraDelay`.
+    private func soundDelayItem() -> NSMenuItem {
+        let current = AndroidAudioPlayer.extraDelay
+        func label(_ seconds: Double) -> String {
+            seconds == 0 ? "None" : "\(seconds.formatted(.number.precision(.fractionLength(0...2)))) s"
+        }
+        let parent = NSMenuItem(title: "Sound Delay: \(label(current))", action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+        var choices: [Double] = [0, 0.25, 0.5, 0.75, 1, 1.5, 2, 3]
+        if !choices.contains(current) {
+            choices.append(current)
+            choices.sort()
+        }
+        for seconds in choices {
+            var title = label(seconds)
+            if seconds == 1 { title += " (default)" }
+            if ![0, 0.25, 0.5, 0.75, 1, 1.5, 2, 3].contains(seconds) { title += " (custom)" }
+            let entry = item(title, #selector(setSoundDelay(_:)), on: seconds == current)
+            entry.representedObject = seconds
+            submenu.addItem(entry)
+        }
+        parent.submenu = submenu
+        parent.toolTip = "Holds the phone's sound back to line it up with the picture. Takes effect at once."
+        return parent
+    }
+
+    @objc private func setSoundDelay(_ sender: NSMenuItem) {
+        guard let seconds = sender.representedObject as? Double else { return }
+        AndroidAudioPlayer.extraDelay = seconds
+    }
+
+    @objc private func toggleAndroidPanel(_ sender: NSMenuItem) {
+        guard let serial = sender.representedObject as? String, let mirror = androidMirrors[serial] else { return }
+        mirror.togglePanel()
+    }
+
+    /// Full screen on its own Space, opened or brought forward.
+    @objc private func showAndroidMirror(_ sender: NSMenuItem) {
+        guard let serial = sender.representedObject as? String else { return }
+        Task { @MainActor in
+            let response = await showAndroid(serial: serial, on: nil, maxSize: Self.androidMaxSize,
+                                             presentation: .fullScreen)
+            if let error = response.error { presentError(error) }
+        }
+    }
+
+    @objc private func stopAndroidMirror(_ sender: NSMenuItem) {
+        guard let serial = sender.representedObject as? String else { return }
+        androidMirrors[serial]?.close()
+    }
+
+    @objc private func showAndroidPairing() {
+        if let androidPairing {
+            androidPairing.show()
+            return
+        }
+        let pairing = AndroidPairingWindow()
+        pairing.onClose = { [weak self] in self?.androidPairing = nil }
+        pairing.onConnected = { [weak self] serial in
+            Task { @MainActor in
+                guard let self else { return }
+                let response = await self.showAndroid(serial: serial, on: nil, maxSize: Self.androidMaxSize,
+                                                      presentation: .fullScreen)
+                if let error = response.error { self.presentError(error) }
+            }
+        }
+        androidPairing = pairing
+        pairing.show()
+    }
+
+    /// The longest side of the mirrored video. Full size can be 3200 pixels,
+    /// more than Wi-Fi carries smoothly and more than a window shows.
+    private static let androidMaxSize = 1920
+
+    struct AndroidFailure: Error {
+        let response: ControlResponse
+        init(_ message: String) { response = .failure(message) }
+    }
+
+    /// The requested device, or the only usable one when none is named.
+    private static func choose(serial: String?, from devices: [ADB.Device]) -> Result<String, AndroidFailure> {
+        let usable = devices.filter { $0.state == "device" }
+        guard !usable.isEmpty else {
+            return .failure(AndroidFailure(
+                "no Android device is connected; pair one with `2ndscreen android pair` or from the menu"))
+        }
+        guard let serial = serial ?? (usable.count == 1 ? usable[0].serial : nil) else {
+            return .failure(AndroidFailure("several Android devices are connected; choose one with --serial"))
+        }
+        guard usable.contains(where: { $0.serial == serial }) else {
+            return .failure(AndroidFailure("no connected device \"\(serial)\"; see `2ndscreen android devices`"))
+        }
+        return .success(serial)
+    }
+
+    /// Look at or act on a phone. With its mirror open, input goes through
+    /// the mirror: at once, and with any text. Without it, through adb.
+    /// Points are device pixels, as in the screenshot.
+    private func androidAction(_ request: ControlRequest) async -> ControlResponse {
+        let devices: [ADB.Device]
+        do {
+            devices = try await Task.detached { try ADB.devices() }.value
+        } catch {
+            return .failure(error.localizedDescription)
+        }
+        let serial: String
+        let requested = request.serial
+        let resolved = await Task.detached { requested.map(ADB.resolve) }.value
+        switch Self.choose(serial: resolved, from: devices) {
+        case .success(let chosen): serial = chosen
+        case .failure(let failure): return failure.response
+        }
+        // The mirror keeps the serial it was opened with.
+        let opened = androidMirrors.first { $0.key == serial || $0.key == requested }
+        let mirror = opened?.value.mirror
+        func adb(_ arguments: [String]) async -> ControlResponse {
+            do {
+                let result = try await Task.detached { try ADB.run(["-s", serial] + arguments) }.value
+                return result.ok ? ControlResponse() : .failure(result.message)
+            } catch {
+                return .failure(error.localizedDescription)
+            }
+        }
+        func point(_ x: Double?, _ y: Double?) -> CGPoint? {
+            guard let x, let y else { return nil }
+            return CGPoint(x: x, y: y)
+        }
+
+        switch request.command {
+        case .androidScreenshot:
+            guard let output = request.output else { return .failure("give a PNG path with --output") }
+            do {
+                let result = try await Task.detached { try ADB.screenshot(serial: serial, to: output) }.value
+                guard result.ok else { return .failure("screenshot failed: \(result.message)") }
+            } catch {
+                return .failure(error.localizedDescription)
+            }
+            var response = ControlResponse()
+            response.output = output
+            return response
+        case .androidTap:
+            guard let target = point(request.x, request.y) else { return .failure("give the point with --x and --y") }
+            if let mirror, let video = mirror.videoPoint(fromDevice: target) {
+                mirror.touch(.down, at: video)
+                mirror.touch(.up, at: video)
+                await mirror.flush()
+                return ControlResponse()
+            }
+            return await adb(["shell", "input", "tap", "\(Int(target.x))", "\(Int(target.y))"])
+        case .androidSwipe:
+            guard let start = point(request.x, request.y), let end = point(request.toX, request.toY) else {
+                return .failure("give --x --y and --to-x --to-y")
+            }
+            let duration = request.duration ?? 0.3
+            if let mirror, let from = mirror.videoPoint(fromDevice: start), let to = mirror.videoPoint(fromDevice: end) {
+                await mirror.swipe(from: from, to: to, duration: duration)
+                return ControlResponse()
+            }
+            return await adb(["shell", "input", "swipe", "\(Int(start.x))", "\(Int(start.y))",
+                              "\(Int(end.x))", "\(Int(end.y))", "\(Int(duration * 1000))"])
+        case .androidType:
+            guard let text = request.text, !text.isEmpty else { return .failure("give the text with --text") }
+            // Pasted, not keyed in: a Chinese keyboard on the phone would
+            // take typed letters as pinyin, and adb types only ASCII.
+            let session: AndroidMirror
+            do {
+                session = try await controlSession(serial: serial)
+            } catch {
+                return .failure(error.localizedDescription)
+            }
+            session.paste(text)
+            await session.flush()
+            return ControlResponse()
+        case .androidKey:
+            guard let name = request.key, let code = AndroidKey.code(named: name) else {
+                return .failure("give a key such as back, home, recents, enter or delete, or a keycode")
+            }
+            if let mirror {
+                mirror.press(code)
+                await mirror.flush()
+                return ControlResponse()
+            }
+            return await adb(["shell", "input", "keyevent", "\(code)"])
+        default:
+            return .failure("not an Android action")
+        }
+    }
+
+    /// The open mirror's session, or a control-only one started for agents.
+    private func controlSession(serial: String) async throws -> AndroidMirror {
+        if let mirror = androidMirrors[serial]?.mirror { return mirror }
+        if let control = androidControls[serial] { return control }
+        let control = AndroidMirror(serial: serial)
+        try await Task.detached { try control.start(maxSize: 0, video: false) }.value
+        control.onEnd = { [weak self, weak control] _ in
+            if self?.androidControls[serial] === control { self?.androidControls.removeValue(forKey: serial) }
+        }
+        control.startStreaming()
+        androidControls[serial] = control
+        return control
+    }
+
+    /// Remember where connected phones are, so they come back after adb
+    /// restarts on networks that block the mDNS adb would find them by.
+    private func remember(_ devices: [ADB.Device]) {
+        let named = devices.contains { !$0.serial.contains(":") || $0.serial.hasSuffix("._tcp") }
+        Task.detached { [weak self] in
+            var addresses = devices.map(\.serial).filter { $0.range(of: #"^\d+\.\d+\.\d+\.\d+:\d+$"#, options: .regularExpression) != nil }
+            if named {
+                let services = (try? ADB.services()) ?? []
+                addresses += services.filter { service in
+                    service.type.contains("connect") && devices.contains { $0.serial.hasPrefix(service.name + ".") }
+                }.map(\.address)
+            }
+            guard !addresses.isEmpty else { return }
+            let found = addresses
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                let kept = self.preferences.androidAddresses.filter { old in
+                    // A phone gets a new port when wireless debugging restarts.
+                    !found.contains { $0.split(separator: ":").first == old.split(separator: ":").first }
+                }
+                self.preferences.androidAddresses = Array((found + kept).prefix(8))
+            }
+        }
+    }
+
+    /// Connect to remembered addresses adb is not connected to. Quietly:
+    /// a phone that is away just fails.
+    nonisolated private static func reconnect(_ addresses: [String], keeping inUse: Set<String>) {
+        guard !addresses.isEmpty, let devices = try? ADB.devices() else { return }
+        for address in addresses where !devices.contains(where: { $0.serial == address }) {
+            _ = try? ADB.run(["connect", address], timeout: 5)
+        }
+        // A failed connect leaves an offline entry.
+        for device in (try? ADB.devices()) ?? [] where device.state == "offline" && addresses.contains(device.serial) {
+            _ = try? ADB.run(["disconnect", device.serial], timeout: 5)
+        }
+        ADB.disconnectDuplicates(keeping: inUse)
+    }
+
+    private func androidList() async -> ControlResponse {
+        let devices: [ADB.Device]
+        do {
+            devices = try await Task.detached { try ADB.devices() }.value
+        } catch {
+            return .failure(error.localizedDescription)
+        }
+        remember(devices)
+        var response = ControlResponse()
+        response.android = devices.map { device in
+            var info = AndroidDeviceInfo(serial: device.serial, state: device.state, model: device.model,
+                                         mirroring: androidMirrors[device.serial] != nil)
+            if let window = androidMirrors[device.serial] {
+                info.frame = Frame(window.frameOnScreen)
+                info.width = Int(window.mirror.videoSize.width)
+                info.height = Int(window.mirror.videoSize.height)
+            }
+            return info
+        }
+        return response
+    }
+
+    /// Open a mirror window for a device, or bring its window forward. With
+    /// a display, the window fills it, such as an agent screen.
+    private func showAndroid(serial requested: String?, on displayID: CGDirectDisplayID?, maxSize: Int,
+                             presentation: AndroidMirrorWindow.Presentation) async -> ControlResponse {
+        let devices: [ADB.Device]
+        do {
+            devices = try await Task.detached { try ADB.devices() }.value
+        } catch {
+            return .failure(error.localizedDescription)
+        }
+        let serial: String
+        let resolved = await Task.detached { requested.map(ADB.resolve) }.value
+        switch Self.choose(serial: resolved, from: devices) {
+        case .success(let chosen): serial = chosen
+        case .failure(let failure): return failure.response
+        }
+        if let existing = androidMirrors[serial] {
+            if let displayID { existing.place(on: displayID) }
+            existing.show(presentation)
+        } else {
+            guard androidStarting.insert(serial).inserted else {
+                return .failure("the mirror of \"\(serial)\" is already starting")
+            }
+            defer { androidStarting.remove(serial) }
+            let mirror = AndroidMirror(serial: serial)
+            do {
+                try await Task.detached { try mirror.start(maxSize: maxSize) }.value
+            } catch {
+                return .failure(error.localizedDescription)
+            }
+            // The mirror's own session takes over typing from a control-only one.
+            androidControls.removeValue(forKey: serial)?.stop()
+            let window = AndroidMirrorWindow(mirror: mirror)
+            window.onClose = { [weak self] in self?.androidMirrors.removeValue(forKey: serial) }
+            androidMirrors[serial] = window
+            if let displayID { window.place(on: displayID) }
+            window.show(presentation)
+            // The window takes the video's shape once the first frame size arrives.
+            try? await Task.sleep(for: .milliseconds(500))
+        }
+        return await androidList()
     }
 
     private func toggleAgentPreview(_ name: String) {
@@ -453,6 +921,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
+        if menu === androidMenu {
+            addAndroidItems(to: menu)
+            return
+        }
 
         let status = NSMenuItem(title: statusLine(), action: nil, keyEquivalent: "")
         status.isEnabled = false
@@ -497,6 +969,16 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         addAgentScreenItems(to: menu)
         menu.addItem(.separator())
+
+        let android = NSMenuItem(title: "Android Phones", action: nil, keyEquivalent: "")
+        android.submenu = androidMenu
+        menu.addItem(android)
+        menu.addItem(.separator())
+
+        if let copies = testCopiesItem() {
+            menu.addItem(copies)
+            menu.addItem(.separator())
+        }
 
         menu.addItem(item("Open Displays Settings…", #selector(openDisplaySettings), on: false))
         menu.addItem(NSMenuItem(

@@ -16,7 +16,10 @@ func inputs(_ steps: [Step]) -> [InputAction] {
 }
 
 func stopReason(_ steps: [Step]) -> (Outcome, String)? {
-    for step in steps { if case .stop(let outcome, let reason) = step { return (outcome, reason) } }
+    for step in steps {
+        if case .stop(let outcome, let reason) = step { return (outcome, reason) }
+        if case .hold(_, let reason) = step { return (.done, reason) }
+    }
     return nil
 }
 
@@ -342,6 +345,19 @@ func field(index: Int, x: Double, y: Double, width: Double, height: Double, labe
         #expect(model.seen[1].contains { if case .user(let text) = $0 { text.contains("no element 40") } else { false } })
     }
 
+    @Test func controlsOutlastTextWhenTheListIsFull() {
+        // A long message list, then the message box at the end of the tree.
+        var elements = (0..<200).map {
+            field(index: $0, x: 1920, y: Double($0 % 700), width: 100, height: 20, label: "消息 \($0)", role: "AXStaticText")
+        }
+        elements.append(field(index: 200, x: 2000, y: 700, width: 700, height: 60))
+        let listed = TarsAgent.listable(elements, in: screenFrame)
+        #expect(listed.count == TarsAgent.maxListed)
+        #expect(listed.last?.index == 200)
+        // Tree order is kept.
+        #expect(listed.map(\.index) == listed.map(\.index).sorted())
+    }
+
     @Test func onlyTheLatestListStays() {
         let screen = FakeScreen()
         screen.fields = [field(index: 2, x: 1920, y: 0, width: 128, height: 80, label: "A", role: "AXButton")]
@@ -349,5 +365,359 @@ func field(index: Int, x: Double, y: Double, width: Double, height: Double, labe
         _ = TarsAgent(screen: screen, model: model).run("x")
         let lists = model.seen[1].filter { if case .user(let text) = $0 { text.hasPrefix(TarsAgent.elementsHeading) } else { false } }
         #expect(lists.count == 1)
+    }
+}
+
+/// A phone: planned on its screenshot in device pixels, then turned into
+/// `2ndscreen android` commands.
+@Suite struct Phone {
+    let phone = PlanContext(frame: CGRect(x: 0, y: 0, width: 1000, height: 2000), foreground: true)
+
+    func commands(_ text: String, _ context: PlanContext? = nil) throws -> [String] {
+        try inputs(Planner.plan(action(text), context ?? phone)).flatMap {
+            try AndroidPlan.commands(for: $0, size: CGSize(width: 1000, height: 2000)).map { $0.joined(separator: " ") }
+        }
+    }
+
+    @Test func tapsLandInDevicePixels() throws {
+        #expect(try commands("click(start_box='[500, 250, 500, 250]')") == ["tap --x 500 --y 500"])
+        #expect(try commands("left_double(start_box='[0, 1000, 0, 1000]')") == ["tap --x 0 --y 2000", "tap --x 0 --y 2000"])
+    }
+
+    @Test func aLongPressHoldsInPlace() throws {
+        #expect(try commands("long_press(start_box='[100, 100, 100, 100]')")
+            == ["swipe --x 100 --y 200 --to-x 100 --to-y 200 --duration 0.8"])
+    }
+
+    @Test func aDragIsASwipe() throws {
+        #expect(try commands("drag(start_box='[500, 800, 500, 800]', end_box='[500, 200, 500, 200]')")
+            == ["swipe --x 500 --y 1600 --to-x 500 --to-y 400 --duration 0.5"])
+    }
+
+    @Test func scrollingDownMovesTheFingerUp() throws {
+        func numbers(_ command: String) -> [String: Double] {
+            let words = command.split(separator: " ").map(String.init)
+            var values: [String: Double] = [:]
+            for (index, word) in words.enumerated() where word.hasPrefix("--") && index + 1 < words.count {
+                values[word] = Double(words[index + 1])
+            }
+            return values
+        }
+        let down = numbers(try commands("scroll(start_box='[500, 500, 500, 500]', direction='down')")[0])
+        #expect(down["--y"]! > down["--to-y"]!)
+        #expect(down["--x"] == down["--to-x"])
+        // Off the edges, where swipes are the system's Back and Home.
+        #expect(down["--to-y"]! >= 300 && down["--y"]! <= 1700)
+        let left = numbers(try commands("scroll(start_box='[500, 500, 500, 500]', direction='left')")[0])
+        #expect(left["--x"]! < left["--to-x"]!)
+        // Pointing near the bottom still swipes the full reach, moved inward.
+        let low = numbers(try commands("scroll(start_box='[450, 900, 450, 900]', direction='down')")[0])
+        #expect(low["--y"]! - low["--to-y"]! == 600)
+        #expect(low["--y"]! <= 1700)
+    }
+
+    @Test func typingThatWouldSubmitIsHeld() throws {
+        for content in ["好的，明天见\\n", "好的，明天见\n"] {
+            let steps = Planner.plan(action("type(content='\(content)')"), phone)
+            #expect(inputs(steps).first?.value == "好的，明天见")
+            guard case .hold(let held, _) = steps.last else { Issue.record("not held: \(content)"); continue }
+            #expect(try AndroidPlan.commands(for: held, size: .zero) == [["key", "--key", "enter"]])
+            var allowed = phone
+            allowed.allowSubmit = true
+            #expect(try commands("type(content='\(content)')", allowed) == ["type --text 好的，明天见", "key --key enter"])
+        }
+        guard case .hold(let enter, _) = Planner.plan(action("hotkey(key='enter')"), phone).first else {
+            Issue.record("Enter not held")
+            return
+        }
+        #expect(try AndroidPlan.commands(for: enter, size: .zero) == [["key", "--key", "enter"]])
+    }
+
+    @Test func navigationKeys() throws {
+        #expect(try commands("press_back()") == ["key --key back"])
+        #expect(try commands("press_home()") == ["key --key home"])
+        #expect(try commands("hotkey(key='esc')") == ["key --key back"])
+        var copy = InputAction(.key)
+        copy.key = "c"
+        copy.modifiers = ["cmd"]
+        #expect(throws: AndroidPlan.Failure.self) { try AndroidPlan.commands(for: copy, size: .zero) }
+    }
+
+    @Test func thePhonePromptOffersPhoneActions() {
+        let prompt = TarsAgent.prompt("看看最新消息", actionSpaces: TarsAgent.phoneActionSpaces, elements: false)
+        #expect(prompt.contains("press_back()"))
+        #expect(!prompt.contains("## Elements"))
+        #expect(TarsAgent.prompt("x").contains("## Elements"))
+    }
+}
+
+final class MemoryStore: ProcedureStore {
+    var procedures: [Procedure] = []
+    func load(app: String) -> [Procedure] { procedures }
+    func save(_ procedures: [Procedure], app: String) { self.procedures = procedures }
+}
+
+func button(_ index: Int, _ label: String, x: Double, y: Double = 100, value: String? = nil,
+            role: String = "AXButton") -> AXElementInfo {
+    AXElementInfo(index: index, role: role, label: label, value: value, frame: CGRect(x: x, y: y, width: 100, height: 40))
+}
+
+@Suite struct SlotsInInstructions {
+    func step(_ kind: String, label: String? = nil, value: String? = nil) -> LearnedStep {
+        var step = LearnedStep(kind: kind)
+        step.value = value
+        if let label { step.target = ElementRef(role: "AXButton", label: label, x: 0.5, y: 0.5) }
+        return step
+    }
+
+    @Test func typedTextAndNamedControlsBecomeSlots() {
+        let found = Slots.discover(instruction: "给陈一写：你好，还在招",
+                                   steps: [step("click", label: "陈一 前端工程师 在吗"), step("type", value: "你好，还在招")],
+                                   texts: ["已给陈一写好草稿"])
+        #expect(found.template == "给⟦0⟧写：⟦1⟧" && found.slots == 2)
+        #expect(found.steps[0].target?.label == "⟦0⟧…" && found.steps[1].value == "⟦1⟧")
+        #expect(found.texts == ["已给⟦0⟧写好草稿"])
+        #expect(Slots.match(found.template, "给李四写：在的") == ["李四", "在的"])
+        #expect(Slots.match(found.template, "打开设置") == nil)
+    }
+
+    @Test func shortTextsAndPlainLabelsStayFixed() {
+        // "3" and "=" are in the instruction, but one character matches by accident.
+        let found = Slots.discover(instruction: "计算 3 + 4 =", steps: [step("click", label: "3"), step("click", label: "=")])
+        #expect(found.template == "计算 3 + 4 =" && found.slots == 0)
+        #expect(Slots.match(found.template, "计算 3 + 4 =") == [])
+        #expect(Slots.match(found.template, "计算 5 + 4 =") == nil)
+    }
+
+    @Test func slotsThatTouchKeepOnlyTheLonger() {
+        let found = Slots.discover(instruction: "搜索陈一前端", steps: [step("click", label: "陈一"), step("type", value: "前端")])
+        #expect(found.slots == 1)
+        #expect(Slots.match(found.template, "搜索陈一前端") != nil)
+    }
+
+    @Test func aSlotLabelFindsTheRowThatStartsWithIt() {
+        let reference = ElementRef(role: "AXButton", label: "⟦0⟧…", x: 0.1, y: 0.1)
+        let rows = [button(1, "李四光 后端", x: 1920), button(2, "李四 产品经理 你好", x: 2100), button(3, "王五", x: 2300)]
+        #expect(reference.find(in: rows, frame: screenFrame, bindings: ["李四"])?.index == 1)  // nearest of the two
+        #expect(reference.find(in: rows, frame: screenFrame, bindings: ["赵六"]) == nil)
+        let exact = ElementRef(role: "AXButton", label: "⟦0⟧", x: 0.1, y: 0.1)
+        #expect(exact.find(in: rows + [button(4, "李四", x: 3000)], frame: screenFrame, bindings: ["李四"])?.index == 4)
+    }
+}
+
+@Suite struct Learned {
+    /// A calculator of sorts: buttons, and a display that shows what was pressed.
+    func calculator() -> FakeScreen {
+        let screen = FakeScreen()
+        func layout(_ shown: String) -> [AXElementInfo] {
+            [button(1, "7", x: 2000), button(2, "8", x: 2200), button(3, "等于", x: 2400), button(4, "清除", x: 2600),
+             button(5, "", x: 2000, y: 300, value: shown, role: "AXStaticText")]
+        }
+        screen.fields = layout("0")
+        screen.afterAction = { screen in
+            let pressed = screen.performed.compactMap { action in screen.fields.first { $0.index == action.index }?.label }
+            screen.fields = layout(pressed.last == "等于" ? "15" : pressed.joined())
+        }
+        return screen
+    }
+
+    func options(_ store: ProcedureStore) -> TarsAgent.Options {
+        var options = TarsAgent.Options()
+        options.procedures = store
+        options.app = "test"
+        options.replayPatience = 0
+        return options
+    }
+
+    let script = [
+        "Thought: 按 7\nAction: click(element='1')",
+        "Thought: 按 8\nAction: click(element='2')",
+        "Thought: 按等于\nAction: click(element='3')",
+        "Thought: 结果\nAction: finished(content='结果是 15')",
+    ]
+
+    @Test func theSecondRunNeedsNoModel() {
+        let store = MemoryStore()
+        let first = TarsAgent(screen: calculator(), model: ScriptedModel(script), options: options(store)).run("算 7 加 8")
+        #expect(first.outcome == .done && first.learned == "saved" && first.modelCalls == 4)
+        #expect(store.procedures.count == 1 && store.procedures[0].finish == .element)
+
+        let screen = calculator()
+        let model = ScriptedModel([])
+        let second = TarsAgent(screen: screen, model: model, options: options(store)).run("算 7 加 8")
+        // The answer is read off the display, not remembered.
+        #expect(second.outcome == .done && second.reason == "15")
+        #expect(second.modelCalls == 0 && model.seen.isEmpty && second.replayed == 3)
+        #expect(screen.performed.map(\.index) == [1, 2, 3])
+        #expect(store.procedures[0].successes == 2)
+    }
+
+    @Test func theAnswerIsNotTextTheInstructionGave() {
+        // Calculator shows the sum above the result; the model's answer names both.
+        let store = MemoryStore()
+        let screen = calculator()
+        let react = screen.afterAction!
+        screen.afterAction = { screen in
+            react(screen)
+            if screen.performed.last?.index == 3 {
+                screen.fields.append(button(6, "", x: 2000, y: 250, value: "7+8", role: "AXStaticText"))
+            }
+        }
+        let model = ScriptedModel(Array(script.dropLast()) + ["Action: finished(content='7+8 的结果是 15')"])
+        _ = TarsAgent(screen: screen, model: model, options: options(store)).run("计算 7+8")
+        #expect(store.procedures.first?.finish == .element && store.procedures.first?.answerFrom?.y ?? 0 > 0.3)
+    }
+
+    @Test func controlsAreFoundAgainWhereverTheyMoved() {
+        let store = MemoryStore()
+        _ = TarsAgent(screen: calculator(), model: ScriptedModel(script), options: options(store)).run("算 7 加 8")
+        let screen = calculator()
+        // The same buttons, renumbered.
+        screen.fields = screen.fields.map { AXElementInfo(index: $0.index + 10, role: $0.role, label: $0.label, value: $0.value, frame: CGRect(x: $0.frame!.x, y: $0.frame!.y, width: 100, height: 40)) }
+        screen.afterAction = nil
+        let model = ScriptedModel(["Action: finished(content='看过了')"])
+        _ = TarsAgent(screen: screen, model: model, options: options(store)).run("算 7 加 8")
+        #expect(screen.performed.map(\.index) == [11, 12, 13])
+    }
+
+    @Test func aMissingControlHandsOverToTheModel() {
+        let store = MemoryStore()
+        _ = TarsAgent(screen: calculator(), model: ScriptedModel(script), options: options(store)).run("算 7 加 8")
+
+        // The app changed: 等于 is now called "=".
+        let screen = calculator()
+        func renamed(_ fields: [AXElementInfo]) -> [AXElementInfo] {
+            fields.map { $0.label == "等于" ? button($0.index, "=", x: $0.frame!.x) : $0 }
+        }
+        let react = screen.afterAction!
+        screen.fields = renamed(screen.fields)
+        screen.afterAction = { screen in
+            let equals = screen.performed.last?.index == 3
+            react(screen)
+            if equals { screen.fields = screen.fields.map { $0.index == 5 ? button(5, "", x: 2000, y: 300, value: "15", role: "AXStaticText") : $0 } }
+            screen.fields = renamed(screen.fields)
+        }
+        let model = ScriptedModel(["Thought: 按 =\nAction: click(element='3')", "Action: finished(content='结果是 15')"])
+        let result = TarsAgent(screen: screen, model: model, options: options(store)).run("算 7 加 8")
+        #expect(result.outcome == .done && result.replayed == 2 && result.modelCalls == 2)
+        // The model was told what had run, and the procedure now names the new control.
+        #expect(model.seen[0].contains { if case .user(let text) = $0 { text.contains("1. click → Button \"7\"") && text.contains("not on screen") } else { false } })
+        #expect(result.learned == "saved" && store.procedures.count == 1)
+        #expect(store.procedures[0].steps.map { $0.target?.label } == ["7", "8", "="])
+    }
+
+    @Test func aProcedureThatKeepsBreakingIsForgotten() {
+        let store = MemoryStore()
+        _ = TarsAgent(screen: calculator(), model: ScriptedModel(script), options: options(store)).run("算 7 加 8")
+        for attempt in 1...3 {
+            let empty = FakeScreen()
+            let result = TarsAgent(screen: empty, model: ScriptedModel(["Action: call_user()"]), options: options(store)).run("算 7 加 8")
+            #expect(result.outcome == .user)
+            #expect(store.procedures.count == (attempt < 3 ? 1 : 0))
+        }
+    }
+
+    @Test func stepsAimedBySightAloneAreNotLearned() {
+        let store = MemoryStore()
+        // An app that draws its own controls: nothing to find again.
+        let model = ScriptedModel(["Thought: 点\nAction: click(start_box='[500, 500, 500, 500]')", "Action: finished(content='ok')"])
+        let result = TarsAgent(screen: FakeScreen(), model: model, options: options(store)).run("点中间")
+        #expect(result.outcome == .done && store.procedures.isEmpty)
+        #expect(result.learned?.contains("no control names") == true)
+    }
+
+    @Test func aClickBySightIsKeptWithTheControlUnderIt() {
+        let store = MemoryStore()
+        let screen = calculator()
+        // 0.0859 of 1280 points is x 2030, inside "7" (2000 to 2100); y 0.15 of 800 is 120.
+        let model = ScriptedModel(["Thought: 按 7\nAction: click(start_box='[86, 150, 86, 150]')", "Action: finished(content='ok')"])
+        _ = TarsAgent(screen: screen, model: model, options: options(store)).run("按 7")
+        let step = store.procedures[0].steps[0]
+        #expect(step.target?.label == "7" && abs((step.offsetX ?? 0) - 0.3) < 0.02 && abs((step.offsetY ?? 0) - 0.5) < 0.02)
+
+        let again = calculator()
+        again.fields = again.fields.map { $0.label == "7" ? button(1, "7", x: 2500, y: 500) : $0 }
+        again.afterAction = nil
+        _ = TarsAgent(screen: again, model: ScriptedModel(["Action: finished(content='ok')"]), options: options(store)).run("按 7")
+        // The same spot in the button, where the button now is.
+        #expect(again.performed.first?.index == nil && abs((again.performed.first?.x ?? 0) - 2530) < 2 && again.performed.first?.y == 520)
+    }
+
+    @Test func slotsCarryANewInstructionThroughTheSameSteps() {
+        let store = MemoryStore()
+        func chat() -> FakeScreen {
+            let screen = FakeScreen()
+            screen.fields = [button(1, "陈一 前端", x: 1950), button(2, "李四 后端", x: 1950, y: 200),
+                             AXElementInfo(index: 3, role: "AXTextArea", label: "消息", value: "", frame: CGRect(x: 2200, y: 600, width: 800, height: 100)),
+                             button(4, "发送", x: 3000, y: 700), button(5, "表情", x: 2200, y: 720), button(6, "简历", x: 2400, y: 720)]
+            screen.afterAction = { screen in
+                guard let typed = screen.performed.last, typed.kind == .type else { return }
+                screen.fields[2] = AXElementInfo(index: 3, role: "AXTextArea", label: "消息", value: typed.value, frame: CGRect(x: 2200, y: 600, width: 800, height: 100))
+            }
+            return screen
+        }
+        let model = ScriptedModel([
+            "Thought: 打开陈一\nAction: click(element='1')",
+            "Thought: 写草稿\nAction: type(content='你好，还在招', element='3')",
+            "Thought: 点击发送按钮。\nAction: click(element='4')",
+        ])
+        let first = TarsAgent(screen: chat(), model: model, options: options(store)).run("给陈一写：你好，还在招")
+        #expect(first.reason.contains("sending") && first.learned == "saved")
+        #expect(store.procedures[0].template == "给⟦0⟧写：⟦1⟧" && store.procedures[0].finish == .steps)
+
+        let screen = chat()
+        let silent = ScriptedModel([])
+        let second = TarsAgent(screen: screen, model: silent, options: options(store)).run("给李四写：方便发份简历吗")
+        #expect(second.outcome == .done && second.modelCalls == 0 && silent.seen.isEmpty)
+        #expect(screen.performed.map(\.index) == [2, 3] && screen.performed[1].value == "方便发份简历吗")
+        // It stopped where the learned run did: before Send, which it offers
+        // for a person to confirm, as the model's run did.
+        #expect(second.reason.contains("sending"))
+        #expect(first.held?.kind == .click && second.held?.index == 4 && second.held?.x == 3050)
+        #expect(store.procedures[0].held?.target?.label == "发送" && store.procedures[0].steps.count == 2)
+
+        // Someone the list does not show: the model takes over rather than guess.
+        let third = TarsAgent(screen: chat(), model: ScriptedModel(["Action: call_user()"]), options: options(store)).run("给赵六写：在吗")
+        #expect(third.outcome == .user && third.replayed == 0)
+    }
+
+    @Test func textThatDidNotLandHandsOver() {
+        let store = MemoryStore()
+        let field = AXElementInfo(index: 3, role: "AXTextArea", label: "消息", value: "", frame: CGRect(x: 2200, y: 600, width: 800, height: 100))
+        let others = [button(4, "表情", x: 2200, y: 720), button(5, "简历", x: 2400, y: 720), button(6, "更多", x: 2600, y: 720)]
+        let learning = FakeScreen()
+        learning.fields = [field] + others
+        learning.afterAction = { $0.fields[0] = AXElementInfo(index: 3, role: "AXTextArea", label: "消息", value: "在吗", frame: CGRect(x: 2200, y: 600, width: 800, height: 100)) }
+        _ = TarsAgent(screen: learning, model: ScriptedModel(["Action: type(content='在吗', element='3')", "Action: finished()"]),
+                      options: options(store)).run("写在吗")
+        #expect(store.procedures.count == 1)
+
+        // This time the app drops the text.
+        let deaf = FakeScreen()
+        deaf.fields = [field] + others
+        let model = ScriptedModel(["Action: call_user()"])
+        let result = TarsAgent(screen: deaf, model: model, options: options(store)).run("写在吗")
+        #expect(result.outcome == .user && model.seen.count == 1)
+        #expect(model.seen[0].contains { if case .user(let text) = $0 { text.contains("did not land") } else { false } })
+    }
+
+    @Test func aRunLearnedWithoutSendingDoesNotServeOneThatSends() {
+        let store = MemoryStore()
+        _ = TarsAgent(screen: calculator(), model: ScriptedModel(script), options: options(store)).run("算 7 加 8")
+        var sending = options(store)
+        sending.allowSubmit = true
+        let model = ScriptedModel(["Action: finished(content='x')"])
+        let result = TarsAgent(screen: calculator(), model: model, options: sending).run("算 7 加 8")
+        #expect(result.replayed == 0 && model.seen.count >= 1)
+    }
+
+    @Test func proceduresSurviveTheFile() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("2ndscreen-procedures-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = FileProcedureStore(directory: directory)
+        _ = TarsAgent(screen: calculator(), model: ScriptedModel(script), options: options(store)).run("算 7 加 8")
+        let loaded = store.load(app: "test")
+        #expect(loaded.count == 1 && loaded[0].steps.count == 3 && loaded[0].answerFrom?.role == "AXStaticText")
+        #expect(store.file(app: "com.zhipin.www/x").lastPathComponent == "com.zhipin.www_x.json")
     }
 }

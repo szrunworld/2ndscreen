@@ -5,9 +5,12 @@ import UniformTypeIdentifiers
 
 /// PNG helpers for screenshots, which the app takes of whole screens in pixels.
 public enum Images {
+    /// Decoded now: an image read lazily goes blank once its file is
+    /// deleted, as screenshot scratch files are.
     public static func load(_ path: String) throws -> CGImage {
+        let options = [kCGImageSourceShouldCacheImmediately: true] as CFDictionary
         guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
-              let image = CGImageSourceCreateImageAtIndex(source, 0, nil)
+              let image = CGImageSourceCreateImageAtIndex(source, 0, options)
         else { throw ImageError("cannot read \(path)") }
         return image
     }
