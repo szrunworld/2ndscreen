@@ -515,6 +515,15 @@ func button(_ index: Int, _ label: String, x: Double, y: Double = 100, value: St
         #expect(Slots.match(found.template, "搜索陈一前端") != nil)
     }
 
+    @Test func aSlotThatSwallowsAFurtherStepIsAnotherTask() {
+        // Learned from 「在消息框里写：你好，在吗」, which stopped after writing.
+        #expect(Slots.sameTask(["消息", "明天见"], ["消息", "你好，在吗"]))
+        #expect(!Slots.sameTask(["消息", "周五见，然后发送"], ["消息", "你好，在吗"]))
+        #expect(!Slots.sameTask(["消息", "ok and send it"], ["消息", "hi"]))
+        // A further step the learned run's slot held too is no change.
+        #expect(Slots.sameTask(["周六见，然后发送"], ["周五见，然后发送"]))
+    }
+
     @Test func aSlotLabelFindsTheRowThatStartsWithIt() {
         let reference = ElementRef(role: "AXButton", label: "⟦0⟧…", x: 0.1, y: 0.1)
         let rows = [button(1, "李四光 后端", x: 1920), button(2, "李四 产品经理 你好", x: 2100), button(3, "王五", x: 2300)]
