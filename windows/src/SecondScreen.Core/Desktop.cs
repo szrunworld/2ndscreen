@@ -32,7 +32,7 @@ public static class Desktop
 
     /// <summary>
     /// Report and accept physical pixels everywhere. Call first thing in every process,
-    /// so window and monitor coordinates agree with cua-driver's.
+    /// so window, monitor and UI Automation coordinates agree.
     /// </summary>
     public static void BecomeDpiAware() => Native.SetProcessDpiAwarenessContext(Native.DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 

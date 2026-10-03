@@ -1,14 +1,20 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <!-- The agent-facing 2ndscreen.exe: talks to the tray app over the control pipe,
-       drives programs through cua-driver, and serves MCP. -->
+       drives programs through UI Automation and posted input, and serves MCP. -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>
     <!-- For System.Drawing, used to downscale MCP screenshots. -->
     <UseWindowsForms>true</UseWindowsForms>
+    <!-- For System.Windows.Automation, the UI Automation client. -->
+    <UseWPF>true</UseWPF>
     <AssemblyName>2ndscreen</AssemblyName>
     <RootNamespace>SecondScreen.Cli</RootNamespace>
   </PropertyGroup>
+  <ItemGroup>
+    <!-- UseWPF drops System.IO from the implicit usings, for WPF's own Path. -->
+    <Using Include="System.IO" />
+  </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../SecondScreen.Core/SecondScreen.Core.csproj" />
   </ItemGroup>

@@ -14,6 +14,10 @@ public struct AXElementInfo: Codable {
     public var frame: Frame?
 }
 
+/// Processes this app has asked to expose web content, so the first read waits for it once.
+private var enabledWebAccessibility = Set<pid_t>()
+private let enabledWebAccessibilityLock = NSLock()
+
 /// A snapshot of one window's accessibility tree. The app keeps the last
 /// snapshot per window, so the indexes it hands out stay valid until the
 /// next `state` of that window.
@@ -53,12 +57,51 @@ public final class AXSnapshot {
             throw AccessibilityError("\(window.appName) does not expose window \(window.windowID) to accessibility")
         }
         // A busy app can block an AX call for its full default timeout (6 s).
-        AXUIElementSetMessagingTimeout(AXUIElementCreateApplication(window.pid), 2)
+        let app = AXUIElementCreateApplication(window.pid)
+        AXUIElementSetMessagingTimeout(app, 2)
+        let justEnabled = enableWebAccessibility(app, pid: window.pid)
 
         var walker = Walker(query: query?.lowercased())
         walker.visit(root, depth: 0, inWeb: false)
+        // Right after asking, the renderer is still building the page's tree: read again
+        // for up to two seconds until web content shows up.
+        if justEnabled {
+            for _ in 0..<8 where walker.web.isEmpty {
+                Thread.sleep(forTimeInterval: 0.25)
+                walker = Walker(query: query?.lowercased())
+                walker.visit(root, depth: 0, inWeb: false)
+            }
+        }
         return AXSnapshot(windowID: window.windowID, elements: walker.elements,
                           tree: walker.lines.joined(separator: "\n"), handles: walker.handles, web: walker.web)
+    }
+
+    /// Chromium and Electron expose a page's tree only once a client asks for it; until then
+    /// a browser window shows its toolbar and nothing of the page. Electron answers
+    /// AXManualAccessibility. Chromium browsers answer only AXEnhancedUserInterface, which in
+    /// other apps can slow window animations and moves, so it is set for them alone.
+    /// Returns whether it asked just now, so the caller can wait for the tree.
+    private static func enableWebAccessibility(_ app: AXUIElement, pid: pid_t) -> Bool {
+        enabledWebAccessibilityLock.lock()
+        let first = enabledWebAccessibility.insert(pid).inserted
+        enabledWebAccessibilityLock.unlock()
+        guard first else { return false }
+        if AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue) == .success {
+            return true
+        }
+        guard isChromium(pid) else { return false }
+        AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+        return true
+    }
+
+    /// Whether the app bundles a Chromium framework (Chrome, Edge, Brave and the like).
+    private static func isChromium(_ pid: pid_t) -> Bool {
+        guard let bundle = NSRunningApplication(processIdentifier: pid)?.bundleURL else { return false }
+        let frameworks = bundle.appendingPathComponent("Contents/Frameworks")
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: frameworks.path)) ?? []
+        return names.contains { name in
+            name.hasSuffix(" Framework.framework") || name.contains("Chromium") || name.contains("Electron")
+        }
     }
 
     public func element(index: Int) -> AXElementInfo? {

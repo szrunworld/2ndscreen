@@ -1,4 +1,4 @@
-// The window 2ndscreen's end-to-end test drives through cua-driver.
+// The window 2ndscreen's end-to-end test drives in the background.
 var form = new Form { Text = "2ndscreen test target", Width = 520, Height = 520 };
 var input = new TextBox { Left = 20, Top = 20, Width = 460, AccessibleName = "Input" };
 var button = new Button { Left = 20, Top = 70, Width = 160, Height = 40, Text = "Press me" };

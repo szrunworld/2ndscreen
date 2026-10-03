@@ -24,7 +24,7 @@ jobs:
       - name: Publish single-file executables
         shell: pwsh
         run: |
-          foreach ($project in "src/SecondScreen.App", "src/SecondScreen.Cli", "tests/TestTarget") {
+          foreach ($project in "src/SecondScreen.App", "src/SecondScreen.Cli", "tests/TestTarget", "tests/TestTargetWpf") {
             dotnet publish "windows/$project" -c Release -r win-x64 --self-contained true `
               -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o windows/artifacts/publish
             if ($LASTEXITCODE) { exit $LASTEXITCODE }
@@ -50,13 +50,6 @@ jobs:
         continue-on-error: true
         shell: pwsh
         run: ./publish/install-driver.ps1
-      - name: Install cua-driver
-        id: cua
-        continue-on-error: true
-        shell: pwsh
-        run: |
-          Invoke-RestMethod https://cua.ai/driver/install.ps1 | Invoke-Expression
-          "$env:LOCALAPPDATA\Programs\Cua\cua-driver\bin" | Add-Content $env:GITHUB_PATH
       - name: Driver diagnostics
         continue-on-error: true
         shell: pwsh
@@ -81,10 +74,11 @@ jobs:
           ./publish/2ndscreen.exe doctor
       - name: End-to-end acceptance
         shell: pwsh
-        run: |
-          $skip = @()
-          if ("${{ steps.cua.outcome }}" -ne "success") { $skip = @("-SkipDriver") }
-          ./publish/e2e.ps1 -Bin publish -Out e2e-out @skip
+        # The vision agent's checks run only where the model's key is available.
+        env:
+          ARK_API_KEY: ${{ secrets.ARK_API_KEY }}
+          ARK_MODEL: ${{ secrets.ARK_MODEL }}
+        run: ./publish/e2e.ps1 -Bin publish -Out e2e-out
       - uses: actions/upload-artifact@v4
         if: always()
         with:
