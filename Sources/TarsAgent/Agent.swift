@@ -297,17 +297,28 @@ public final class TarsAgent {
 
     static let elementsHeading = "## Elements"
     /// Elements beyond this many are left out of the list, to keep steps small.
-    static let maxListed = 80
+    static let maxListed = 120
 
     /// Elements worth listing: numbered, on the screen, and named, holding
-    /// a value, or taking text.
+    /// a value, or taking text. When there are too many, plain text goes
+    /// first: in a chat app the message list alone can fill the list and
+    /// push out the message box (BOSS直聘), and the screenshot shows text anyway.
     static func listable(_ elements: [AXElementInfo], in frame: CGRect) -> [AXElementInfo] {
-        Array(elements.filter { element in
+        let candidates = elements.filter { element in
             guard element.index >= 0, let box = element.frame, box.width > 0, box.height > 0,
                   frame.contains(CGPoint(x: box.x + box.width / 2, y: box.y + box.height / 2))
             else { return false }
             return !(element.label ?? "").isEmpty || !(element.value ?? "").isEmpty || AXActions.isText(element)
-        }.prefix(maxListed))
+        }
+        guard candidates.count > maxListed else { return candidates }
+        let controls = Set(candidates.filter { $0.role != "AXStaticText" }.prefix(maxListed).map(\.index))
+        var room = maxListed - controls.count
+        return candidates.filter { element in
+            if controls.contains(element.index) { return true }
+            guard element.role == "AXStaticText", room > 0 else { return false }
+            room -= 1
+            return true
+        }
     }
 
     /// The list the model reads, one element a line.

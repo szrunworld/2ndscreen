@@ -342,6 +342,19 @@ func field(index: Int, x: Double, y: Double, width: Double, height: Double, labe
         #expect(model.seen[1].contains { if case .user(let text) = $0 { text.contains("no element 40") } else { false } })
     }
 
+    @Test func controlsOutlastTextWhenTheListIsFull() {
+        // A long message list, then the message box at the end of the tree.
+        var elements = (0..<200).map {
+            field(index: $0, x: 1920, y: Double($0 % 700), width: 100, height: 20, label: "消息 \($0)", role: "AXStaticText")
+        }
+        elements.append(field(index: 200, x: 2000, y: 700, width: 700, height: 60))
+        let listed = TarsAgent.listable(elements, in: screenFrame)
+        #expect(listed.count == TarsAgent.maxListed)
+        #expect(listed.last?.index == 200)
+        // Tree order is kept.
+        #expect(listed.map(\.index) == listed.map(\.index).sorted())
+    }
+
     @Test func onlyTheLatestListStays() {
         let screen = FakeScreen()
         screen.fields = [field(index: 2, x: 1920, y: 0, width: 128, height: 80, label: "A", role: "AXButton")]
