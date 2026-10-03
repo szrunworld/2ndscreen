@@ -303,11 +303,11 @@ if ($launched.ok) {
 <input aria-label="Input" style="width:400px;font-size:18px">
 <p><button onclick="n.textContent='Pressed '+(++c)" style="font-size:18px">Press me</button> <span id="n">Pressed 0</span></p>
 <div role="list" aria-label="Rows" id="rows" style="height:300px;width:240px;overflow:auto;border:1px solid #888"></div>
-<p id="top">Top 0</p>
+<p id="topRow">Top 0</p>
 <script>
 let c = 0;
 for (let i = 1; i <= 200; i++) { const d = document.createElement('div'); d.setAttribute('role', 'listitem'); d.textContent = 'Row ' + i; d.style.height = '24px'; rows.appendChild(d); }
-rows.onscroll = () => top.textContent = 'Top ' + Math.round(rows.scrollTop / 24);
+rows.onscroll = () => topRow.textContent = 'Top ' + Math.round(rows.scrollTop / 24);
 </script>
 "@ | Set-Content -Encoding UTF8 $page
     $edge = @("${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe", "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1

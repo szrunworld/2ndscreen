@@ -168,10 +168,20 @@ public static class DriverCommands
         return Report(target, described, Input.Type(window, text));
     }
 
+    /// <summary>
+    /// Whether the value now shows the text. Browsers update the value they report a moment
+    /// after the write, so give it that moment rather than type the text a second time.
+    /// </summary>
     private static bool Landed(AutomationElement element, string before, string text)
     {
-        var after = Automation.ValueOf(element);
-        return after != before && after.Contains(text.Replace("\r\n", "\n").Split('\n')[0], StringComparison.Ordinal);
+        var line = text.Replace("\r\n", "\n").Split('\n')[0];
+        for (int attempt = 0; attempt < 6; attempt++)
+        {
+            var after = Automation.ValueOf(element);
+            if (after != before && after.Contains(line, StringComparison.Ordinal)) return true;
+            Thread.Sleep(100);
+        }
+        return false;
     }
 
     private static JsonObject Key(Target target, Arguments args)

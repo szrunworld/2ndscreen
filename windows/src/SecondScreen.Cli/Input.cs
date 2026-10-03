@@ -215,6 +215,7 @@ public static class Input
         {
             Win32.SetCursorPos(pointer.X, pointer.Y);
             if (previous != 0) TakeForeground(previous);
+            RestoreForeground(Win32.GetAncestor(window, Win32.GA_ROOT), previous, 1000);
         }
         return "sendinput";
     }
@@ -257,6 +258,7 @@ public static class Input
         finally
         {
             if (previous != 0) TakeForeground(previous);
+            RestoreForeground(Win32.GetAncestor(window, Win32.GA_ROOT), previous, 1000);
         }
         return "sendinput.key";
     }
@@ -289,19 +291,37 @@ public static class Input
                 Win32.SetWindowLongPtr(root, Win32.GWL_EXSTYLE, now & ~(nint)Win32.WS_EX_NOACTIVATE);
             }
         }
-        RestoreForeground(root, previous);
+        RestoreForeground(root, previous, WatchMs(root));
     }
 
-    /// <summary>Put the user's window back in front if the program took the foreground.</summary>
-    public static void RestoreForeground(nint root, nint previous)
+    /// <summary>
+    /// Put the user's window back in front if the program takes the foreground, watching for
+    /// <paramref name="watchMs"/>: Chromium and WPF bring themselves forward a moment after
+    /// the input that prompted it, past a single check.
+    /// </summary>
+    public static void RestoreForeground(nint root, nint previous, int watchMs = 0)
     {
         if (previous == 0 || previous == root) return;
-        for (int attempt = 0; attempt < 2; attempt++)
+        var deadline = Environment.TickCount64 + watchMs;
+        do
         {
-            if (Win32.GetAncestor(Win32.GetForegroundWindow(), Win32.GA_ROOT) != root) return;
-            TakeForeground(previous);
-            Thread.Sleep(12);
+            if (Win32.GetAncestor(Win32.GetForegroundWindow(), Win32.GA_ROOT) == root)
+            {
+                TakeForeground(previous);
+                Thread.Sleep(12);
+                continue;
+            }
+            Thread.Sleep(25);
         }
+        while (Environment.TickCount64 < deadline);
+    }
+
+    /// <summary>How long to watch for a program bringing itself forward after input.</summary>
+    private static int WatchMs(nint root)
+    {
+        var name = Win32.ClassName(root);
+        return name.StartsWith("Chrome_WidgetWin_", StringComparison.Ordinal) || name.StartsWith("HwndWrapper", StringComparison.Ordinal)
+            || name.StartsWith("CefBrowser", StringComparison.Ordinal) ? 400 : 0;
     }
 
     /// <summary>
