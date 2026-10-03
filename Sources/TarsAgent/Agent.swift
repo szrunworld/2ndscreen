@@ -111,6 +111,7 @@ public final class TarsAgent {
     public func run(_ instruction: String) -> Result {
         var messages: [Message] = [.user(Self.prompt(instruction))]
         var failedShots = 0
+        var replyWithoutAction = false
         for step in 1...max(options.maxSteps, 1) {
             let frame: CGRect
             do {
@@ -136,8 +137,18 @@ public final class TarsAgent {
             onEvent(.thought(prediction.thought, prediction.actions))
             if prediction.actions.isEmpty {
                 onEvent(.error("no action in the reply: \(reply)"))
+                // Models that consider the task done tend to answer in prose.
+                // Remind once; a second answer without an action is final.
+                if replyWithoutAction {
+                    return Result(outcome: .done, reason: reply.trimmingCharacters(in: .whitespacesAndNewlines),
+                                  steps: step)
+                }
+                replyWithoutAction = true
+                messages.append(.user("Answer in the format `Thought: ...` then `Action: ...`, "
+                    + "using one action from the action space; use finished(content='...') when the task is done."))
                 continue
             }
+            replyWithoutAction = false
 
             var context = PlanContext(frame: frame, allowSubmit: options.allowSubmit, foreground: options.foreground)
             for var action in prediction.actions {
@@ -153,7 +164,7 @@ public final class TarsAgent {
                     action.inputs["content"] = prediction.thought
                 }
                 for planned in Planner.plan(action, context) {
-                    if let stop = execute(planned, prediction: reply) {
+                    if let stop = execute(planned, prediction: prediction.thought.isEmpty ? reply : prediction.thought) {
                         return Result(outcome: stop.0, reason: stop.1, steps: step)
                     }
                 }
@@ -175,8 +186,12 @@ public final class TarsAgent {
         case .act(var action):
             if action.kind == .click, !options.allowSubmit {
                 // Apps that draw their own controls hide a Send button from
-                // accessibility, so also go by what the model says it does.
-                if Self.matches(Self.submitIntent, prediction) {
+                // accessibility, so also go by what the model says this step
+                // does: the thought's last sentence, which UI-TARS keeps for
+                // the next action (its plan may mention sending later). A
+                // click into a text field is never the send.
+                if Self.matches(Self.submitIntent, Self.nextActionSentence(prediction)),
+                   action.point.flatMap({ field(at: $0) }) == nil {
                     let reason = "stopped before a click the model describes as sending"
                     onEvent(.step(.stop(.done, reason)))
                     return (.done, reason)
@@ -220,6 +235,15 @@ public final class TarsAgent {
             Self.matches(options.submitLabels, (element.label ?? "").trimmingCharacters(in: .whitespaces))
                 && Self.contains(element.frame, point)
         }
+    }
+
+    /// The last sentence of a thought, where UI-TARS summarises the action
+    /// it is about to take.
+    static func nextActionSentence(_ thought: String) -> String {
+        let sentences = thought.components(separatedBy: CharacterSet(charactersIn: "。！？.!?\n"))
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        return sentences.last ?? thought
     }
 
     static func trimImages(_ messages: inout [Message]) {

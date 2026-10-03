@@ -213,6 +213,9 @@ Guards:
   cmd+option+esc, stop the run: models reach for them when stuck.
 - The run stops when the app no longer has a window on the screen.
 
+Chrome's own address bar takes no typing from the background; open pages
+with `open` and `window move` instead.
+
 `skills/2ndscreen/SKILL.md` is the agent-facing guide; give it to an
 agent, or install it as a Claude Code skill.
 

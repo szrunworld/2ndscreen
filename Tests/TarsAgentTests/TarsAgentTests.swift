@@ -225,6 +225,27 @@ func field(index: Int, x: Double, y: Double, width: Double, height: Double, labe
         #expect(screen.performed.isEmpty)
     }
 
+    @Test func aPlanThatSendsLaterStillClicksIntoTheField() {
+        let screen = FakeScreen()
+        screen.fields = [field(index: 3, x: 1920, y: 700, width: 1200, height: 60)]
+        let model = ScriptedModel([
+            "Thought: 先点击输入框，输入回复后再发送。现在点击底部的输入框。\nAction: click(start_box='[500, 900, 500, 900]')",
+            "Thought: 输入回复。\nAction: type(content='好的')",
+            "Thought: 现在点击发送按钮。\nAction: click(start_box='[990, 950, 990, 950]')",
+        ])
+        let result = TarsAgent(screen: screen, model: model).run("x")
+        #expect(screen.performed.map(\.kind) == [.click, .type])
+        #expect(result.reason.contains("sending"))
+    }
+
+    @Test func proseTwiceInARowIsTheAnswer() {
+        let model = ScriptedModel(["已经发送了。", "任务完成，消息已发送。"])
+        let result = TarsAgent(screen: FakeScreen(), model: model).run("x")
+        #expect(result.outcome == .done && result.reason == "任务完成，消息已发送。" && result.steps == 2)
+        // The model was reminded of the format in between.
+        #expect(model.seen[1].contains { if case .user(let text) = $0 { text.contains("Action:") && text.contains("finished") } else { false } })
+    }
+
     @Test func oldScreenshotsLeaveTheHistory() {
         let screen = FakeScreen()
         let model = ScriptedModel(Array(repeating: "Action: hover(start_box='[1, 1, 1, 1]')", count: 8))
