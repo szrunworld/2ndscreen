@@ -104,12 +104,18 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.button?.image = NSImage(
-            systemSymbolName: "display.2", accessibilityDescription: Self.displayName)
-        let menu = NSMenu()
-        menu.delegate = self
-        statusItem.menu = menu
+        if ControlProtocol.isSideInstance {
+            // Kept off the menu bar, where the usual app lists it under
+            // Test Copies; it quits once its agent has left it idle.
+            quitWhenIdle()
+        } else {
+            statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+            statusItem.button?.image = NSImage(
+                systemSymbolName: "display.2", accessibilityDescription: Self.displayName)
+            let menu = NSMenu()
+            menu.delegate = self
+            statusItem.menu = menu
+        }
 
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(agentCursorEvent(_:)),
@@ -256,6 +262,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func handle(_ request: ControlRequest) async -> ControlResponse {
+        lastRequest = Date()
         func target() -> ScreenInfo? {
             guard let name = request.screen else { return nil }
             return allScreens().first { $0.name == name }
@@ -345,6 +352,66 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .androidScreenshot, .androidTap, .androidSwipe, .androidType, .androidKey:
             return await androidAction(request)
         }
+    }
+
+    // MARK: Test copies
+
+    /// When an agent last sent a request.
+    private var lastRequest = Date()
+    /// A side instance quits after this long without requests, unless it
+    /// still has an agent screen or a phone's mirror open.
+    private static let sideInstanceIdleQuit: TimeInterval = 30 * 60
+
+    private func quitWhenIdle() {
+        Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, Date().timeIntervalSince(self.lastRequest) > Self.sideInstanceIdleQuit,
+                      self.agentScreens.screens.isEmpty, self.androidMirrors.isEmpty else { return }
+                NSApp.terminate(nil)
+            }
+        }
+    }
+
+    /// Side instances agents run to test builds of 2ndscreen, which keep off
+    /// the menu bar; each can be quit from here.
+    private func testCopiesItem() -> NSMenuItem? {
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        let copies = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
+            .filter { $0.processIdentifier != ownPID }
+        guard !copies.isEmpty else { return nil }
+        let parent = NSMenuItem(title: "Test Copies (\(copies.count))", action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+        let note = NSMenuItem(title: "Run by agents to test their builds", action: nil, keyEquivalent: "")
+        note.isEnabled = false
+        submenu.addItem(note)
+        for copy in copies {
+            var title = "Quit " + Self.copyName(copy.bundleURL)
+            if let launched = copy.launchDate {
+                title += " (since \(launched.formatted(date: .omitted, time: .shortened)))"
+            }
+            let entry = item(title, #selector(quitTestCopy(_:)), on: false)
+            entry.representedObject = copy.processIdentifier
+            entry.toolTip = copy.bundleURL?.path
+            submenu.addItem(entry)
+        }
+        parent.submenu = submenu
+        return parent
+    }
+
+    /// "2ndscreen-uitars" for …/2ndscreen-uitars/build/2ndscreen.app, the
+    /// folder it was built in; otherwise its folder and name.
+    static func copyName(_ url: URL?) -> String {
+        guard let url else { return "unknown" }
+        let folder = url.deletingLastPathComponent()
+        if folder.lastPathComponent == "build" {
+            return folder.deletingLastPathComponent().lastPathComponent
+        }
+        return folder.lastPathComponent + "/" + url.deletingPathExtension().lastPathComponent
+    }
+
+    @objc private func quitTestCopy(_ sender: NSMenuItem) {
+        guard let pid = sender.representedObject as? pid_t else { return }
+        NSRunningApplication(processIdentifier: pid)?.terminate()
     }
 
     // MARK: Android
@@ -898,6 +965,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         android.submenu = androidMenu
         menu.addItem(android)
         menu.addItem(.separator())
+
+        if let copies = testCopiesItem() {
+            menu.addItem(copies)
+            menu.addItem(.separator())
+        }
 
         menu.addItem(item("Open Displays Settings…", #selector(openDisplaySettings), on: false))
         menu.addItem(NSMenuItem(

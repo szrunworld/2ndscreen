@@ -20,9 +20,27 @@ public enum ControlProtocol {
         if let path = ProcessInfo.processInfo.environment["SECONDSCREEN_SOCKET"], !path.isEmpty {
             return URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
         }
-        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        return primarySocketURL
+    }
+
+    /// The usual app's socket, whichever this process uses.
+    public static var primarySocketURL: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("2ndscreen", isDirectory: true)
             .appendingPathComponent("control.sock")
+    }
+
+    /// Whether an app is listening on `url`. A crashed one leaves its socket
+    /// file behind, which refuses connections.
+    public static func isListening(_ url: URL) -> Bool {
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0, var address = try? unixAddress(url.path) else { return false }
+        defer { close(fd) }
+        return withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) == 0
+            }
+        }
     }
 }
 
