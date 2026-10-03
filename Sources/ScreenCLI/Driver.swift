@@ -37,7 +37,20 @@ struct Driver {
 
     /// Run one cua-driver tool and return its JSON object. Non-JSON output
     /// (cua-driver prints plain text for some failures) becomes `error`.
+    ///
+    /// cua-driver can end a session between calls, and only `start_session`
+    /// brings an ended name back, so a call refused for that revives it and
+    /// retries.
     func call(_ tool: String, _ arguments: [String: Any]) throws -> [String: Any] {
+        let result = try run(tool, arguments)
+        guard tool != "start_session",
+              let error = result["error"] as? String, error.contains("session has ended")
+        else { return result }
+        _ = try run("start_session", [:])
+        return try run(tool, arguments)
+    }
+
+    private func run(_ tool: String, _ arguments: [String: Any]) throws -> [String: Any] {
         guard FileManager.default.isExecutableFile(atPath: executable) else {
             throw DriverError("cua-driver not found; install it or set CUA_DRIVER")
         }

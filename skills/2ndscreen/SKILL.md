@@ -28,6 +28,8 @@ CLI=2ndscreen   # or <repo>/.build/release/2ndscreen
 
    Without `--size`, the screen matches the main display's full-screen
    area. HiDPI follows the main display; pass `--hidpi` or `--no-hidpi`.
+   macOS runs a screen at HiDPI only from 800 points on the long side and
+   525 on the short side, so smaller screens are 1x.
    Add `--ttl 30m` as a safety net. A screen no command names for an hour
    is destroyed anyway (`--idle-timeout` changes that).
 
@@ -127,3 +129,4 @@ CLI=2ndscreen   # or <repo>/.build/release/2ndscreen
 | `no window on screen` | `app launch` or `window move` the app there first |
 | `cua-driver not found` | Install cua-driver, or set `CUA_DRIVER` to its path |
 | `... already running` | Add `--new-instance`, or `window move` a window you own |
+| The user must type into a window (a password) | `window release` it to their main display, then `window move` it back |
