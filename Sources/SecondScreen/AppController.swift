@@ -81,6 +81,17 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Live previews of agent screens, keyed by screen name.
     private var agentPreviews: [String: DisplayPreview] = [:]
     private var controlServer: ControlServer?
+    /// Open Android mirror windows, keyed by adb serial.
+    private var androidMirrors: [String: AndroidMirrorWindow] = [:]
+    /// Serials whose mirror is starting, so a second request waits its turn.
+    private var androidStarting: Set<String> = []
+    private var androidPairing: AndroidPairingWindow?
+    /// Filled when opened, so adb only runs for people who look at it.
+    private lazy var androidMenu: NSMenu = {
+        let menu = NSMenu()
+        menu.delegate = self
+        return menu
+    }()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -125,6 +136,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         controlServer?.stop()
+        // Stops each mirror's server on its phone.
+        for window in androidMirrors.values {
+            window.close()
+        }
     }
 
     // MARK: Display lifecycle
@@ -265,7 +280,157 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let screen = target() else { return missingScreen }
             guard let output = request.output else { return .failure("give a PNG path with --output") }
             return await agentScreens.screenshot(displayID: screen.displayID, to: output)
+        case .androidList:
+            return await androidList()
+        case .androidShow:
+            if request.screen != nil, target() == nil { return missingScreen }
+            // Agents never pull the user away from their work.
+            return await showAndroid(serial: request.serial, on: target()?.displayID,
+                                     maxSize: request.maxSize ?? Self.androidMaxSize, presentation: .background)
+        case .androidHide:
+            let serials = request.serial.map { [$0] } ?? Array(androidMirrors.keys)
+            for serial in serials {
+                androidMirrors[serial]?.close()
+            }
+            return await androidList()
         }
+    }
+
+    // MARK: Android
+
+    private func addAndroidItems(to menu: NSMenu) {
+        do {
+            let devices = try ADB.devices()
+            if devices.isEmpty {
+                let none = NSMenuItem(title: "No Phone Connected", action: nil, keyEquivalent: "")
+                none.isEnabled = false
+                menu.addItem(none)
+            }
+            for device in devices {
+                let usable = device.state == "device"
+                let title = usable ? "Show \(device.label)" : "\(device.label) (\(device.state))"
+                let entry = item(title, #selector(showAndroidMirror(_:)), on: androidMirrors[device.serial] != nil)
+                entry.representedObject = device.serial
+                entry.toolTip = device.serial
+                entry.isEnabled = usable
+                menu.addItem(entry)
+                if androidMirrors[device.serial] != nil {
+                    let stop = item("Stop Mirroring \(device.label)", #selector(stopAndroidMirror(_:)), on: false)
+                    stop.representedObject = device.serial
+                    stop.indentationLevel = 1
+                    menu.addItem(stop)
+                }
+            }
+        } catch {
+            let failed = NSMenuItem(title: error.localizedDescription, action: nil, keyEquivalent: "")
+            failed.isEnabled = false
+            menu.addItem(failed)
+        }
+        menu.addItem(.separator())
+        menu.addItem(item("Connect Phone…", #selector(showAndroidPairing), on: false))
+    }
+
+    /// Full screen on its own Space, opened or brought forward.
+    @objc private func showAndroidMirror(_ sender: NSMenuItem) {
+        guard let serial = sender.representedObject as? String else { return }
+        Task { @MainActor in
+            let response = await showAndroid(serial: serial, on: nil, maxSize: Self.androidMaxSize,
+                                             presentation: .fullScreen)
+            if let error = response.error { presentError(error) }
+        }
+    }
+
+    @objc private func stopAndroidMirror(_ sender: NSMenuItem) {
+        guard let serial = sender.representedObject as? String else { return }
+        androidMirrors[serial]?.close()
+    }
+
+    @objc private func showAndroidPairing() {
+        if let androidPairing {
+            androidPairing.show()
+            return
+        }
+        let pairing = AndroidPairingWindow()
+        pairing.onClose = { [weak self] in self?.androidPairing = nil }
+        pairing.onConnected = { [weak self] serial in
+            Task { @MainActor in
+                guard let self else { return }
+                let response = await self.showAndroid(serial: serial, on: nil, maxSize: Self.androidMaxSize,
+                                                      presentation: .fullScreen)
+                if let error = response.error { self.presentError(error) }
+            }
+        }
+        androidPairing = pairing
+        pairing.show()
+    }
+
+    /// The longest side of the mirrored video. Full size can be 3200 pixels,
+    /// more than Wi-Fi carries smoothly and more than a window shows.
+    private static let androidMaxSize = 1920
+
+    private func androidList() async -> ControlResponse {
+        let devices: [ADB.Device]
+        do {
+            devices = try await Task.detached { try ADB.devices() }.value
+        } catch {
+            return .failure(error.localizedDescription)
+        }
+        var response = ControlResponse()
+        response.android = devices.map { device in
+            var info = AndroidDeviceInfo(serial: device.serial, state: device.state, model: device.model,
+                                         mirroring: androidMirrors[device.serial] != nil)
+            if let window = androidMirrors[device.serial] {
+                info.frame = Frame(window.frameOnScreen)
+                info.width = Int(window.mirror.videoSize.width)
+                info.height = Int(window.mirror.videoSize.height)
+            }
+            return info
+        }
+        return response
+    }
+
+    /// Open a mirror window for a device, or bring its window forward. With
+    /// a display, the window fills it, such as an agent screen.
+    private func showAndroid(serial: String?, on displayID: CGDirectDisplayID?, maxSize: Int,
+                             presentation: AndroidMirrorWindow.Presentation) async -> ControlResponse {
+        let devices: [ADB.Device]
+        do {
+            devices = try await Task.detached { try ADB.devices() }.value.filter { $0.state == "device" }
+        } catch {
+            return .failure(error.localizedDescription)
+        }
+        guard !devices.isEmpty else {
+            return .failure("no Android device is connected; pair one with `2ndscreen android pair` or from the menu")
+        }
+        guard let serial = serial ?? (devices.count == 1 ? devices[0].serial : nil) else {
+            return .failure("several Android devices are connected; choose one with --serial")
+        }
+        guard devices.contains(where: { $0.serial == serial }) else {
+            return .failure("no connected device \"\(serial)\"; see `2ndscreen android devices`")
+        }
+        if let existing = androidMirrors[serial] {
+            if let displayID { existing.place(on: displayID) }
+            existing.show(presentation)
+        } else {
+            guard androidStarting.insert(serial).inserted else {
+                return .failure("the mirror of \"\(serial)\" is already starting")
+            }
+            defer { androidStarting.remove(serial) }
+            let mirror = AndroidMirror(serial: serial)
+            do {
+                try await Task.detached { try mirror.start(maxSize: maxSize) }.value
+            } catch {
+                return .failure(error.localizedDescription)
+            }
+            let window = AndroidMirrorWindow(mirror: mirror)
+            window.onClose = { [weak self] in self?.androidMirrors.removeValue(forKey: serial) }
+            androidMirrors[serial] = window
+            if let displayID { window.place(on: displayID) }
+            window.show(presentation)
+            // The window takes the video's shape once the first frame size arrives.
+            try? await Task.sleep(for: .milliseconds(500))
+        }
+        return await androidList()
     }
 
     private func toggleAgentPreview(_ name: String) {
@@ -422,6 +587,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
+        if menu === androidMenu {
+            addAndroidItems(to: menu)
+            return
+        }
 
         let status = NSMenuItem(title: statusLine(), action: nil, keyEquivalent: "")
         status.isEnabled = false
@@ -465,6 +634,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(.separator())
 
         addAgentScreenItems(to: menu)
+        menu.addItem(.separator())
+
+        let android = NSMenuItem(title: "Android Phones", action: nil, keyEquivalent: "")
+        android.submenu = androidMenu
+        menu.addItem(android)
         menu.addItem(.separator())
 
         menu.addItem(item("Open Displays Settings…", #selector(openDisplaySettings), on: false))

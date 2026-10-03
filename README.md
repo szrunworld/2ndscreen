@@ -143,6 +143,69 @@ claude mcp add --transport stdio 2ndscreen -- 2ndscreen mcp
 Any MCP client works: point it at `2ndscreen mcp` (use the absolute path
 if `2ndscreen` is not on its PATH).
 
+## Android phones
+
+2ndscreen mirrors and controls Android phones over Wi-Fi, with nothing
+installed on the phone. It uses scrcpy's server: adb copies it to the
+phone and runs it with debugging rights, which let it capture the screen
+with the phone's hardware encoder and inject touches. 2ndscreen decodes
+the video with VideoToolbox and draws it itself, so of scrcpy only the
+0.7 MB server ships, beside adb (`scripts/fetch-android-tools.sh`
+downloads both, pinned and checksummed, when the app is built). The app
+grows from under 1 MB to about 11 MB, 5 MB zipped.
+
+To connect a phone (Android 11 or later), choose **Android Phones →
+Connect Phone…** in the menu bar, then on the phone open **Settings →
+Developer options → Wireless debugging → Pair device with QR code** and
+scan the code. The phone and the Mac must be on the same Wi-Fi. Pairing is
+needed once; afterwards adb finds the phone by itself whenever Wireless
+debugging is on, and it is listed under **Android Phones**.
+
+Choosing a phone under **Android Phones** shows it full screen on a Space
+of its own, as iPhone Mirroring would be: swipe between it and your work
+with four fingers. Leave full screen to keep it in a window instead.
+Agents never move your pointer or take focus: they act on the phone
+through adb, and `android show` opens the mirror behind your windows.
+
+In the mirror window, click and drag to touch, scroll to scroll, and type
+to type; text an Android keyboard cannot inject, such as Chinese, is
+pasted through the phone's clipboard. Right-click or Escape is Back. The
+title bar has Back, Home and Recents, and ⌘V pastes the Mac's clipboard.
+
+Agents use the same phone from the command line:
+
+```bash
+$CLI android devices
+$CLI android pair 192.168.1.20:37000 123456     # or scan the QR code from the menu
+$CLI android connect 192.168.1.20:41000
+$CLI android show [--serial S] [--screen test-a] [--max-size 1920]
+$CLI android adb -s S shell input tap 540 1200  # the bundled adb, arguments unchanged
+$CLI android hide [--serial S]
+```
+
+`android show` opens the mirror behind the user's windows without taking
+focus; with `--screen`, it fills that agent screen instead, for the user to
+watch in its preview.
+
+Things to know:
+
+- macOS asks once whether 2ndscreen may find devices on your local
+  network; allow it. The adb server makes the connections to phones and
+  answers to the permission of the app that started it, so 2ndscreen
+  starts it, including before `2ndscreen android` commands run adb. If
+  pairing or connecting fails with "No route to host", an adb server
+  started from a terminal is running: `2ndscreen android adb kill-server`
+  and try again.
+- adb keeps a server running in the background after 2ndscreen quits, as
+  it always does. Another adb of a different version, such as one from
+  Homebrew, restarts that server whenever it is used, which drops the
+  mirror; use `2ndscreen android adb` or one adb throughout.
+- Video is capped at 1920 pixels on its long side, which Wi-Fi carries
+  smoothly; `--max-size 0` sends the phone's full resolution.
+- Android 10 and earlier have no Wireless debugging: connect once by USB
+  and run `2ndscreen android adb tcpip 5555`, then
+  `2ndscreen android connect PHONE-IP:5555`.
+
 ## Agent cursor
 
 Agents act through accessibility and per-process events, so the real

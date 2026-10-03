@@ -22,6 +22,15 @@ usage:
 
   2ndscreen mcp      serve these commands as MCP tools over stdio
 
+  2ndscreen android devices
+  2ndscreen android pair HOST:PORT CODE
+  2ndscreen android connect HOST:PORT
+  2ndscreen android disconnect [HOST:PORT]
+  2ndscreen android show [--serial SERIAL] [--screen NAME] [--max-size PIXELS]
+  2ndscreen android hide [--serial SERIAL]
+  2ndscreen android adb ARGS...   run the bundled adb, such as
+                                  adb -s SERIAL shell input tap 500 1200
+
 state, click, type and key act through cua-driver's background routes and
 only on a window that is on the named screen. Indexes come from state; click
 and type re-read the window, so run state again after the UI changes.
@@ -50,7 +59,8 @@ struct Arguments {
     static let valued: Set<String> = ["--name", "--size", "--screen", "--bundle", "--path",
                                       "--pid", "--window-id", "--output", "--query", "--screenshot",
                                       "--index", "--text", "--x", "--y", "--value", "--key",
-                                      "--modifiers", "--ttl", "--idle-timeout", "--owner-pid"]
+                                      "--modifiers", "--ttl", "--idle-timeout", "--owner-pid",
+                                      "--serial", "--max-size"]
 
     init(_ words: [String]) {
         var iterator = words.makeIterator()
@@ -82,6 +92,10 @@ func parseDuration(_ text: String) -> Double? {
 let words = Array(CommandLine.arguments.dropFirst())
 if words == ["mcp"] {
     MCPServer.run()
+}
+// Before the help check, so `android adb ... -h` reaches adb.
+if words.first == "android", words.count > 1 {
+    AndroidCommands.run(Array(words.dropFirst()))
 }
 guard words.count >= 1, !words.contains("--help"), !words.contains("-h") else {
     print(usage)
@@ -152,11 +166,7 @@ default:
 }
 
 do {
-    let response = try sendControlRequest(request)
-    let encoder = JSONEncoder()
-    encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-    print(String(data: try encoder.encode(response), encoding: .utf8)!)
-    exit(response.ok ? 0 : 1)
+    finish(try sendControlRequest(request))
 } catch {
     fail(error.localizedDescription, code: 1)
 }

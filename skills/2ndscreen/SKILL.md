@@ -78,6 +78,34 @@ CLI=2ndscreen   # or <repo>/.build/release/2ndscreen
    $CLI screen destroy login-test
    ```
 
+## Android phones
+
+2ndscreen can also drive an Android phone the user has connected over
+Wi-Fi (they pair it once from the menu bar: **Android Phones → Connect
+Phone…**, or with `2ndscreen android pair HOST:PORT CODE`). Nothing is
+installed on the phone.
+
+```bash
+$CLI android devices                                    # serial, state, model
+$CLI android show --serial SERIAL --screen login-test   # optional: mirror it on your screen
+A="$CLI android adb -s SERIAL"
+$A exec-out screencap -p > /tmp/phone.png               # look
+$A shell uiautomator dump /sdcard/ui.xml && $A exec-out cat /sdcard/ui.xml   # element tree with bounds
+$A shell input tap 540 1200                             # act, in device pixels
+$A shell input swipe 540 1600 540 600 300
+$A shell input text 'hello'                             # ASCII only; spaces as %s
+$A shell input keyevent KEYCODE_BACK                    # also KEYCODE_HOME, KEYCODE_ENTER
+$A shell monkey -p com.example.app 1                    # launch an app
+$CLI android hide --serial SERIAL
+```
+
+`android adb` runs the adb bundled in 2ndscreen.app with your arguments
+unchanged. Coordinates are device pixels (`$A shell wm size`); take them
+from `uiautomator` bounds or the screenshot, not from the mirror window.
+The mirror is for the user to watch; you do not need it to act. The phone
+is the user's: leave it as you found it, and never unlock, pay, send or
+delete anything they did not ask for.
+
 ## Rules
 
 - Act only on windows of apps you launched. `state`, `click`, `type` and
@@ -105,3 +133,5 @@ CLI=2ndscreen   # or <repo>/.build/release/2ndscreen
 | `no window on screen` | `app launch` or `window move` the app there first |
 | `cua-driver not found` | Install cua-driver, or set `CUA_DRIVER` to its path |
 | `... already running` | Add `--new-instance`, or `window move` a window you own |
+| `no Android device is connected` | Ask the user to connect the phone from the 2ndscreen menu |
+| Android device `unauthorized` or `offline` | Ask the user to turn Wireless debugging off and on, then reconnect |
