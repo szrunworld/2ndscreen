@@ -155,11 +155,14 @@ func stopReason(_ steps: [Step]) -> (Outcome, String)? {
 final class FakeScreen: AgentScreen {
     var performed: [InputAction] = []
     var fields: [AXElementInfo] = []
+    /// Called after each action, to change the window as an app would.
+    var afterAction: ((FakeScreen) -> Void)?
 
     func frame() throws -> CGRect { screenFrame }
     func screenshot(size: CGSize) throws -> Data { Data([0x89, 0x50, 0x4E, 0x47]) }
     func perform(_ action: InputAction) throws -> ControlResponse {
         performed.append(action)
+        afterAction?(self)
         return ControlResponse()
     }
     func elements() throws -> [AXElementInfo] { fields }
@@ -255,5 +258,96 @@ func field(index: Int, x: Double, y: Double, width: Double, height: Double, labe
         #expect(result.outcome == .user)
         let images = model.seen.last!.filter { if case .screenshot = $0 { true } else { false } }.count
         #expect(images == TarsAgent.maxImages)
+    }
+}
+
+@Suite struct Elements {
+    func elementList(_ messages: [Message]) -> String? {
+        messages.compactMap { if case .user(let text) = $0, text.hasPrefix(TarsAgent.elementsHeading) { text } else { nil } }.last
+    }
+
+    @Test func theModelSeesTheControlsOnScreen() {
+        let screen = FakeScreen()
+        screen.fields = [
+            field(index: 2, x: 1920, y: 0, width: 128, height: 80, label: "张三", role: "AXButton"),
+            field(index: 5, x: 1920, y: 600, width: 1280, height: 200),
+            field(index: 6, x: 0, y: 0, width: 100, height: 100, label: "on another screen", role: "AXButton"),
+            field(index: -1, x: 1920, y: 0, width: 100, height: 100, label: "context only", role: "AXGroup"),
+        ]
+        let model = ScriptedModel(["Action: finished(content='ok')"])
+        _ = TarsAgent(screen: screen, model: model).run("x")
+        let list = elementList(model.seen[0])
+        #expect(list == "## Elements\n[2] Button \"张三\" box=[0, 0, 100, 100]\n[5] TextArea box=[0, 750, 1000, 1000]")
+    }
+
+    @Test func appsWithoutControlsGetNoList() {
+        let model = ScriptedModel(["Action: finished(content='ok')"])
+        _ = TarsAgent(screen: FakeScreen(), model: model).run("x")
+        #expect(elementList(model.seen[0]) == nil)
+        var options = TarsAgent.Options()
+        options.listElements = false
+        let screen = FakeScreen()
+        screen.fields = [field(index: 1, x: 1920, y: 0, width: 100, height: 100, label: "A", role: "AXButton")]
+        let quiet = ScriptedModel(["Action: finished(content='ok')"])
+        _ = TarsAgent(screen: screen, model: quiet, options: options).run("x")
+        #expect(elementList(quiet.seen[0]) == nil)
+    }
+
+    @Test func actingOnAnElementByNumber() {
+        let screen = FakeScreen()
+        screen.fields = [
+            field(index: 2, x: 1920, y: 0, width: 128, height: 80, label: "张三", role: "AXButton"),
+            field(index: 5, x: 1920, y: 600, width: 1280, height: 200),
+        ]
+        let model = ScriptedModel([
+            "Thought: 打开张三\nAction: click(element='2')",
+            "Thought: 写回复\nAction: type(content='明天见', element='5')",
+            "Action: finished(content='ok')",
+        ])
+        _ = TarsAgent(screen: screen, model: model).run("x")
+        #expect(screen.performed.map(\.kind) == [.click, .type])
+        // The click carries the element and its center, for the guards.
+        #expect(screen.performed[0].index == 2 && screen.performed[0].x == 1984 && screen.performed[0].y == 40)
+        #expect(screen.performed[1].index == 5 && screen.performed[1].value == "明天见")
+    }
+
+    @Test func anElementIsFoundAgainAfterTheWindowChanges() {
+        let screen = FakeScreen()
+        screen.fields = [field(index: 5, x: 1920, y: 600, width: 1280, height: 200)]
+        // The first action renumbers the window; the field is now 9.
+        screen.afterAction = { $0.fields = [field(index: 9, x: 1920, y: 600, width: 1280, height: 200)] }
+        let model = ScriptedModel([
+            "Thought: 点击后输入\nAction: click(element='5')\n\ntype(content='hi', element='5')",
+            "Action: finished(content='ok')",
+        ])
+        _ = TarsAgent(screen: screen, model: model).run("x")
+        #expect(screen.performed.map(\.index) == [5, 9])
+    }
+
+    @Test func aSendButtonByNumberStops() {
+        let screen = FakeScreen()
+        screen.fields = [field(index: 7, x: 3000, y: 700, width: 100, height: 40, label: "发送", role: "AXButton")]
+        let model = ScriptedModel(["Thought: 点按钮\nAction: click(element='7')"])
+        let result = TarsAgent(screen: screen, model: model).run("x")
+        #expect(result.reason.contains("submits"))
+        #expect(screen.performed.isEmpty)
+    }
+
+    @Test func anUnlistedNumberIsRefused() {
+        let screen = FakeScreen()
+        screen.fields = [field(index: 2, x: 1920, y: 0, width: 128, height: 80, label: "A", role: "AXButton")]
+        let model = ScriptedModel(["Action: click(element='40')", "Action: finished(content='ok')"])
+        let result = TarsAgent(screen: screen, model: model).run("x")
+        #expect(screen.performed.isEmpty && result.outcome == .done)
+        #expect(model.seen[1].contains { if case .user(let text) = $0 { text.contains("no element 40") } else { false } })
+    }
+
+    @Test func onlyTheLatestListStays() {
+        let screen = FakeScreen()
+        screen.fields = [field(index: 2, x: 1920, y: 0, width: 128, height: 80, label: "A", role: "AXButton")]
+        let model = ScriptedModel(["Action: hover(start_box='[1, 1, 1, 1]')", "Action: finished(content='ok')"])
+        _ = TarsAgent(screen: screen, model: model).run("x")
+        let lists = model.seen[1].filter { if case .user(let text) = $0 { text.hasPrefix(TarsAgent.elementsHeading) } else { false } }
+        #expect(lists.count == 1)
     }
 }
