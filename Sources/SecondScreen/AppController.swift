@@ -147,6 +147,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         agentScreens.onChange = { [weak self] in self?.agentScreensChanged() }
+        agentScreens.onResize = { [weak self] name in
+            guard let preview = self?.agentPreviews[name] else { return }
+            Task { @MainActor in try? await preview.restartStream() }
+        }
         let server = ControlServer { [weak self] request in
             await self?.handle(request) ?? .failure("2ndscreen is shutting down")
         }
@@ -294,16 +298,23 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 return .failure("the primary screen is managed from the menu bar")
             }
             return agentScreens.destroy(name: name)
+        case .screenResize:
+            guard let name = request.screen else { return missingScreen }
+            guard let width = request.width, let height = request.height else {
+                return .failure("give the new size with --size WIDTHxHEIGHT")
+            }
+            return await agentScreens.resize(name: name, width: width, height: height)
         case .appLaunch:
             guard let screen = target() else { return missingScreen }
             return await agentScreens.launch(
                 on: screen, bundleID: request.bundleID, path: request.path,
-                newInstance: request.newInstance ?? false, fill: request.fill ?? false)
+                newInstance: request.newInstance ?? false, fill: request.fill ?? false,
+                fitScreen: request.fitScreen ?? false)
         case .windowMove:
             guard let screen = target() else { return missingScreen }
             guard let pid = request.pid else { return .failure("give the window's app with --pid") }
             return await agentScreens.moveWindows(to: screen, pid: pid, windowID: request.windowID,
-                                            fill: request.fill ?? false)
+                                            fill: request.fill ?? false, fitScreen: request.fitScreen ?? false)
         case .windowRelease:
             guard let screen = target() else { return missingScreen }
             guard screen.kind == .agent else {
@@ -439,11 +450,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 entry.toolTip = device.serial
                 entry.isEnabled = usable
                 menu.addItem(entry)
-                if let mirror = androidMirrors[device.serial] {
-                    let panel = item("UI-TARS Panel", #selector(toggleAndroidPanel(_:)), on: mirror.isPanelShown)
-                    panel.representedObject = device.serial
-                    panel.indentationLevel = 1
-                    menu.addItem(panel)
+                if androidMirrors[device.serial] != nil {
                     let stop = item("Stop Mirroring \(device.label)", #selector(stopAndroidMirror(_:)), on: false)
                     stop.representedObject = device.serial
                     stop.indentationLevel = 1
@@ -490,11 +497,6 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func setSoundDelay(_ sender: NSMenuItem) {
         guard let seconds = sender.representedObject as? Double else { return }
         AndroidAudioPlayer.extraDelay = seconds
-    }
-
-    @objc private func toggleAndroidPanel(_ sender: NSMenuItem) {
-        guard let serial = sender.representedObject as? String, let mirror = androidMirrors[serial] else { return }
-        mirror.togglePanel()
     }
 
     /// Full screen on its own Space, opened or brought forward.
@@ -781,6 +783,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             displayID: screen.display.displayID, title: "\(name) preview",
             framesPerSecond: 30, floating: preferences.floatPreview)
         preview.onClose = { [weak self] in self?.agentPreviews.removeValue(forKey: name) }
+        preview.setToolbar(previewButtons(for: name))
         agentPreviews[name] = preview
         Task { @MainActor in
             do {
@@ -807,6 +810,36 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                    on: agentPreviews[screen.name] != nil)
             previewItem.representedObject = screen.name
             submenu.addItem(previewItem)
+            submenu.addItem(.separator())
+            let fit = item("Fit to Window", #selector(toggleFitItem(_:)), on: agentScreens.fitsWindow(screen.name))
+            fit.representedObject = screen.name
+            fit.toolTip = "Keep the screen sized to its app's window, such as iPhone Mirroring turning landscape"
+            if !agentScreens.hasPlacedApps(screen.name) { fit.action = nil }
+            submenu.addItem(fit)
+            let sizes = NSMenuItem(title: "Size", action: nil, keyEquivalent: "")
+            let sizeMenu = NSMenu()
+            // A size that cannot hold the app's window would cut it off:
+            // iPhone Mirroring, for one, cannot be turned or resized to fit,
+            // since the phone decides its orientation.
+            let needed = agentScreens.mainWindow(on: screen.name).map { window -> CGSize in
+                let bounds = screen.display.bounds
+                let visible = WindowMover.visibleFrame(of: screen.display.displayID)
+                return CGSize(width: window.frame.width,
+                              height: window.frame.height + max(0, visible.minY - bounds.minY))
+            }
+            for (label, mode) in Self.agentScreenSizes {
+                let choice = item("\(label) — \(mode)", #selector(resizeAgentScreenItem(_:)),
+                                  on: screen.display.mode == mode && !agentScreens.fitsWindow(screen.name))
+                choice.representedObject = [screen.name, "\(mode.width)x\(mode.height)"]
+                if let needed, CGFloat(mode.width) < needed.width || CGFloat(mode.height) < needed.height {
+                    choice.action = nil
+                    choice.toolTip = "Too small for \(Int(needed.width))×\(Int(needed.height)), the window"
+                        + " and the menu bar; the window cannot be turned or shrunk from here"
+                }
+                sizeMenu.addItem(choice)
+            }
+            sizes.submenu = sizeMenu
+            submenu.addItem(sizes)
             let windows = WindowMover.windows(on: info.displayID)
             if !windows.isEmpty {
                 submenu.addItem(.separator())
@@ -826,6 +859,96 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if screens.count > 1 {
             menu.addItem(item("Destroy All Agent Screens", #selector(destroyAllAgentScreens), on: false))
         }
+    }
+
+    /// Sizes offered for agent screens in the menu.
+    static let agentScreenSizes: [(String, VirtualDisplay.Mode)] = [
+        // No landscape phone size: the phone decides its orientation, and
+        // Fit to Window follows it when it turns.
+        ("Phone", .init(width: 525, height: 1001)),
+        ("Small", .init(width: 800, height: 600)),
+        ("Laptop", .init(width: 1280, height: 800)),
+        ("Desktop", .init(width: 1440, height: 900)),
+        ("Full HD", .init(width: 1920, height: 1080)),
+    ]
+
+    @objc private func toggleFitItem(_ sender: NSMenuItem) {
+        guard let name = sender.representedObject as? String else { return }
+        agentScreens.setFitsWindow(name, !agentScreens.fitsWindow(name))
+    }
+
+    @objc private func resizeAgentScreenItem(_ sender: NSMenuItem) {
+        guard let parts = sender.representedObject as? [String], parts.count == 2 else { return }
+        let size = parts[1].split(separator: "x").compactMap { Int($0) }
+        guard size.count == 2 else { return }
+        // A size chosen by hand would be undone by following the window.
+        agentScreens.setFitsWindow(parts[0], false)
+        Task { @MainActor in
+            let response = await agentScreens.resize(name: parts[0], width: size[0], height: size[1])
+            if !response.ok { self.presentError(response.error ?? "Resizing failed.") }
+        }
+    }
+
+    /// The preview's title bar buttons: zoom the screen's app, and for
+    /// iPhone Mirroring, its Home Screen and App Switcher.
+    private func previewButtons(for name: String) -> [DisplayPreview.ToolbarButton] {
+        func send(_ key: String, _ modifiers: [String]) {
+            guard let window = agentScreens.mainWindow(on: name) else { NSSound.beep(); return }
+            _ = try? BackgroundInput.key(key, modifiers: modifiers, in: window)
+        }
+        var buttons: [DisplayPreview.ToolbarButton] = [
+            .init(symbol: "minus.magnifyingglass", help: "Smaller (⌘-)") { _ in send("-", ["cmd"]) },
+            .init(symbol: "plus.magnifyingglass", help: "Larger (⌘=)") { _ in send("=", ["cmd"]) },
+            .init(symbol: "rotate.right", help: "Turn the Picture (the phone keeps its own orientation)") {
+                [weak self] _ in self?.agentPreviews[name]?.rotate()
+            },
+            .init(symbol: "speaker.wave.2", help: "Mac Volume") { [weak self] view in self?.showVolume(from: view) },
+        ]
+        let isMirroring = agentScreens.mainWindow(on: name).flatMap {
+            NSRunningApplication(processIdentifier: $0.pid)?.bundleIdentifier
+        } == "com.apple.ScreenContinuity"
+        if isMirroring {
+            buttons += [
+                .init(symbol: "house", help: "Home Screen (⌘1)") { _ in send("1", ["cmd"]) },
+                .init(symbol: "square.stack", help: "App Switcher (⌘2)") { _ in send("2", ["cmd"]) },
+            ]
+        }
+        return buttons
+    }
+
+    private var volumePopover: NSPopover?
+    /// A slider for the Mac's output volume, under the preview's button.
+    /// iPhone Mirroring plays through it and has no volume of its own.
+    private func showVolume(from anchor: NSView) {
+        if let open = volumePopover, open.isShown {
+            open.close()
+            return
+        }
+        guard let level = SystemVolume.level else {
+            presentError("The current sound output has no volume control.")
+            return
+        }
+        let slider = NSSlider(value: Double(SystemVolume.muted == true ? 0 : level), minValue: 0, maxValue: 1,
+                              target: self, action: #selector(volumeChanged(_:)))
+        slider.isContinuous = true
+        slider.frame = NSRect(x: 36, y: 10, width: 160, height: 24)
+        let icon = NSImageView(image: NSImage(systemSymbolName: "speaker.wave.2", accessibilityDescription: nil)!)
+        icon.frame = NSRect(x: 10, y: 12, width: 20, height: 20)
+        let content = NSView(frame: NSRect(x: 0, y: 0, width: 208, height: 44))
+        content.addSubview(icon)
+        content.addSubview(slider)
+        let controller = NSViewController()
+        controller.view = content
+        let popover = NSPopover()
+        popover.contentViewController = controller
+        popover.behavior = .transient
+        popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minY)
+        volumePopover = popover
+    }
+
+    @objc private func volumeChanged(_ sender: NSSlider) {
+        SystemVolume.level = Float(sender.doubleValue)
+        if sender.doubleValue == 0 { SystemVolume.muted = true }
     }
 
     @objc private func toggleAgentPreviewItem(_ sender: NSMenuItem) {

@@ -132,6 +132,16 @@ enum MCPServer {
              description: "Destroy an agent screen. Its windows move to the user's displays, so quit your app first.",
              properties: ["name": described(string, "Agent screen name")], required: ["name"],
              words: { a in ["screen", "destroy", a["name"] as? String ?? ""] }),
+        Tool(name: "screen_resize",
+             description: "Change an agent screen's size in place, keeping HiDPI where the size allows.",
+             properties: [
+                "name": described(string, "Screen name"),
+                "width": described(integer, "Width in points"),
+                "height": described(integer, "Height in points"),
+             ],
+             required: ["name", "width", "height"],
+             words: { a in ["screen", "resize", a["name"] as? String ?? "",
+                            "--size", "\(intValue(a["width"]) ?? 0)x\(intValue(a["height"]) ?? 0)"] }),
         Tool(name: "app_launch",
              description: "Launch an app onto a screen without activating it. Refuses an app that is already running unless new_instance is set.",
              properties: [
@@ -140,6 +150,7 @@ enum MCPServer {
                 "path": described(string, "Path to an .app bundle, such as a fresh build"),
                 "new_instance": described(boolean, "Launch a separate instance"),
                 "fill": described(boolean, "Size the window to the screen"),
+                "fit_screen": described(boolean, "Keep the screen sized to the app's main window as it changes, e.g. iPhone Mirroring turning landscape"),
              ],
              required: ["screen"],
              words: { a in
@@ -148,6 +159,7 @@ enum MCPServer {
                  if let v = a["path"] as? String { w += ["--path", v] }
                  if a["new_instance"] as? Bool == true { w.append("--new-instance") }
                  if a["fill"] as? Bool == true { w.append("--fill") }
+                 if a["fit_screen"] as? Bool == true { w.append("--fit-screen") }
                  return w
              }),
         Tool(name: "window_move",
@@ -157,12 +169,14 @@ enum MCPServer {
                 "pid": described(integer, "Process ID"),
                 "window_id": described(integer, "Only this window"),
                 "fill": described(boolean, "Size the window to the screen"),
+                "fit_screen": described(boolean, "Keep the screen sized to the app's main window as it changes, e.g. iPhone Mirroring turning landscape"),
              ],
              required: ["screen", "pid"],
              words: { a in
                  var w = ["window", "move", "--screen", a["screen"] as? String ?? "", "--pid", "\(intValue(a["pid"]) ?? 0)"]
                  if let v = intValue(a["window_id"]) { w += ["--window-id", "\(v)"] }
                  if a["fill"] as? Bool == true { w.append("--fill") }
+                 if a["fit_screen"] as? Bool == true { w.append("--fit-screen") }
                  return w
              }),
         Tool(name: "window_release",

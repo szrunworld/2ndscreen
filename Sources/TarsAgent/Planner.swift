@@ -29,6 +29,10 @@ public struct PlanContext {
     /// The app has a popup menu open, where Enter picks an item rather
     /// than submitting.
     public var menuOpen = false
+    /// Whether the screen takes swipes and drags. Without them (iPhone
+    /// Mirroring), a drag is passed on as one for the screen to refuse,
+    /// never turned into clicks, which on a phone are taps.
+    public var gestures = true
 
     public init(frame: CGRect, allowSubmit: Bool = false, foreground: Bool = false) {
         self.frame = frame
@@ -115,6 +119,14 @@ public enum Planner {
 
         case "drag", "left_click_drag", "select":
             guard let start, let end else { return [.stop(.user, "drag without both points")] }
+            guard context.gestures else {
+                var drag = InputAction(.drag)
+                drag.x = start.x
+                drag.y = start.y
+                drag.toX = end.x
+                drag.toY = end.y
+                return [.act(drag)]
+            }
             guard context.foreground else {
                 // Models drag mostly to select text. Without the real pointer,
                 // a double click selects a word, and a click then a shift-click
