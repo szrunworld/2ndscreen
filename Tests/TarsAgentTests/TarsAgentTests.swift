@@ -568,6 +568,26 @@ func button(_ index: Int, _ label: String, x: Double, y: Double = 100, value: St
         #expect(store.procedures.first?.finish == .element && store.procedures.first?.answerFrom?.y ?? 0 > 0.3)
     }
 
+    @Test func anAnswerWhoseLabelIsTheAnswerIsReadAgain() {
+        // Text that carries its words as its label: "Pressed 11", then "Pressed 12".
+        let store = MemoryStore()
+        func counter(_ start: Int) -> FakeScreen {
+            let screen = FakeScreen()
+            var presses = start
+            screen.fields = [button(1, "Press me", x: 2000), button(2, "Pressed \(presses)", x: 2200, role: "AXStaticText")]
+            screen.afterAction = { screen in
+                presses += 1
+                screen.fields[1] = button(2, "Pressed \(presses)", x: 2200, role: "AXStaticText")
+            }
+            return screen
+        }
+        _ = TarsAgent(screen: counter(10), model: ScriptedModel(["Action: click(element='1')", "Action: finished(content='计数是 Pressed 11')"]),
+                      options: options(store)).run("点按钮，读计数")
+        #expect(store.procedures.first?.finish == .element && store.procedures.first?.answerFrom?.label == "")
+        let again = TarsAgent(screen: counter(11), model: ScriptedModel([]), options: options(store)).run("点按钮，读计数")
+        #expect(again.reason == "Pressed 12" && again.modelCalls == 0)
+    }
+
     @Test func controlsAreFoundAgainWhereverTheyMoved() {
         let store = MemoryStore()
         _ = TarsAgent(screen: calculator(), model: ScriptedModel(script), options: options(store)).run("算 7 加 8")

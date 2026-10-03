@@ -265,8 +265,12 @@ extension ElementRef {
 
     /// The element this names among `elements`: same role and label, the
     /// one nearest to where it was. A label that was a slot matches labels
-    /// that start with what the slot now holds, a whole match first.
-    public func find(in elements: [AXElementInfo], frame: CGRect, bindings: [String] = []) -> AXElementInfo? {
+    /// that start with what the slot now holds, a whole match first. With
+    /// `anyLabel`, an empty label takes the nearest control of the role
+    /// whatever it is called, as for an answer whose label is the answer
+    /// itself ("Pressed 1", then "Pressed 2").
+    public func find(in elements: [AXElementInfo], frame: CGRect, bindings: [String] = [],
+                     anyLabel: Bool = false) -> AXElementInfo? {
         func distance(_ element: AXElementInfo) -> Double {
             let center = Self.center(element.frame!, in: frame)
             return hypot(center.x - x, center.y - y)
@@ -278,7 +282,7 @@ extension ElementRef {
             guard element.index >= 0, element.role == role, element.frame != nil else { return nil }
             let found = (element.label ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             if label.isEmpty {
-                return found.isEmpty && distance(element) <= Self.reach ? (element, 0, distance(element)) : nil
+                return (anyLabel || found.isEmpty) && distance(element) <= Self.reach ? (element, 0, distance(element)) : nil
             }
             if found == wanted { return (element, 0, distance(element)) }
             if Slots.hasSlot(label), found.hasPrefix(wanted) { return (element, 1, distance(element)) }

@@ -260,7 +260,7 @@ public sealed partial class Agent
             case ProcedureFinish.Steps:
                 return (ReplayEnd.Finished, new AgentResult(true, Slots.Fill(procedure.Reason, bindings), steps, modelCalls, steps), null, false);
             case ProcedureFinish.Element:
-                if (procedure.AnswerFrom is not { } from || Eventually(es => from.Find(es, currentFrame, bindings)) is not { } shown)
+                if (procedure.AnswerFrom is not { } from || Eventually(es => from.Find(es, currentFrame, bindings, anyLabel: true)) is not { } shown)
                     return Broke("the control that held the answer is not on screen");
                 var answer = TextOf(shown);
                 if (answer.Length == 0) return Broke("the control that held the answer is empty");

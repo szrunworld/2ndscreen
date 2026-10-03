@@ -116,6 +116,30 @@ public class LearningTests
     }
 
     [Fact]
+    public void AnAnswerWhoseLabelIsTheAnswerIsReadAgain()
+    {
+        // WinForms labels carry their text as their name: "Pressed 1", then "Pressed 2".
+        var store = new MemoryStore();
+        FakeScreen Counter()
+        {
+            int presses = 0;
+            var screen = new FakeScreen { Fields = new() { Button(1, "Press me", 2000), Button(2, "Pressed 0", 2200, role: "Text") } };
+            screen.AfterRun = (s, words) =>
+            {
+                if (s.Under(words)?.Label != "Press me") return;
+                s.Fields[1] = Button(2, $"Pressed {++presses + 10}", 2200, role: "Text");
+            };
+            return screen;
+        }
+        Run(Counter(), new ScriptedModel("Action: click(start_box='[102, 150, 102, 150]')", "Action: finished(content='计数是 Pressed 11')"), store, "点按钮，读计数");
+        Assert.Equal(ProcedureFinish.Element, store.Procedures[0].Finish);
+        Assert.Equal("", store.Procedures[0].AnswerFrom!.Label);
+        var again = Run(Counter(), new ScriptedModel(), store, "点按钮，读计数");
+        Assert.Equal("Pressed 11", again.Reason);
+        Assert.Equal(0, again.ModelCalls);
+    }
+
+    [Fact]
     public void ControlsAreFoundAgainWhereverTheyMoved()
     {
         var store = new MemoryStore();

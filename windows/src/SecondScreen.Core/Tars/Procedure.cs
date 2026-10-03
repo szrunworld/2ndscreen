@@ -27,9 +27,11 @@ public sealed record ElementRef(string Role, string Label, double X, double Y)
     /// <summary>
     /// The element this names among <paramref name="elements"/>: same role and label, the
     /// nearest to where it was. A label that was a slot matches labels that start with what
-    /// the slot now holds, a whole match first.
+    /// the slot now holds, a whole match first. With <paramref name="anyLabel"/>, an empty
+    /// label takes the nearest control of the role whatever it is called, as for an answer
+    /// whose label is the answer itself ("Pressed 1", then "Pressed 2").
     /// </summary>
-    public Element? Find(IEnumerable<Element> elements, Rect frame, IReadOnlyList<string> bindings)
+    public Element? Find(IEnumerable<Element> elements, Rect frame, IReadOnlyList<string> bindings, bool anyLabel = false)
     {
         double Distance(Element e)
         {
@@ -44,7 +46,7 @@ public sealed record ElementRef(string Role, string Label, double X, double Y)
             .Select(e =>
             {
                 var found = e.Label.Trim();
-                if (Label.Length == 0) return found.Length == 0 && Distance(e) <= Reach ? (e, 0) : (e, -1);
+                if (Label.Length == 0) return (anyLabel || found.Length == 0) && Distance(e) <= Reach ? (e, 0) : (e, -1);
                 if (found == wanted) return (e, 0);
                 if (Slots.HasSlot(Label) && found.StartsWith(wanted, StringComparison.Ordinal)) return (e, 1);
                 return (e, -1);

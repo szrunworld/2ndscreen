@@ -338,7 +338,7 @@ extension TarsAgent {
             }
             return .finished(result)
         case .element:
-            guard let from = procedure.answerFrom, let element = locate(from, bindings) else {
+            guard let from = procedure.answerFrom, let element = locate(from, bindings, anyLabel: true) else {
                 return .handOver("the control that held the answer is not on screen", failed: true)
             }
             let answer = Self.text(of: element)
@@ -366,10 +366,10 @@ extension TarsAgent {
         }
     }
 
-    private func locate(_ target: ElementRef, _ bindings: [String]) -> AXElementInfo? {
+    private func locate(_ target: ElementRef, _ bindings: [String], anyLabel: Bool = false) -> AXElementInfo? {
         var found: AXElementInfo?
         _ = eventually { elements, frame in
-            found = target.find(in: elements, frame: frame, bindings: bindings)
+            found = target.find(in: elements, frame: frame, bindings: bindings, anyLabel: anyLabel)
             return found != nil
         }
         return found
