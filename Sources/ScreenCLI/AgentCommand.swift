@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import Foundation
 import SecondScreenCore
@@ -11,12 +12,18 @@ enum AgentCommand {
         guard let screen = args.value("--screen"), let pid = args.value("--pid").flatMap(Int32.init),
               !instruction.isEmpty
         else { fail("usage: 2ndscreen agent --screen NAME --pid PID [--window-id ID] [--allow-submit] "
-            + "[--foreground] [--no-elements] [--max-steps N] INSTRUCTION") }
+            + "[--foreground] [--no-elements] [--no-learn] [--max-steps N] INSTRUCTION") }
 
         var options = TarsAgent.Options()
         options.allowSubmit = args.has("--allow-submit")
         options.foreground = args.has("--foreground")
         options.listElements = !args.has("--no-elements")
+        if !args.has("--no-learn") {
+            // Procedures are kept by app: its bundle identifier, else its name.
+            let app = NSRunningApplication(processIdentifier: pid)
+            options.app = app?.bundleIdentifier ?? app?.localizedName ?? "pid-\(pid)"
+            options.procedures = FileProcedureStore.standard
+        }
         if let steps = args.value("--max-steps") {
             guard let number = Int(steps), number > 0 else { fail("--max-steps takes a positive number") }
             options.maxSteps = number
@@ -33,8 +40,11 @@ enum AgentCommand {
             log(event)
         }
         let result = agent.run(instruction)
-        DriverCommands.emit(["ok": result.outcome == .done, "outcome": result.outcome.rawValue,
-                             "reason": result.reason, "steps": result.steps])
+        var output: [String: Any] = ["ok": result.outcome == .done, "outcome": result.outcome.rawValue,
+                                     "reason": result.reason, "steps": result.steps,
+                                     "modelCalls": result.modelCalls, "replayedSteps": result.replayed]
+        if let learned = result.learned { output["learned"] = learned }
+        DriverCommands.emit(output)
         exit(result.outcome == .done ? 0 : 1)
     }
 
@@ -56,6 +66,8 @@ enum AgentCommand {
             line = "  stop: \(reason)"
         case .error(let message):
             line = "  ! \(message)"
+        case .note(let message):
+            line = "~ \(message)"
         }
         FileHandle.standardError.write((line + "\n").data(using: .utf8)!)
     }

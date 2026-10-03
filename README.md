@@ -228,6 +228,33 @@ Guards:
   cmd+option+esc, stop the run: models reach for them when stuck.
 - The run stops when the app no longer has a window on the screen.
 
+#### Learning from runs
+
+A run that worked is kept as a procedure for its app, in
+`~/.config/2ndscreen/procedures/<bundle id>.json`, and the next run of the
+same instruction repeats its steps without the model: each step names the
+control it acted on, by role and label, so a replay finds it again wherever
+it now sits, and a run's answer is read off the control that showed it.
+The model comes back only where a replay breaks off: a step's control is
+missing, typed text did not land, or the screen ends up unlike the learned
+end. It is told which steps already ran and carries on from there, and
+what it then does replaces the procedure. One that breaks three replays
+in a row is dropped.
+
+Text the instruction gave and the steps used, such as a name it clicked or
+a reply it typed, becomes a slot: a procedure learned from "给陈一写：你好"
+also serves "给李四写：在的". A run with a step that only had a point on the
+screenshot to go by (apps that draw their own controls) is not kept, nor
+one with a drag. Procedures learned without `--allow-submit` only serve runs
+without it, and a replay keeps the same guards. `--no-learn` neither uses
+nor keeps procedures; the result's `modelCalls` and `replayedSteps` say
+how a run went.
+
+In Calculator, 37 × 48 − 125 took 11 model calls and 51 s the first time,
+then no calls and 4.8 s. In scientific mode, with every button moved, the
+buttons were found again; the display had moved too, so the model read
+the answer (2 calls, 18 s), and the next run made no calls.
+
 Chrome's own address bar takes no typing from the background; open pages
 with `open` and `window move` instead.
 

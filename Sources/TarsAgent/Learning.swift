@@ -1,0 +1,346 @@
+import CoreGraphics
+import Foundation
+import SecondScreenCore
+
+/// Learning from a run that worked, and replaying what was learned.
+///
+/// The model explores once. Its steps are kept with the controls they acted
+/// on, and the next run of the instruction repeats them by finding those
+/// controls again, which needs no model. A step whose control is missing, a
+/// text that did not land, or an end that looks unlike the learned one
+/// hands the rest to the model, and what it then does becomes the procedure.
+extension TarsAgent {
+    enum ReplayEnd {
+        case finished(Result)
+        /// Why the model has to take over, and whether the procedure let
+        /// the run down or only needs the model's eyes for the answer.
+        case handOver(String, failed: Bool)
+    }
+
+    /// Containers: a click inside one is aimed at something they do not name.
+    static let containerRoles: Set<String> = ["AXGroup", "AXScrollArea", "AXWindow", "AXWebArea", "AXList", "AXTable",
+                                              "AXOutline", "AXSplitGroup", "AXLayoutArea", "AXApplication"]
+
+    // MARK: Recording
+
+    /// `action` as a procedure would repeat it, with the control it acts on:
+    /// the one the model named, or the smallest named control under the
+    /// point it chose by sight. Marks the run unlearnable when no control
+    /// says where the action went.
+    func learnedStep(_ action: InputAction, named: AXElementInfo?) -> LearnedStep? {
+        var step = LearnedStep(kind: action.kind.rawValue)
+        step.button = action.button
+        step.count = action.count
+        step.value = action.value
+        step.key = action.key
+        step.modifiers = action.modifiers
+        step.direction = action.direction
+        step.amount = action.amount
+        step.by = action.by
+        let frame = currentFrame
+
+        switch action.kind {
+        case .key:
+            return step
+        case .drag:
+            unlearnable = unlearnable ?? "a drag takes the real pointer"
+            return nil
+        case .type where named == nil:
+            // Keys to whatever has focus, which the step before gave it.
+            return step
+        case .click, .type, .scroll:
+            if let named, let reference = ElementRef(named, in: frame) {
+                step.target = reference
+                return step
+            }
+            guard let point = action.point else {
+                // A wheel with no point turns mid-window.
+                if action.kind == .scroll { return step }
+                unlearnable = unlearnable ?? "a \(action.kind.rawValue) had no control to go by"
+                return nil
+            }
+            let under = currentElements()
+                .filter { element in
+                    guard element.index >= 0, let box = element.frame, Self.contains(box, point) else { return false }
+                    let base = element.role.split(separator: "/").first.map(String.init) ?? element.role
+                    return !Self.containerRoles.contains(base) && box.width * box.height <= Double(frame.width * frame.height) / 5
+                        && (!(element.label ?? "").isEmpty || AXActions.isText(element))
+                }
+                .min { $0.frame!.width * $0.frame!.height < $1.frame!.width * $1.frame!.height }
+            guard let under, let box = under.frame, let reference = ElementRef(under, in: frame) else {
+                unlearnable = unlearnable ?? "a \(action.kind.rawValue) went to a point no control names"
+                return nil
+            }
+            step.target = reference
+            step.offsetX = (point.x - box.x) / max(box.width, 1)
+            step.offsetY = (point.y - box.y) / max(box.height, 1)
+            return step
+        }
+    }
+
+    /// The text of each control, keyed by role and place.
+    static func texts(_ elements: [AXElementInfo], in frame: CGRect) -> [String: String] {
+        var texts: [String: String] = [:]
+        for element in elements {
+            guard let reference = ElementRef(element, in: frame) else { continue }
+            texts[key(reference)] = text(of: element)
+        }
+        return texts
+    }
+
+    static func key(_ reference: ElementRef) -> String {
+        "\(reference.role)|\(Int((reference.x * 500).rounded()))|\(Int((reference.y * 500).rounded()))"
+    }
+
+    static func text(of element: AXElementInfo) -> String {
+        // Less invisible direction marks, which Calculator puts between digits.
+        func clean(_ text: String?) -> String {
+            String((text ?? "").unicodeScalars.filter { $0.properties.generalCategory != .format })
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        let value = clean(element.value)
+        return value.isEmpty ? clean(element.label) : value
+    }
+
+    /// Letters and digits only, so "1,651" answers "1651".
+    static func plain(_ text: String) -> String {
+        String(text.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) })
+    }
+
+    /// The named controls on screen, as "role|label", less plain text and
+    /// labels in `except`, which belong to this run's instruction.
+    static func controls(_ elements: [AXElementInfo], in frame: CGRect, except: [String] = []) -> [String] {
+        var seen = Set<String>()
+        return elements.compactMap { element -> String? in
+            guard element.index >= 0, element.role != "AXStaticText", let box = element.frame,
+                  frame.contains(CGPoint(x: box.x + box.width / 2, y: box.y + box.height / 2))
+            else { return nil }
+            let label = (element.label ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !label.isEmpty, !except.contains(where: { label.hasPrefix($0) }) else { return nil }
+            let entry = "\(element.role)|\(label)"
+            return seen.insert(entry).inserted ? entry : nil
+        }
+    }
+
+    /// Fewer named controls than this say too little about where a run ended.
+    static let fewestEndControls = 3
+    /// The share of the learned end's controls a replay's end must show.
+    static let endSimilarity = 0.6
+
+    // MARK: Learning
+
+    /// Keep a run that worked as a procedure, and say on the result what
+    /// became of it.
+    func finish(_ result: Result, _ instruction: String, _ store: ProcedureStore) -> Result {
+        var result = result
+        guard result.outcome == .done else {
+            result.learned = "not learned: the run did not finish"
+            return result
+        }
+        if let unlearnable {
+            result.learned = "not learned: \(unlearnable)"
+            return result
+        }
+        guard trace.contains(where: { $0.kind != "wait" }) else {
+            result.learned = "not learned: nothing was done"
+            return result
+        }
+        elementCache = nil
+        let frame = (try? screen.frame()) ?? currentFrame
+        let elements = currentElements()
+
+        // An answer that some control now shows, and did not show before,
+        // can be read off that control next time.
+        var finish = Procedure.Finish.steps
+        var answerFrom: ElementRef?
+        if let content = finishedContent, !content.isEmpty {
+            let said = Self.plain(content)
+            let asked = Self.plain(instruction)
+            let shown = elements.compactMap { element -> (ElementRef, String)? in
+                guard let reference = ElementRef(element, in: frame) else { return nil }
+                let text = Self.text(of: element)
+                let bare = Self.plain(text)
+                // Text the instruction already holds, such as the sum it gave
+                // (37×48-125), is not what the run found out.
+                guard !bare.isEmpty, said.contains(bare), !asked.contains(bare),
+                      startTexts[Self.key(reference)] != text else { return nil }
+                return (reference, bare)
+            }
+            if let best = shown.max(by: { $0.1.count < $1.1.count }) {
+                finish = .element
+                answerFrom = best.0
+                // Found by place: its label is the answer, which changes.
+                if Self.plain(answerFrom!.label) == best.1 { answerFrom!.label = "" }
+            } else if reportsBack(instruction, content) {
+                finish = .model
+            }
+        }
+
+        let found = Slots.discover(instruction: instruction, steps: trace, texts: [result.reason])
+        let bound = Slots.match(found.template, instruction) ?? []
+        let end = Self.controls(elements, in: frame, except: bound)
+        if finish == .steps, end.count < Self.fewestEndControls {
+            // Nothing to check a replay's end against; let the model look.
+            finish = .model
+        }
+        let procedure = Procedure(
+            app: options.app, instruction: instruction, template: found.template, slots: found.slots,
+            steps: found.steps, finish: finish, answerFrom: answerFrom, reason: found.texts[0],
+            endControls: end, allowSubmit: options.allowSubmit, learned: Date(), successes: 1, failures: 0)
+        var known = store.load(app: options.app)
+        known.removeAll { $0.template == procedure.template && $0.allowSubmit == procedure.allowSubmit }
+        known.append(procedure)
+        store.save(known, app: options.app)
+        result.modelCalls = modelCalls
+        result.learned = "saved"
+        onEvent(.note("learned \(procedure.steps.count) step(s) for next time"))
+        return result
+    }
+
+    /// Whether the instruction asks for something to be read and reported:
+    /// one short question to the model, when a run is learned.
+    private func reportsBack(_ instruction: String, _ content: String) -> Bool {
+        modelCalls += 1
+        let question = "A GUI agent was given this task:\n\(instruction)\n\nIt finished and reported:\n\(content)\n\n"
+            + "Does the task ask for information to be read from the screen and reported back, "
+            + "as opposed to only carrying out actions? Answer with one word: yes or no."
+        guard let reply = try? model.complete([.user(question)]) else { return true }
+        let answer = reply.lowercased()
+        return answer.contains("yes") || answer.contains("是")
+    }
+
+    // MARK: Replay
+
+    func replay(_ procedure: Procedure, _ bindings: [String], instruction: String) -> ReplayEnd {
+        for (number, step) in procedure.steps.enumerated() {
+            let what = "step \(number + 1) (\(step.summary(bindings)))"
+            if step.kind == "wait" {
+                // A wait only gave the app time, which finding the next
+                // step's control does better; keep it before blind steps.
+                let next = procedure.steps.dropFirst(number + 1).first
+                if next?.target == nil { Thread.sleep(forTimeInterval: min(step.seconds ?? 1, options.replayPatience)) }
+                onEvent(.step(.wait(seconds: step.seconds ?? 1)))
+                trace.append(step)
+                continue
+            }
+            guard let kind = InputAction.Kind(rawValue: step.kind) else { return .handOver("\(what) is not an action", failed: true) }
+            var action = InputAction(kind)
+            action.button = step.button
+            action.count = step.count
+            action.value = step.value.map { Slots.fill($0, bindings) }
+            action.key = step.key
+            action.modifiers = step.modifiers
+            action.direction = step.direction
+            action.amount = step.amount
+            action.by = step.by
+
+            var element: AXElementInfo?
+            if let target = step.target {
+                guard let found = locate(target, bindings) else { return .handOver("\(what): its control is not on screen", failed: true) }
+                element = found
+                let box = found.frame!
+                if let offsetX = step.offsetX, let offsetY = step.offsetY {
+                    action.x = box.x + offsetX * box.width
+                    action.y = box.y + offsetY * box.height
+                } else {
+                    action.index = found.index
+                    if kind == .click {
+                        action.x = box.x + box.width / 2
+                        action.y = box.y + box.height / 2
+                    }
+                }
+            } else {
+                Thread.sleep(forTimeInterval: min(0.3, options.replayPatience))
+            }
+
+            // The guards a model's step goes through.
+            if !options.allowSubmit {
+                if kind == .click, let element,
+                   Self.matches(options.submitLabels, (element.label ?? "").trimmingCharacters(in: .whitespaces)) {
+                    return .handOver("\(what) would submit", failed: true)
+                }
+                if kind == .type, action.value?.last?.isNewline == true { return .handOver("\(what) would submit", failed: true) }
+                if kind == .key, ["return", "enter"].contains((step.key ?? "").lowercased()), !screen.menuOpen() {
+                    return .handOver("\(what) would submit", failed: true)
+                }
+            }
+
+            onEvent(.step(.act(action)))
+            elementCache = nil
+            do {
+                let response = try screen.perform(action)
+                guard response.ok else { return .handOver("\(what) failed: \(response.error ?? "no reason given")", failed: true) }
+            } catch {
+                return .handOver("\(what) failed: \(error.localizedDescription)", failed: true)
+            }
+            trace.append(step)
+
+            // Typed text shows in a field that reports its text.
+            if kind == .type, let target = step.target, let text = action.value, let element, AXActions.isText(element),
+               element.value != nil, !landed(text, in: target, bindings) {
+                return .handOver("\(what): the text did not land", failed: true)
+            }
+        }
+
+        // The same steps ending somewhere else did something else.
+        if procedure.endControls.count >= Self.fewestEndControls, !endsAlike(procedure, bindings) {
+            return .handOver("the screen does not end as it did when this was learned", failed: true)
+        }
+        let steps = procedure.steps.count
+        switch procedure.finish {
+        case .steps:
+            return .finished(Result(outcome: .done, reason: Slots.fill(procedure.reason, bindings), steps: steps,
+                                    modelCalls: modelCalls, replayed: steps))
+        case .element:
+            guard let from = procedure.answerFrom, let element = locate(from, bindings) else {
+                return .handOver("the control that held the answer is not on screen", failed: true)
+            }
+            let answer = Self.text(of: element)
+            guard !answer.isEmpty else { return .handOver("the control that held the answer is empty", failed: true) }
+            guard !Self.plain(instruction).contains(Self.plain(answer)) else {
+                return .handOver("the control that held the answer shows the instruction's own text", failed: true)
+            }
+            return .finished(Result(outcome: .done, reason: answer, steps: steps, modelCalls: modelCalls, replayed: steps))
+        case .model:
+            return .handOver("the steps ran; the answer takes a look at the screen", failed: false)
+        }
+    }
+
+    /// Wait for `test` to hold on a fresh read of the window.
+    private func eventually(_ test: ([AXElementInfo], CGRect) -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(options.replayPatience)
+        while true {
+            elementCache = nil
+            if let frame = try? screen.frame() {
+                currentFrame = frame
+                if test(currentElements(), frame) { return true }
+            }
+            if Date() >= deadline { return false }
+            Thread.sleep(forTimeInterval: 0.4)
+        }
+    }
+
+    private func locate(_ target: ElementRef, _ bindings: [String]) -> AXElementInfo? {
+        var found: AXElementInfo?
+        _ = eventually { elements, frame in
+            found = target.find(in: elements, frame: frame, bindings: bindings)
+            return found != nil
+        }
+        return found
+    }
+
+    private func landed(_ text: String, in target: ElementRef, _ bindings: [String]) -> Bool {
+        let wanted = text.trimmingCharacters(in: .newlines)
+        return eventually { elements, frame in
+            target.find(in: elements, frame: frame, bindings: bindings)?.value?.contains(wanted) ?? false
+        }
+    }
+
+    private func endsAlike(_ procedure: Procedure, _ bindings: [String]) -> Bool {
+        let learned = Set(procedure.endControls)
+        return eventually { elements, frame in
+            let now = Set(Self.controls(elements, in: frame, except: bindings))
+            return Double(learned.intersection(now).count) / Double(learned.count) >= Self.endSimilarity
+        }
+    }
+}
