@@ -309,9 +309,7 @@ if `2ndscreen` is not on its PATH).
 ## iPhone
 
 2ndscreen runs iPhone Mirroring on an agent screen and lets the vision
-agent use it, like an Android phone, from the command line or from the
-**UI-TARS Panel** item of the screen's menu, which opens the panel beside
-its preview.
+agent use it from the command line, like an Android phone.
 
 ```bash
 $CLI iphone setup                # a "phone" screen with iPhone Mirroring on it, kept sized to its window
@@ -417,10 +415,7 @@ $CLI agent --android [--serial S] "打开微信，给文件传输助手写一句
 
 The guards are the desktop's: it stops before Enter, text ending in a
 newline, or a tap the model describes as sending, and the result's
-`pending` holds the `2ndscreen` arguments that would do it. **Android Phones →
-UI-TARS Panel** in the menu bar opens the same agent in a panel beside
-the phone, run in the app itself, with Confirm and Discard for what it
-held back.
+`pending` holds the `2ndscreen` arguments that would do it.
 
 Things to know:
 

@@ -3,7 +3,7 @@ import Foundation
 import SecondScreenCore
 
 // The screens an agent works on, through the 2ndscreen app's socket: the
-// command line and the app's own UI-TARS panel use the same ones.
+// command line uses them, and the app can too.
 
 /// The agent's view of one app on one screen, through the app's socket.
 public struct ControlScreen: AgentScreen {

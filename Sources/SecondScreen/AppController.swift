@@ -450,11 +450,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 entry.toolTip = device.serial
                 entry.isEnabled = usable
                 menu.addItem(entry)
-                if let mirror = androidMirrors[device.serial] {
-                    let panel = item("UI-TARS Panel", #selector(toggleAndroidPanel(_:)), on: mirror.isPanelShown)
-                    panel.representedObject = device.serial
-                    panel.indentationLevel = 1
-                    menu.addItem(panel)
+                if androidMirrors[device.serial] != nil {
                     let stop = item("Stop Mirroring \(device.label)", #selector(stopAndroidMirror(_:)), on: false)
                     stop.representedObject = device.serial
                     stop.indentationLevel = 1
@@ -501,11 +497,6 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func setSoundDelay(_ sender: NSMenuItem) {
         guard let seconds = sender.representedObject as? Double else { return }
         AndroidAudioPlayer.extraDelay = seconds
-    }
-
-    @objc private func toggleAndroidPanel(_ sender: NSMenuItem) {
-        guard let serial = sender.representedObject as? String, let mirror = androidMirrors[serial] else { return }
-        mirror.togglePanel()
     }
 
     /// Full screen on its own Space, opened or brought forward.
@@ -791,10 +782,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let preview = DisplayPreview(
             displayID: screen.display.displayID, title: "\(name) preview",
             framesPerSecond: 30, floating: preferences.floatPreview)
-        preview.onClose = { [weak self] in
-            self?.agentPreviews.removeValue(forKey: name)
-            self?.iPhonePanels.removeValue(forKey: name)?.stop()
-        }
+        preview.onClose = { [weak self] in self?.agentPreviews.removeValue(forKey: name) }
         preview.setToolbar(previewButtons(for: name))
         agentPreviews[name] = preview
         Task { @MainActor in
@@ -828,12 +816,6 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             fit.toolTip = "Keep the screen sized to its app's window, such as iPhone Mirroring turning landscape"
             if !agentScreens.hasPlacedApps(screen.name) { fit.action = nil }
             submenu.addItem(fit)
-            if showsIPhoneMirroring(screen.name) {
-                let panel = item("UI-TARS Panel", #selector(toggleIPhonePanel(_:)),
-                                 on: agentPreviews[screen.name]?.isSidePanelShown ?? false)
-                panel.representedObject = screen.name
-                submenu.addItem(panel)
-            }
             let sizes = NSMenuItem(title: "Size", action: nil, keyEquivalent: "")
             let sizeMenu = NSMenu()
             // A size that cannot hold the app's window would cut it off:
@@ -935,27 +917,6 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private var volumePopover: NSPopover?
-    /// UI-TARS panels for agent screens showing iPhone Mirroring, by screen.
-    private var iPhonePanels: [String: AgentPanel] = [:]
-
-    private func showsIPhoneMirroring(_ name: String) -> Bool {
-        agentScreens.mainWindow(on: name).flatMap {
-            NSRunningApplication(processIdentifier: $0.pid)?.bundleIdentifier
-        } == "com.apple.ScreenContinuity"
-    }
-
-    @objc private func toggleIPhonePanel(_ sender: NSMenuItem) {
-        guard let name = sender.representedObject as? String else { return }
-        // The panel lives in the screen's preview; open that first.
-        if agentPreviews[name] == nil { toggleAgentPreview(name) }
-        guard let preview = agentPreviews[name] else { return }
-        let panel = iPhonePanels[name] ?? AgentPanel.iPhone(screen: name)
-        iPhonePanels[name] = panel
-        if preview.isSidePanelShown { panel.stop() }
-        preview.toggleSidePanel(panel, width: AgentPanel.width)
-        if preview.isSidePanelShown { panel.focus() }
-    }
-
     /// A slider for the Mac's output volume, under the preview's button.
     /// iPhone Mirroring plays through it and has no volume of its own.
     private func showVolume(from anchor: NSView) {

@@ -59,14 +59,6 @@ public final class DisplayPreview: NSObject, SCStreamOutput, SCStreamDelegate, N
     /// Quarter turns clockwise the picture is shown at. Only the view turns:
     /// the display, and the app on it, keep their orientation.
     public private(set) var quarterTurns = 0
-    /// A view beside the picture, such as an agent panel, and its width.
-    private var sidePanel: NSView?
-    private var sidePanelWidth: CGFloat = 0
-    public var isSidePanelShown: Bool { sidePanel.map { !$0.isHidden } ?? false }
-    /// The part of the window the picture fills: all of it but the panel.
-    private var pictureWidth: CGFloat {
-        (window.contentView?.bounds.width ?? 0) - (isSidePanelShown ? sidePanelWidth : 0)
-    }
     private var buttonTargets: [ButtonTarget] = []
 
     public var isFloating: Bool {
@@ -171,45 +163,11 @@ public final class DisplayPreview: NSObject, SCStreamOutput, SCStreamDelegate, N
                               : NSSize(width: size.height, height: size.width)
     }
 
-    /// Show or hide `panel` at the right of the window, widening the window
-    /// rather than shrinking the picture.
-    @MainActor
-    public func toggleSidePanel(_ panel: NSView, width: CGFloat) {
-        guard let content = window.contentView else { return }
-        if sidePanel !== panel {
-            sidePanel?.removeFromSuperview()
-            sidePanel = panel
-            sidePanelWidth = width
-            panel.isHidden = true
-            content.addSubview(panel)
-        }
-        let opening = panel.isHidden
-        panel.isHidden = !opening
-        if !isFullScreen {
-            // The aspect constraint is for the picture alone; widen freely.
-            window.contentResizeIncrements = NSSize(width: 1, height: 1)
-            var frame = window.frame
-            frame.size.width += opening ? width : -width
-            window.setFrame(frame, display: true, animate: false)
-            if !opening, let bounds = Optional(CGDisplayBounds(displayID)), bounds.height > 0 {
-                window.contentAspectRatio = displayedSize(bounds.size)
-            }
-        }
-        layoutImage()
-        if opening {
-            NSApp.activate()
-            window.makeKeyAndOrderFront(nil)
-        }
-    }
-
     /// Fill the window with the picture at the current turn: the layer keeps
     /// the display's orientation and is rotated about its center.
     private func layoutImage() {
         guard let view = window.contentView else { return }
-        let size = CGSize(width: pictureWidth, height: view.bounds.height)
-        if let sidePanel, !sidePanel.isHidden {
-            sidePanel.frame = NSRect(x: size.width, y: 0, width: sidePanelWidth, height: size.height)
-        }
+        let size = view.bounds.size
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         imageLayer.setAffineTransform(.identity)
@@ -229,16 +187,15 @@ public final class DisplayPreview: NSObject, SCStreamOutput, SCStreamDelegate, N
     public func rotate() {
         quarterTurns = (quarterTurns + 1) % 4
         if !isFullScreen {
-            let panel = isSidePanelShown ? sidePanelWidth : 0
-            let content = NSSize(width: window.contentLayoutRect.width - panel, height: window.contentLayoutRect.height)
+            let content = window.contentLayoutRect.size
             var turned = NSSize(width: content.height, height: content.width)
             if let visible = window.screen?.visibleFrame {
                 let titleBar = window.frame.height - content.height
                 let fit = min(1, visible.width / turned.width, (visible.height - titleBar) / turned.height)
                 turned = NSSize(width: (turned.width * fit).rounded(), height: (turned.height * fit).rounded())
             }
-            if panel == 0 { window.contentAspectRatio = turned }
-            window.setContentSize(NSSize(width: turned.width + panel, height: turned.height))
+            window.contentAspectRatio = turned
+            window.setContentSize(turned)
         }
         layoutImage()
     }
@@ -276,7 +233,7 @@ public final class DisplayPreview: NSObject, SCStreamOutput, SCStreamDelegate, N
     public func restartStream() async throws {
         guard wantsStream else { return }
         stopStream()
-        if !isFullScreen, !isSidePanelShown {
+        if !isFullScreen {
             let bounds = CGDisplayBounds(displayID)
             if bounds.height > 0 {
                 let width = window.contentLayoutRect.width
