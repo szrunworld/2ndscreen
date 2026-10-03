@@ -104,7 +104,11 @@ CLI=2ndscreen   # or <repo>/.build/release/2ndscreen
    ```
 
    It stops before sending anything unless given `--allow-submit`; only
-   pass that when the user asked for exactly that.
+   pass that when the user asked for exactly that. A run that worked is
+   learned: give a repeated task the same wording each time, and later
+   runs replay it without the model (`"modelCalls": 0` in the result),
+   calling the model only where the replay breaks off. Pass `--no-learn`
+   for a one-off you do not want kept.
 
    ```bash
    $CLI screenshot --screen login-test --output /tmp/after.png

@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import Foundation
 import SecondScreenCore
@@ -11,7 +12,7 @@ enum AgentCommand {
         let instruction = args.positional.dropFirst().joined(separator: " ").trimmingCharacters(in: .whitespaces)
         let android = args.has("--android")
         let usage = "usage: 2ndscreen agent --screen NAME --pid PID [--window-id ID] [--allow-submit] "
-            + "[--foreground] [--no-elements] [--max-steps N] INSTRUCTION\n"
+            + "[--foreground] [--no-elements] [--no-learn] [--max-steps N] INSTRUCTION\n"
             + "       2ndscreen agent --android [--serial SERIAL] [--allow-submit] [--max-steps N] INSTRUCTION"
         guard !instruction.isEmpty else { fail(usage) }
 
@@ -30,6 +31,13 @@ enum AgentCommand {
         } else {
             guard let screen = args.value("--screen"), let pid = args.value("--pid").flatMap(Int32.init) else { fail(usage) }
             target = ControlScreen(screen: screen, pid: pid, windowID: args.value("--window-id").flatMap(UInt32.init))
+            // Phones list no controls, so nothing they do could be replayed.
+            if !args.has("--no-learn") {
+                // Procedures are kept by app: its bundle identifier, else its name.
+                let app = NSRunningApplication(processIdentifier: pid)
+                options.app = app?.bundleIdentifier ?? app?.localizedName ?? "pid-\(pid)"
+                options.procedures = FileProcedureStore.standard
+            }
         }
         if let steps = args.value("--max-steps") {
             guard let number = Int(steps), number > 0 else { fail("--max-steps takes a positive number") }
@@ -47,7 +55,9 @@ enum AgentCommand {
         }
         let result = agent.run(instruction)
         var output: [String: Any] = ["ok": result.outcome == .done, "outcome": result.outcome.rawValue,
-                                     "reason": result.reason, "steps": result.steps]
+                                     "reason": result.reason, "steps": result.steps,
+                                     "modelCalls": result.modelCalls, "replayedSteps": result.replayed]
+        if let learned = result.learned { output["learned"] = learned }
         if let held = result.held {
             // What would run on confirmation, as 2ndscreen arguments.
             if let screen = target as? AndroidAgentScreen,
@@ -81,6 +91,8 @@ enum AgentCommand {
             line = "  stop: \(reason) (held: \(describe(action)))"
         case .error(let message):
             line = "  ! \(message)"
+        case .note(let message):
+            line = "~ \(message)"
         }
         FileHandle.standardError.write((line + "\n").data(using: .utf8)!)
     }

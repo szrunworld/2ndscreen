@@ -26,7 +26,7 @@ usage:
                   [--modifiers shift] [--duration-ms MS]
 
   2ndscreen agent --screen NAME --pid PID [--window-id ID] [--allow-submit] [--foreground] [--no-elements]
-                  [--max-steps N] INSTRUCTION
+                  [--no-learn] [--max-steps N] INSTRUCTION
   2ndscreen agent --android [--serial SERIAL] [--allow-submit] [--max-steps N] INSTRUCTION
   2ndscreen mcp      serve these commands as MCP tools over stdio
 
@@ -63,6 +63,13 @@ With --android it works on a phone instead, by its screenshots, through the
 android commands. When it stops before sending, the result's "pending" holds
 the 2ndscreen arguments that would send. It reads ARK_API_KEY, ARK_MODEL and
 ARK_BASE_URL from the environment or ~/.config/2ndscreen/ark.env.
+
+A run that worked is kept as a procedure for its app, under
+~/.config/2ndscreen/procedures: the next run of the same instruction repeats
+its steps by finding their controls again, without the model, and hands the
+rest to the model if a control is missing or the screen ends up elsewhere.
+The result's modelCalls says how many requests a run made. --no-learn
+neither uses nor keeps procedures.
 
 Durations take s, m or h (90s, 30m, 2h). A screen is destroyed when its TTL
 passes, when no command has named it for its idle timeout (default 60m; 0
