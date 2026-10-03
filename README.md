@@ -120,6 +120,15 @@ scrolls the opposite way to the direction it is given, in AppKit and
 WebKit and whatever the natural scrolling setting; 2ndscreen sends the
 opposite direction to correct this.
 
+cua-driver will not scroll Electron or Chromium windows in the background
+at all. For those, 2ndscreen posts the wheel to the app itself, through the
+same per-process route cua-driver uses for clicks, with the window-local
+point Chromium routes it by and a mouse move there first. It scrolled lists
+in Electron 22 and 33 test apps, including inside a `<webview>`, and the
+recommendations list in BOSS直聘 (Electron 22), without moving the pointer
+or changing the frontmost app. The result's `route` is then
+`2ndscreen_wheel`.
+
 A right-click at a point reaches the app twice (a web page saw two
 `contextmenu` events), because cua-driver posts each event through two
 routes so that it reaches backgrounded apps. A context menu usually just

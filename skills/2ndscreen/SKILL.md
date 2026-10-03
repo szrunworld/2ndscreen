@@ -69,7 +69,9 @@ CLI=2ndscreen   # or <repo>/.build/release/2ndscreen
 
    Scroll with the wheel over the area that should move, such as a list
    or chat history inside a larger window; give its element or a point.
-   With neither, arrow or page keys scroll the focused area.
+   With neither, arrow or page keys scroll the focused area. Electron and
+   Chromium apps take a wheel posted by 2ndscreen instead, mid-window when
+   you give no point.
 
    ```bash
    $CLI scroll --screen login-test --pid PID --index 5 --direction down --amount 5
