@@ -58,7 +58,10 @@ Chinese Windows) has a section for each:
 **View** offers **Full Screen on Its Own Desktop**, the counterpart of a
 macOS full-screen Space: 2ndscreen adds a virtual desktop after yours with
 the screen covering the main display, so a four-finger swipe (or
-Ctrl+Win+Right) shows it. The desktop goes away with the view. Creating it
+Ctrl+Win+Right) shows it. The desktop goes away with the view. Windows
+desktops span every display, unlike macOS Spaces, so windows on 2ndscreen's
+screens are set to show on all desktops while they are there; otherwise the
+preview's desktop would show the screen empty. Creating it
 uses an undocumented shell interface checked against Windows 11 24H2 and
 25H2; elsewhere the view falls back to a **Preview Window**.
 

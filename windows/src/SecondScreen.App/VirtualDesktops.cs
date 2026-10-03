@@ -86,6 +86,42 @@ internal static class VirtualDesktops
         }
     }
 
+    /// <summary>
+    /// Whether <paramref name="window"/> shows on every desktop ("Show this window on all
+    /// desktops"), or null if the shell will not say.
+    /// </summary>
+    public static bool? IsPinned(nint window) => WithView(window, (pins, view) => pins.IsViewPinned(view));
+
+    /// <summary>Show <paramref name="window"/> on every desktop, or only its own again.</summary>
+    public static bool SetPinned(nint window, bool pinned) => WithView(window, (pins, view) =>
+    {
+        if (pinned) pins.PinView(view); else pins.UnpinView(view);
+        return true;
+    }) ?? false;
+
+    private static bool? WithView(nint window, Func<IVirtualDesktopPinnedApps, nint, bool> action)
+    {
+        nint view = 0;
+        try
+        {
+            var shell = (IServiceProvider)Activator.CreateInstance(Type.GetTypeFromCLSID(ImmersiveShell)!)!;
+            Guid service = typeof(IApplicationViewCollection).GUID, iid = service;
+            var views = (IApplicationViewCollection)shell.QueryService(ref service, ref iid);
+            if (views.GetViewForHwnd(window, out view) != 0 || view == 0) return null;
+            service = PinnedAppsService;
+            iid = typeof(IVirtualDesktopPinnedApps).GUID;
+            return action((IVirtualDesktopPinnedApps)shell.QueryService(ref service, ref iid), view);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+        finally
+        {
+            if (view != 0) Marshal.Release(view);
+        }
+    }
+
     private static IVirtualDesktopManagerInternal? Internal(out string? problem)
     {
         problem = null;
@@ -107,6 +143,7 @@ internal static class VirtualDesktops
 
     private static readonly Guid ImmersiveShell = new("C2F03A33-21F5-47FA-B4BB-156362A2F239");
     private static readonly Guid ManagerInternalService = new("C5E0CDCA-7B6E-41B2-9FC4-D93975CC467B");
+    private static readonly Guid PinnedAppsService = new("B5A399E7-1C87-46B8-88E9-FC5747B171BD");
 
     [ComImport, Guid("aa509086-5ca9-4c25-8f95-589d3c07b48a")]
     private class CVirtualDesktopManager { }
@@ -124,6 +161,27 @@ internal static class VirtualDesktops
     {
         [return: MarshalAs(UnmanagedType.IUnknown)]
         object QueryService(ref Guid service, ref Guid riid);
+    }
+
+    /// <summary>Windows 11 24H2/25H2 layout; only the methods up to the one used are declared.</summary>
+    [ComImport, Guid("1841C6D7-4F9D-42C0-AF41-8747538F10E5"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IApplicationViewCollection
+    {
+        int GetViews(out nint views);
+        int GetViewsByZOrder(out nint views);
+        int GetViewsByAppUserModelId(string id, out nint views);
+        [PreserveSig] int GetViewForHwnd(nint window, out nint view);
+    }
+
+    [ComImport, Guid("4CE81583-1E4C-4632-A621-07A53543148F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IVirtualDesktopPinnedApps
+    {
+        bool IsAppIdPinned(string id);
+        void PinAppID(string id);
+        void UnpinAppID(string id);
+        bool IsViewPinned(nint view);
+        void PinView(nint view);
+        void UnpinView(nint view);
     }
 
     /// <summary>Windows 11 24H2/25H2 layout. Only the methods up to FindDesktop are declared; their order is what matters.</summary>

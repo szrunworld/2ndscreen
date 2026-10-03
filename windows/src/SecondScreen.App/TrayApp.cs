@@ -53,6 +53,9 @@ internal sealed class TrayApp : ApplicationContext
     private readonly Dictionary<string, PreviewForm> previews = new();
     private readonly System.Windows.Forms.Timer reapTimer = new() { Interval = 5000 };
     private readonly System.Windows.Forms.Timer followTimer = new() { Interval = 300 };
+    private readonly System.Windows.Forms.Timer pinTimer = new() { Interval = 1000 };
+    /// <summary>Windows this app set to show on every desktop, to undo when they leave.</summary>
+    private readonly HashSet<nint> pinned = new();
 
     public TrayApp()
     {
@@ -74,6 +77,8 @@ internal sealed class TrayApp : ApplicationContext
         reapTimer.Start();
         followTimer.Tick += (_, _) => screens.FollowBindings();
         followTimer.Start();
+        pinTimer.Tick += (_, _) => PinWindowsOnScreens();
+        pinTimer.Start();
 
         server = new ControlServer(Handle, SynchronizationContext.Current!);
         server.Start();
@@ -252,6 +257,37 @@ internal sealed class TrayApp : ApplicationContext
         Desktop.Move(window, onVirtual ? Desktop.Primary().WorkArea : primary.WorkArea, fill: false);
     }
 
+    /// <summary>
+    /// Windows desktops span every display, so switching to the preview's desktop would
+    /// empty the screens it shows. Like macOS, where each display has its own Spaces, keep
+    /// windows on 2ndscreen's screens on every desktop, and undo that when they leave.
+    /// Windows the user pinned themselves are left alone.
+    /// </summary>
+    private void PinWindowsOnScreens()
+    {
+        var onScreens = screens.All.Where(s => !s.TestStandIn)
+            .SelectMany(s => Desktop.WindowsOn(s.Bounds)).Select(w => w.Handle).ToHashSet();
+        foreach (var window in onScreens.Where(w => !pinned.Contains(w)))
+        {
+            if (VirtualDesktops.IsPinned(window) == false && VirtualDesktops.SetPinned(window, true)) pinned.Add(window);
+        }
+        foreach (var window in pinned.Where(w => !onScreens.Contains(w)).ToList())
+        {
+            // A minimized window is not listed but still belongs to the screen.
+            if (Desktop.Windows(w => w.Handle == window).Count == 0 && IsWindow(window)) continue;
+            if (IsWindow(window)) VirtualDesktops.SetPinned(window, false);
+            pinned.Remove(window);
+        }
+    }
+
+    private void UnpinAll()
+    {
+        foreach (var window in pinned) VirtualDesktops.SetPinned(window, false);
+        pinned.Clear();
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern bool IsWindow(nint window);
+
     private void BringBack(WindowInfo window) => Desktop.Move(window, Desktop.Primary().WorkArea, fill: false);
 
     // MARK: Menu
@@ -404,6 +440,8 @@ internal sealed class TrayApp : ApplicationContext
     {
         server.Stop();
         hotKey.Dispose();
+        pinTimer.Stop();
+        UnpinAll();
         foreach (var form in previews.Values.ToList()) form.Close();
         // Detach every virtual screen; Windows moves their windows to the real displays.
         foreach (var screen in screens.All.ToList()) screens.Destroy(screen.Name);
