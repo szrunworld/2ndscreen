@@ -97,8 +97,8 @@ if (-not $created.ok) {
     Get-Content (Join-Path $Out "doctor-after-create.json") | Write-Host
 }
 if ($standIn) {
-    Skip "screen has the requested size" "no GPU to host virtual monitors; $primary stands in"
-    Skip "Windows reports the new monitor" "no GPU to host virtual monitors"
+    Skip "screen has the requested size" "no virtual monitor can attach; $primary stands in"
+    Skip "Windows reports the new monitor" "no virtual monitor can attach"
     $width = $frame.width; $height = $frame.height
 } elseif ($created.ok) {
     Check "screen has the requested size" ($frame.width -eq 1280 -and $frame.height -eq 800) "$($frame.width)x$($frame.height)"

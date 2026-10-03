@@ -92,7 +92,7 @@ window that is not on the named screen, so your foreground window stays put.
 - `scripts/e2e.ps1`: end-to-end acceptance against `tests/TestTarget`. It
   must run in an interactive desktop session, since services and SSH
   sessions have no desktop.
-- `.github/workflows/windows.yml` runs both. Hosted runners are Hyper-V VMs
-  where the driver loads but no monitor arrives, so there the e2e test
-  stands in the main display for the agent screen and skips the checks
+- `.github/workflows/windows.yml` runs both on a hosted runner, which gets
+  real virtual monitors too. Where no virtual monitor can attach, the e2e
+  test stands in the main display for the agent screen and skips the checks
   that need a real one.
