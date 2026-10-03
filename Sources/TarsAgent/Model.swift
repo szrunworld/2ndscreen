@@ -15,12 +15,15 @@ public struct ModelConfig {
         self.model = model
     }
 
-    /// From `ARK_API_KEY`, `ARK_MODEL` and `ARK_BASE_URL`, falling back to
-    /// ~/.config/2ndscreen/ark.env for any that are unset.
+    /// From the environment, falling back to ~/.config/2ndscreen/model.env, then the
+    /// older ark.env, for any value unset. `AGENT_MODEL_BASE_URL`, `AGENT_MODEL_API_KEY`
+    /// and `AGENT_MODEL` name any OpenAI-compatible server, such as Nebula's GUI agent
+    /// endpoint; the `ARK_` names are read too, for Volcengine Ark.
     public static func fromEnvironment() throws -> ModelConfig {
         var values = ProcessInfo.processInfo.environment
-        let file = NSHomeDirectory() + "/.config/2ndscreen/ark.env"
-        if let text = try? String(contentsOfFile: file, encoding: .utf8) {
+        let directory = NSHomeDirectory() + "/.config/2ndscreen/"
+        for name in ["model.env", "ark.env"] {
+            guard let text = try? String(contentsOfFile: directory + name, encoding: .utf8) else { continue }
             for line in text.split(separator: "\n") where !line.hasPrefix("#") {
                 let parts = line.split(separator: "=", maxSplits: 1).map {
                     $0.trimmingCharacters(in: .whitespaces.union(CharacterSet(charactersIn: "\"'")))
@@ -30,12 +33,15 @@ public struct ModelConfig {
                 }
             }
         }
-        guard let key = values["ARK_API_KEY"], !key.isEmpty else {
-            throw AgentError("set ARK_API_KEY to a Volcengine Ark API key, or put it in \(file)")
+        func value(_ names: String...) -> String? {
+            names.lazy.compactMap { values[$0] }.first { !$0.isEmpty }
         }
-        let base = values["ARK_BASE_URL"].flatMap { $0.isEmpty ? nil : $0 } ?? "https://ark.cn-beijing.volces.com/api/v3"
-        guard let url = URL(string: base) else { throw AgentError("ARK_BASE_URL is not a URL: \(base)") }
-        let model = values["ARK_MODEL"].flatMap { $0.isEmpty ? nil : $0 } ?? "doubao-seed-2-1-lite-260915"
+        guard let key = value("AGENT_MODEL_API_KEY", "ARK_API_KEY") else {
+            throw AgentError("set AGENT_MODEL_API_KEY (or ARK_API_KEY), or put it in \(directory)model.env")
+        }
+        let base = value("AGENT_MODEL_BASE_URL", "ARK_BASE_URL") ?? "https://ark.cn-beijing.volces.com/api/v3"
+        guard let url = URL(string: base) else { throw AgentError("the model's base URL is not a URL: \(base)") }
+        let model = value("AGENT_MODEL", "ARK_MODEL") ?? "doubao-seed-2-1-lite-260915"
         return ModelConfig(baseURL: url, apiKey: key, model: model)
     }
 }
