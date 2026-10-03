@@ -10,8 +10,8 @@ testing on one, drive it in the background, and verify it with
 screenshots, while the user keeps their screen, pointer and frontmost app.
 
 It needs the 2ndscreen menu bar app running (`open build/2ndscreen.app` in
-the repository) and cua-driver installed for `state`, `click`, `type` and
-`key`. Every command prints one JSON object; `ok` is false, and the exit
+the repository) and cua-driver installed for `state`, `click`, `type`,
+`key`, `scroll` and `drag`. Every command prints one JSON object; `ok` is false, and the exit
 status non-zero, on failure.
 
 ```bash
@@ -61,6 +61,28 @@ CLI=2ndscreen   # or <repo>/.build/release/2ndscreen
    $CLI key   --screen login-test --pid PID --key return
    $CLI key   --screen login-test --pid PID --key n --modifiers cmd
    $CLI click --screen login-test --pid PID --x 2400 --y 310   # global point, last resort
+   $CLI click --screen login-test --pid PID --text "Message" --right    # context menu
+   $CLI click --screen login-test --pid PID --index 12 --double          # open a row or file
+   ```
+
+   Scroll with the wheel over the area that should move, such as a list
+   or chat history inside a larger window; give its element or a point.
+   With neither, arrow or page keys scroll the focused area.
+
+   ```bash
+   $CLI scroll --screen login-test --pid PID --index 5 --direction down --amount 5
+   $CLI scroll --screen login-test --pid PID --x 2400 --y 500 --direction up --by page
+   ```
+
+   `drag` presses at one global point and releases at another. macOS has no
+   background drag, so it brings the app to the front and moves the
+   user's real pointer for about a second (2ndscreen puts the pointer back
+   afterwards). It runs only with `--foreground`: ask the user first, and
+   look for another way, such as a menu command or keys, before you do.
+   Drags can be lost, so verify each one.
+
+   ```bash
+   $CLI drag --screen login-test --pid PID --from-x 2200 --from-y 500 --to-x 2500 --to-y 600 --foreground
    ```
 
 5. **Verify.** `effect` is often `unverifiable` (normal for clicks and web
@@ -80,8 +102,8 @@ CLI=2ndscreen   # or <repo>/.build/release/2ndscreen
 
 ## Rules
 
-- Act only on windows of apps you launched. `state`, `click`, `type` and
-  `key` refuse windows that are not on the named screen; do not move the
+- Act only on windows of apps you launched. `state`, `click`, `type`,
+  `key`, `scroll` and `drag` refuse windows that are not on the named screen; do not move the
   user's windows onto your screen to get around that.
 - Indexes come from the latest `state`, and `click`/`type` re-read the
   window. Run `state` again after the UI changes before reusing an index.
