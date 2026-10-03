@@ -321,8 +321,9 @@ each change. Voice and video calls cannot be captured.
 The sound is held back a further second by default. A phone's video
 player delays its picture by its speaker's latency, which the captured
 sound skips, so without it the sound runs ahead of the picture.
-`defaults write io.github.szrunworld.2ndscreen androidAudioDelay -float 0.5`
-sets another delay, taking effect at once; the log category `android-av`
+**Android Phones → Sound Delay** in the menu bar sets another delay, as
+does `defaults write io.github.szrunworld.2ndscreen androidAudioDelay
+-float 0.5`, taking effect at once; the log category `android-av`
 reports how far the sound plays behind the picture as it arrives.
 
 Agents use the same phone from the command line:

@@ -17,6 +17,17 @@ import SecondScreenCore
 /// playing the excess off at 5% faster, pitch kept.
 /// Thread use: the mirror's audio reader thread only.
 final class AndroidAudioPlayer {
+    /// Delay added to line the sound up with the picture, in seconds. The
+    /// phone's player holds its picture back by its speaker's latency, which
+    /// the captured sound skips, so the sound comes early: 1 s lined it up by
+    /// ear on a Honor phone over Wi-Fi. Set from the menu (Android Phones →
+    /// Sound Delay) or `defaults write io.github.szrunworld.2ndscreen
+    /// androidAudioDelay -float SECONDS`; it takes effect at once.
+    static var extraDelay: Double {
+        get { UserDefaults.standard.object(forKey: "androidAudioDelay") as? Double ?? 1 }
+        set { UserDefaults.standard.set(newValue, forKey: "androidAudioDelay") }
+    }
+
     /// How the buffer grows and shrinks, for `log stream --predicate 'category == "android-audio"'`.
     private static let log = Logger(subsystem: "io.github.szrunworld.2ndscreen", category: "android-audio")
 
@@ -72,12 +83,7 @@ final class AndroidAudioPlayer {
         guard let format, !packet.isEmpty else { return nil }
         if renderer.status == .failed { renderer.flush() }
         if rate == 0 { setRate(1, time: .zero) }
-        // The phone's player holds its picture back by its speaker's
-        // latency, which the captured sound skips, so the sound comes early:
-        // 1 s lined it up by ear on a Honor phone over Wi-Fi.
-        // `defaults write io.github.szrunworld.2ndscreen androidAudioDelay
-        // -float SECONDS` sets another, taking effect at once.
-        jitter.setExtraDelay(UserDefaults.standard.object(forKey: "androidAudioDelay") as? Double ?? 1)
+        jitter.setExtraDelay(Self.extraDelay)
         var now = synchronizer.currentTime()
         let host = CACurrentMediaTime()
         if now.seconds != lastClock {
