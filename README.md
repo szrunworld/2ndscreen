@@ -366,9 +366,10 @@ $CLI agent --android [--serial S] "打开微信，给文件传输助手写一句
 
 The guards are the desktop's: it stops before Enter, text ending in a
 newline, or a tap the model describes as sending, and the result's
-`pending` holds the `2ndscreen` arguments that would do it. The sparkles
-button in the mirror window's title bar opens the same agent in a panel
-beside the phone, with Confirm and Discard for what it held back.
+`pending` holds the `2ndscreen` arguments that would do it. **Android Phones →
+UI-TARS Panel** in the menu bar opens the same agent in a panel beside
+the phone, run in the app itself, with Confirm and Discard for what it
+held back.
 
 Things to know:
 

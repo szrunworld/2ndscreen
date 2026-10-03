@@ -439,7 +439,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 entry.toolTip = device.serial
                 entry.isEnabled = usable
                 menu.addItem(entry)
-                if androidMirrors[device.serial] != nil {
+                if let mirror = androidMirrors[device.serial] {
+                    let panel = item("UI-TARS Panel", #selector(toggleAndroidPanel(_:)), on: mirror.isPanelShown)
+                    panel.representedObject = device.serial
+                    panel.indentationLevel = 1
+                    menu.addItem(panel)
                     let stop = item("Stop Mirroring \(device.label)", #selector(stopAndroidMirror(_:)), on: false)
                     stop.representedObject = device.serial
                     stop.indentationLevel = 1
@@ -486,6 +490,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func setSoundDelay(_ sender: NSMenuItem) {
         guard let seconds = sender.representedObject as? Double else { return }
         AndroidAudioPlayer.extraDelay = seconds
+    }
+
+    @objc private func toggleAndroidPanel(_ sender: NSMenuItem) {
+        guard let serial = sender.representedObject as? String, let mirror = androidMirrors[serial] else { return }
+        mirror.togglePanel()
     }
 
     /// Full screen on its own Space, opened or brought forward.

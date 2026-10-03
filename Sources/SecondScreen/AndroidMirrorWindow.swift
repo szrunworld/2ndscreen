@@ -4,8 +4,9 @@ import SecondScreenCore
 
 /// A window showing an Android device's screen. Clicks and drags become
 /// touches, the scroll wheel scrolls, and typing goes to the focused field.
-/// The title bar has Back, Home and Recents; right-click is also Back. Its
-/// sparkles button opens a UI-TARS panel beside the phone.
+/// The title bar has Back, Home and Recents; right-click is also Back.
+/// Android Phones → UI-TARS Panel in the menu bar opens a panel beside the
+/// phone.
 @MainActor
 final class AndroidMirrorWindow: NSObject, NSWindowDelegate {
     let mirror: AndroidMirror
@@ -171,9 +172,12 @@ final class AndroidMirrorWindow: NSObject, NSWindowDelegate {
         return NSSize(width: (video.width * scale).rounded() + panelWidth, height: (video.height * scale).rounded())
     }
 
+    var isPanelShown: Bool { !panel.isHidden }
+
     /// Show or hide the UI-TARS panel, widening the window to the right
-    /// instead of shrinking the phone.
-    @objc private func togglePanel() {
+    /// instead of shrinking the phone. The menu bar's Android Phones menu
+    /// offers it; the title bar keeps to the phone's own three keys.
+    func togglePanel() {
         let opening = panel.isHidden
         panel.isHidden = !opening
         if !window.styleMask.contains(.fullScreen) {
@@ -183,6 +187,8 @@ final class AndroidMirrorWindow: NSObject, NSWindowDelegate {
         }
         window.contentView?.needsLayout = true
         if opening {
+            NSApp.activate()
+            window.makeKeyAndOrderFront(nil)
             panel.focus()
         } else {
             window.makeFirstResponder(screenView)
@@ -199,7 +205,6 @@ final class AndroidMirrorWindow: NSObject, NSWindowDelegate {
             return button
         }
         let stack = NSStackView(views: [
-            button("sparkles", "UI-TARS", #selector(togglePanel)),
             button("chevron.backward", "Back", #selector(backPressed)),
             button("circle", "Home", #selector(homePressed)),
             button("square", "Recents", #selector(recentsPressed)),
