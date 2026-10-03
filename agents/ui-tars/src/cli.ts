@@ -5,16 +5,23 @@
 
 import { parseArgs } from 'node:util';
 import { GUIAgent, UITarsModelVersion } from '@ui-tars/sdk';
+import { AndroidOperator } from './android.ts';
 import { SecondScreenOperator } from './operator.ts';
 import type { Step } from './plan.ts';
 
 const usage = `usage: 2ndscreen-ui-tars --screen NAME --pid PID [--window-id ID]
                           [--allow-submit] [--foreground] [--max-steps N] INSTRUCTION
+       2ndscreen-ui-tars --android [--serial SERIAL] [--allow-submit] [--max-steps N] INSTRUCTION
 
 Runs INSTRUCTION with a UI-TARS model on an agent screen, acting only on the
 app with PID. Without --allow-submit, the run stops before anything that
 would send or submit: Enter, typed text ending in a newline, or a click on a
 Send button. Without --foreground, nothing takes the user's pointer.
+
+With --android, it runs on the Android phone connected to 2ndscreen instead,
+through \`2ndscreen android\`; nothing on the Mac is touched. Without
+--allow-submit it also stops before a tap the model describes as sending,
+submitting or paying.
 
 Environment:
   ARK_API_KEY        Volcengine Ark API key (required)
@@ -26,6 +33,8 @@ Environment:
 const { values, positionals } = parseArgs({
   allowPositionals: true,
   options: {
+    android: { type: 'boolean', default: false },
+    serial: { type: 'string' },
     screen: { type: 'string' },
     pid: { type: 'string' },
     'window-id': { type: 'string' },
@@ -37,7 +46,7 @@ const { values, positionals } = parseArgs({
 });
 
 const instruction = positionals.join(' ').trim();
-if (values.help || !values.screen || !values.pid || !instruction) {
+if (values.help || (!values.android && (!values.screen || !values.pid)) || !instruction) {
   console.error(usage);
   process.exit(values.help ? 0 : 2);
 }
@@ -50,15 +59,20 @@ if (!apiKey) {
 const describe = (step: Step) =>
   step.kind === 'run' ? `$ 2ndscreen ${step.words.join(' ')}` : step.kind === 'wait' ? `wait ${step.ms} ms` : `stop: ${step.reason}`;
 
-const operator = new SecondScreenOperator({
-  screen: values.screen,
-  pid: Number(values.pid),
-  windowId: values['window-id'] ? Number(values['window-id']) : undefined,
-  allowSubmit: values['allow-submit'],
-  foreground: values.foreground,
-  onStep: (step) => console.error(`  ${describe(step)}`),
-  onError: (error) => console.error(`  ! ${error.message}`),
-});
+const report = {
+  onStep: (step: Step) => console.error(`  ${describe(step)}`),
+  onError: (error: Error) => console.error(`  ! ${error.message}`),
+};
+const operator = values.android
+  ? new AndroidOperator({ serial: values.serial, allowSubmit: values['allow-submit'], ...report })
+  : new SecondScreenOperator({
+      screen: values.screen!,
+      pid: Number(values.pid),
+      windowId: values['window-id'] ? Number(values['window-id']) : undefined,
+      allowSubmit: values['allow-submit'],
+      foreground: values.foreground,
+      ...report,
+    });
 
 let status = 'init';
 const quiet = { log() {}, info() {}, warn: console.warn, error: console.error };
