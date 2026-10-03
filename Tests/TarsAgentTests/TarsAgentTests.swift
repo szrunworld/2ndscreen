@@ -16,7 +16,10 @@ func inputs(_ steps: [Step]) -> [InputAction] {
 }
 
 func stopReason(_ steps: [Step]) -> (Outcome, String)? {
-    for step in steps { if case .stop(let outcome, let reason) = step { return (outcome, reason) } }
+    for step in steps {
+        if case .stop(let outcome, let reason) = step { return (outcome, reason) }
+        if case .hold(_, let reason) = step { return (.done, reason) }
+    }
     return nil
 }
 
@@ -362,5 +365,84 @@ func field(index: Int, x: Double, y: Double, width: Double, height: Double, labe
         _ = TarsAgent(screen: screen, model: model).run("x")
         let lists = model.seen[1].filter { if case .user(let text) = $0 { text.hasPrefix(TarsAgent.elementsHeading) } else { false } }
         #expect(lists.count == 1)
+    }
+}
+
+/// A phone: planned on its screenshot in device pixels, then turned into
+/// `2ndscreen android` commands.
+@Suite struct Phone {
+    let phone = PlanContext(frame: CGRect(x: 0, y: 0, width: 1000, height: 2000), foreground: true)
+
+    func commands(_ text: String, _ context: PlanContext? = nil) throws -> [String] {
+        try inputs(Planner.plan(action(text), context ?? phone)).flatMap {
+            try AndroidPlan.commands(for: $0, size: CGSize(width: 1000, height: 2000)).map { $0.joined(separator: " ") }
+        }
+    }
+
+    @Test func tapsLandInDevicePixels() throws {
+        #expect(try commands("click(start_box='[500, 250, 500, 250]')") == ["tap --x 500 --y 500"])
+        #expect(try commands("left_double(start_box='[0, 1000, 0, 1000]')") == ["tap --x 0 --y 2000", "tap --x 0 --y 2000"])
+    }
+
+    @Test func aLongPressHoldsInPlace() throws {
+        #expect(try commands("long_press(start_box='[100, 100, 100, 100]')")
+            == ["swipe --x 100 --y 200 --to-x 100 --to-y 200 --duration 0.8"])
+    }
+
+    @Test func aDragIsASwipe() throws {
+        #expect(try commands("drag(start_box='[500, 800, 500, 800]', end_box='[500, 200, 500, 200]')")
+            == ["swipe --x 500 --y 1600 --to-x 500 --to-y 400 --duration 0.5"])
+    }
+
+    @Test func scrollingDownMovesTheFingerUp() throws {
+        func numbers(_ command: String) -> [String: Double] {
+            let words = command.split(separator: " ").map(String.init)
+            var values: [String: Double] = [:]
+            for (index, word) in words.enumerated() where word.hasPrefix("--") && index + 1 < words.count {
+                values[word] = Double(words[index + 1])
+            }
+            return values
+        }
+        let down = numbers(try commands("scroll(start_box='[500, 500, 500, 500]', direction='down')")[0])
+        #expect(down["--y"]! > down["--to-y"]!)
+        #expect(down["--x"] == down["--to-x"])
+        // Off the edges, where swipes are the system's Back and Home.
+        #expect(down["--to-y"]! >= 300 && down["--y"]! <= 1700)
+        let left = numbers(try commands("scroll(start_box='[500, 500, 500, 500]', direction='left')")[0])
+        #expect(left["--x"]! < left["--to-x"]!)
+    }
+
+    @Test func typingThatWouldSubmitIsHeld() throws {
+        for content in ["好的，明天见\\n", "好的，明天见\n"] {
+            let steps = Planner.plan(action("type(content='\(content)')"), phone)
+            #expect(inputs(steps).first?.value == "好的，明天见")
+            guard case .hold(let held, _) = steps.last else { Issue.record("not held: \(content)"); continue }
+            #expect(try AndroidPlan.commands(for: held, size: .zero) == [["key", "--key", "enter"]])
+            var allowed = phone
+            allowed.allowSubmit = true
+            #expect(try commands("type(content='\(content)')", allowed) == ["type --text 好的，明天见", "key --key enter"])
+        }
+        guard case .hold(let enter, _) = Planner.plan(action("hotkey(key='enter')"), phone).first else {
+            Issue.record("Enter not held")
+            return
+        }
+        #expect(try AndroidPlan.commands(for: enter, size: .zero) == [["key", "--key", "enter"]])
+    }
+
+    @Test func navigationKeys() throws {
+        #expect(try commands("press_back()") == ["key --key back"])
+        #expect(try commands("press_home()") == ["key --key home"])
+        #expect(try commands("hotkey(key='esc')") == ["key --key back"])
+        var copy = InputAction(.key)
+        copy.key = "c"
+        copy.modifiers = ["cmd"]
+        #expect(throws: AndroidPlan.Failure.self) { try AndroidPlan.commands(for: copy, size: .zero) }
+    }
+
+    @Test func thePhonePromptOffersPhoneActions() {
+        let prompt = TarsAgent.prompt("看看最新消息", actionSpaces: TarsAgent.phoneActionSpaces, elements: false)
+        #expect(prompt.contains("press_back()"))
+        #expect(!prompt.contains("## Elements"))
+        #expect(TarsAgent.prompt("x").contains("## Elements"))
     }
 }

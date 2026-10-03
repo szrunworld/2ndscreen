@@ -117,6 +117,36 @@ CLI=2ndscreen   # or <repo>/.build/release/2ndscreen
    $CLI screen destroy login-test
    ```
 
+## Android phones
+
+2ndscreen can also drive an Android phone the user has connected over
+Wi-Fi (they pair it once from the menu bar: **Android Phones → Connect
+Phone…**, or with `2ndscreen android pair HOST:PORT CODE`). Nothing is
+installed on the phone.
+
+```bash
+$CLI android devices                                    # serial, state, model
+$CLI android screenshot --output /tmp/phone.png         # look (full resolution)
+$CLI android tap   --x 540 --y 1200                     # act, in screenshot pixels
+$CLI android swipe --x 540 --y 1600 --to-x 540 --to-y 600 [--duration 0.3]
+$CLI android type  --text "你好 hello"                  # pasted: any text, any keyboard
+$CLI android key   --key back                           # home, recents, enter, delete, ...
+$CLI android adb shell uiautomator dump /sdcard/ui.xml && $CLI android adb exec-out cat /sdcard/ui.xml
+$CLI android adb shell monkey -p com.example.app 1      # launch an app
+$CLI android show [--screen login-test]                 # optional: a mirror for the user to watch
+```
+
+Add `--serial SERIAL` when more than one phone is connected. Points are
+the screenshot's pixels; take them from the screenshot or from
+`uiautomator` bounds. Tap a text field before `type`; the text is pasted
+through the phone's clipboard, which it replaces. `android adb` runs the
+bundled adb with your arguments unchanged.
+
+None of this moves the user's pointer or takes focus. The phone is the
+user's: if it is locked, ask them to unlock it (and to turn on Developer
+options → Stay awake while you work); never unlock, pay, send or delete
+anything they did not ask for.
+
 ## Rules
 
 - Act only on windows of apps you launched. `state`, `click`, `type`,
@@ -147,3 +177,5 @@ CLI=2ndscreen   # or <repo>/.build/release/2ndscreen
 | `set ARK_API_KEY` | `agent` needs a model; ask the user to set one up |
 | `... already running` | Add `--new-instance`, or `window move` a window you own |
 | The user must type into a window (a password) | `window release` it to their main display, then `window move` it back |
+| `no Android device is connected` | Ask the user to connect the phone from the 2ndscreen menu |
+| Android device `unauthorized` or `offline` | Ask the user to turn Wireless debugging off and on, then reconnect |

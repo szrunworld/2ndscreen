@@ -41,6 +41,14 @@ public struct ControlRequest: Codable {
         case windowState = "window.state"
         /// Click, type, press keys, scroll or drag in a window, in the background.
         case input
+        case androidList = "android.list"
+        case androidShow = "android.show"
+        case androidHide = "android.hide"
+        case androidScreenshot = "android.screenshot"
+        case androidTap = "android.tap"
+        case androidSwipe = "android.swipe"
+        case androidType = "android.type"
+        case androidKey = "android.key"
     }
 
     public var command: Command
@@ -74,6 +82,22 @@ public struct ControlRequest: Codable {
     public var query: String?
     /// `input`: what to do.
     public var input: InputAction?
+    /// `android.*`: the device's adb serial; optional when only one is connected.
+    public var serial: String?
+    /// `android.show`: the longest side of the video in pixels; 0 for full size.
+    public var maxSize: Int?
+    /// `android.tap` and `android.swipe`: a point in device pixels, as in
+    /// `android.screenshot`; a swipe goes on to `toX`, `toY`.
+    public var x: Double?
+    public var y: Double?
+    public var toX: Double?
+    public var toY: Double?
+    /// `android.swipe`: how long the finger takes, in seconds.
+    public var duration: Double?
+    /// `android.type`: the text to type.
+    public var text: String?
+    /// `android.key`: a name such as "back", "home" or "enter", or a keycode.
+    public var key: String?
 
     public init(command: Command) {
         self.command = command
@@ -194,6 +218,29 @@ public struct InputAction: Codable {
     }
 }
 
+/// An Android device adb knows about, and its mirror window if it has one.
+public struct AndroidDeviceInfo: Codable {
+    public var serial: String
+    /// "device" when usable; also "unauthorized", "offline", ...
+    public var state: String
+    public var model: String?
+    public var mirroring: Bool
+    /// The mirror window's frame, in the same space as screen frames.
+    public var frame: Frame?
+    /// The mirrored video's size in pixels. It is scaled down from the
+    /// device's own size when that exceeds `maxSize`; `adb shell input`
+    /// takes device pixels (`adb shell wm size`).
+    public var width: Int?
+    public var height: Int?
+
+    public init(serial: String, state: String, model: String?, mirroring: Bool) {
+        self.serial = serial
+        self.state = state
+        self.model = model
+        self.mirroring = mirroring
+    }
+}
+
 public struct ControlResponse: Codable {
     public var ok: Bool
     public var error: String?
@@ -211,6 +258,7 @@ public struct ControlResponse: Codable {
     /// `event.pid`, and the element it went to, if any.
     public var route: String?
     public var element: AXElementInfo?
+    public var android: [AndroidDeviceInfo]?
 
     public init(ok: Bool = true) {
         self.ok = ok

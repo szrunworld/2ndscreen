@@ -1,6 +1,8 @@
 #!/bin/bash
 # Build the menu bar app and wrap it in build/2ndscreen.app; also builds the
-# 2ndscreen and vdisplay command-line tools in .build/release.
+# 2ndscreen and vdisplay command-line tools in .build/release. adb and
+# scrcpy-server, for mirroring Android phones, are downloaded on first run
+# (scripts/fetch-android-tools.sh) and put in Contents/Resources/android.
 #
 # The bundle gives the app a stable identity, so macOS attributes the Screen
 # Recording grant (needed for the preview) to 2ndscreen instead of whichever
@@ -23,9 +25,12 @@ cd "$ROOT"
 swift build -c release
 BIN="$(swift build -c release --show-bin-path)/SecondScreen"
 
+"$ROOT/scripts/fetch-android-tools.sh"
+
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/android"
 cp "$BIN" "$APP/Contents/MacOS/2ndscreen"
+cp "$ROOT/build/android-tools/adb" "$ROOT/build/android-tools/scrcpy-server" "$APP/Contents/Resources/android/"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -41,6 +46,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleVersion</key><string>1</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>LSUIElement</key><true/>
+    <key>NSLocalNetworkUsageDescription</key><string>2ndscreen connects to Android phones on your Wi-Fi to show and control them.</string>
 </dict>
 </plist>
 PLIST
@@ -97,7 +103,9 @@ while IFS= read -r line; do
 done < <(security list-keychains -d user)
 restore_keychains() { security list-keychains -d user -s "${ORIGINAL_KEYCHAINS[@]}"; }
 security list-keychains -d user -s "${ORIGINAL_KEYCHAINS[@]}" "$KEYCHAIN"
-if ! codesign --force --keychain "$KEYCHAIN" --sign "$IDENTITY" --identifier "$BUNDLE_ID" "$APP"; then
+# Nested code is signed before the bundle that seals it.
+if ! codesign --force --keychain "$KEYCHAIN" --sign "$IDENTITY" "$APP/Contents/Resources/android/adb" \
+    || ! codesign --force --keychain "$KEYCHAIN" --sign "$IDENTITY" --identifier "$BUNDLE_ID" "$APP"; then
     restore_keychains
     exit 1
 fi

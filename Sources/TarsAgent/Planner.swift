@@ -9,6 +9,9 @@ public enum Step {
     /// End the run: `done` when the model finished or stopped short of
     /// submitting, `user` when it needs a person.
     case stop(Outcome, String)
+    /// End the run, done, before this action, which would submit; a person
+    /// may confirm it and run it.
+    case hold(InputAction, String)
 }
 
 public enum Outcome: String {
@@ -153,13 +156,10 @@ public enum Planner {
                 steps.append(.act(type))
             }
             if submit {
-                if context.allowSubmit {
-                    var key = InputAction(.key)
-                    key.key = "return"
-                    steps.append(.act(key))
-                } else {
-                    steps.append(.stop(.done, "stopped before submitting; the text is typed but not sent"))
-                }
+                var key = InputAction(.key)
+                key.key = "return"
+                steps.append(context.allowSubmit
+                    ? .act(key) : .hold(key, "stopped before submitting; the text is typed but not sent"))
             }
             return steps
 
@@ -170,9 +170,6 @@ public enum Planner {
                 key.key = "return"
                 return [.act(key)]
             }
-            if keys.key == "return", !context.allowSubmit {
-                return [.stop(.done, "stopped before pressing Enter, which would submit")]
-            }
             if let effect = escape(keys) {
                 return [.stop(.user, "the model asked for \((keys.modifiers + [keys.key]).joined(separator: "+")), "
                     + "which would \(effect); a person should look")]
@@ -180,6 +177,9 @@ public enum Planner {
             var key = InputAction(.key)
             key.key = keys.key
             if !keys.modifiers.isEmpty { key.modifiers = keys.modifiers }
+            if keys.key == "return", !context.allowSubmit {
+                return [.hold(key, "stopped before pressing Enter, which would submit")]
+            }
             return [.act(key)]
 
         case "scroll":
@@ -193,6 +193,21 @@ public enum Planner {
                 scroll.y = start.y
             }
             return [.act(scroll)]
+
+        case "press_home", "press_back":
+            // Phones only: the system's Home and Back.
+            var key = InputAction(.key)
+            key.key = action.type == "press_home" ? "home" : "back"
+            return [.act(key)]
+
+        case "long_press":
+            // Phones only: a click held down.
+            guard let start else { return [.stop(.user, "long_press without a point")] }
+            var press = InputAction(.click)
+            press.x = start.x
+            press.y = start.y
+            press.durationMs = 800
+            return [.act(press)]
 
         case "wait":
             return [.wait(seconds: 5)]
