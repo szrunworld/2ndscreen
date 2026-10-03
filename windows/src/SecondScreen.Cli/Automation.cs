@@ -206,7 +206,11 @@ public sealed class Automation
         return null;
     }
 
-    /// <summary>The element at a screen point, if it belongs to the window.</summary>
+    /// <summary>
+    /// The element at a screen point, if it belongs to the window: its program's, or in a
+    /// window inside it, as a packaged (UWP) app's content sits in another process's
+    /// CoreWindow inside the frame host's window.
+    /// </summary>
     public static AutomationElement? At((double X, double Y) point, nint window)
     {
         try
@@ -214,7 +218,9 @@ public sealed class Automation
             var element = AutomationElement.FromPoint(new System.Windows.Point(point.X, point.Y));
             int pid = element.Current.ProcessId;
             Win32.GetWindowThreadProcessId(window, out var owner);
-            return pid == owner ? element : null;
+            if (pid == owner) return element;
+            var native = NativeWindow(element);
+            return native != 0 && Win32.GetAncestor(native, Win32.GA_ROOT) == window ? element : null;
         }
         catch (Exception error) when (error is ElementNotAvailableException or InvalidOperationException or System.Runtime.InteropServices.COMException)
         {
@@ -231,6 +237,23 @@ public sealed class Automation
             if (handle != 0) return handle;
         }
         return 0;
+    }
+
+    private static readonly HashSet<ControlType> PressableTypes = new()
+        { ControlType.Button, ControlType.MenuItem, ControlType.Hyperlink, ControlType.CheckBox, ControlType.RadioButton,
+          ControlType.TabItem, ControlType.SplitButton, ControlType.ListItem, ControlType.TreeItem };
+
+    /// <summary>Whether a click on the element is a press its patterns can stand in for.</summary>
+    public static bool IsPressable(AutomationElement element)
+    {
+        try
+        {
+            return PressableTypes.Contains(element.Current.ControlType) && element.Current.IsEnabled;
+        }
+        catch (ElementNotAvailableException)
+        {
+            return false;
+        }
     }
 
     /// <summary>Whether the element's value can be written.</summary>

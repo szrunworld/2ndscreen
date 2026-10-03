@@ -515,6 +515,15 @@ func button(_ index: Int, _ label: String, x: Double, y: Double = 100, value: St
         #expect(Slots.match(found.template, "搜索陈一前端") != nil)
     }
 
+    @Test func aSlotThatSwallowsAFurtherStepIsAnotherTask() {
+        // Learned from 「在消息框里写：你好，在吗」, which stopped after writing.
+        #expect(Slots.sameTask(["消息", "明天见"], ["消息", "你好，在吗"]))
+        #expect(!Slots.sameTask(["消息", "周五见，然后发送"], ["消息", "你好，在吗"]))
+        #expect(!Slots.sameTask(["消息", "ok and send it"], ["消息", "hi"]))
+        // A further step the learned run's slot held too is no change.
+        #expect(Slots.sameTask(["周六见，然后发送"], ["周五见，然后发送"]))
+    }
+
     @Test func aSlotLabelFindsTheRowThatStartsWithIt() {
         let reference = ElementRef(role: "AXButton", label: "⟦0⟧…", x: 0.1, y: 0.1)
         let rows = [button(1, "李四光 后端", x: 1920), button(2, "李四 产品经理 你好", x: 2100), button(3, "王五", x: 2300)]
@@ -586,6 +595,78 @@ func button(_ index: Int, _ label: String, x: Double, y: Double = 100, value: St
         let model = ScriptedModel(Array(script.dropLast()) + ["Action: finished(content='7+8 的结果是 15')"])
         _ = TarsAgent(screen: screen, model: model, options: options(store)).run("计算 7+8")
         #expect(store.procedures.first?.finish == .element && store.procedures.first?.answerFrom?.y ?? 0 > 0.3)
+    }
+
+    @Test func anAnswerWhoseLabelIsTheAnswerIsReadAgain() {
+        // Text that carries its words as its label: "Pressed 11", then "Pressed 12".
+        let store = MemoryStore()
+        func counter(_ start: Int) -> FakeScreen {
+            let screen = FakeScreen()
+            var presses = start
+            screen.fields = [button(1, "Press me", x: 2000), button(2, "Pressed \(presses)", x: 2200, role: "AXStaticText")]
+            screen.afterAction = { screen in
+                presses += 1
+                screen.fields[1] = button(2, "Pressed \(presses)", x: 2200, role: "AXStaticText")
+            }
+            return screen
+        }
+        _ = TarsAgent(screen: counter(10), model: ScriptedModel(["Action: click(element='1')", "Action: finished(content='计数是 Pressed 11')"]),
+                      options: options(store)).run("点按钮，读计数")
+        #expect(store.procedures.first?.finish == .element && store.procedures.first?.answerFrom?.label == "")
+        let again = TarsAgent(screen: counter(11), model: ScriptedModel([]), options: options(store)).run("点按钮，读计数")
+        #expect(again.reason == "Pressed 12" && again.modelCalls == 0)
+    }
+
+    @Test func anAnswerInsideALongerTextIsReadOutOfIt() {
+        // Windows Calculator's display reads "显示为 1651"; the model says "结果为 1651".
+        let store = MemoryStore()
+        func display(_ result: String) -> FakeScreen {
+            let screen = FakeScreen()
+            screen.fields = [button(1, "等于", x: 2400), button(2, "清除", x: 2600), button(3, "七", x: 2000),
+                             button(4, "显示为 0", x: 2000, y: 300, role: "AXStaticText")]
+            screen.afterAction = { $0.fields[3] = button(4, "显示为 \(result)", x: 2000, y: 300, role: "AXStaticText") }
+            return screen
+        }
+        _ = TarsAgent(screen: display("1651"), model: ScriptedModel(["Action: click(element='1')", "Action: finished(content='37×48−125 的结果为 1651')"]),
+                      options: options(store)).run("计算 37×48−125，告诉我结果")
+        #expect(store.procedures.first?.finish == .element && store.procedures.first?.answerPattern == "显示为 ⟦⟧")
+        let again = TarsAgent(screen: display("1652"), model: ScriptedModel([]), options: options(store)).run("计算 37×48−125，告诉我结果")
+        #expect(again.reason == "1652" && again.modelCalls == 0)
+    }
+
+    @Test func aTaskThatAsksNothingRepeatsNoAnswer() {
+        // The model reports what this search found; the next search finds something else.
+        let store = MemoryStore()
+        func search() -> FakeScreen {
+            let screen = FakeScreen()
+            screen.fields = [AXElementInfo(index: 1, role: "AXTextField", label: "Search", value: "", frame: CGRect(x: 2800, y: 100, width: 200, height: 30)),
+                             button(2, "Aa, Helvetica", x: 2000, y: 300), button(3, "Fonts", x: 2200, y: 300), button(4, "Info", x: 2400, y: 300)]
+            screen.afterAction = { screen in
+                guard let typed = screen.performed.last, typed.kind == .type else { return }
+                screen.fields[0] = AXElementInfo(index: 1, role: "AXTextField", label: "Search", value: typed.value,
+                                                 frame: CGRect(x: 2800, y: 100, width: 200, height: 30))
+                screen.fields[1] = button(2, "Aa, \(typed.value ?? "")", x: 2000, y: 300)
+            }
+            return screen
+        }
+        _ = TarsAgent(screen: search(), model: ScriptedModel(["Action: type(content='Helvetica', element='1')",
+                                                             "Action: finished(content='找到了 Helvetica 和 Helvetica Neue')"]),
+                      options: options(store)).run("搜索 Helvetica")
+        #expect(store.procedures.first?.finish == .steps && store.procedures.first?.answerFrom == nil)
+        let again = TarsAgent(screen: search(), model: ScriptedModel([]), options: options(store)).run("搜索 Menlo")
+        #expect(again.modelCalls == 0 && !again.reason.contains("Helvetica"))
+    }
+
+    @Test func aQuestionIsNeverAnsweredFromMemory() {
+        // Nothing on screen shows the answer: the replay asks the model rather than repeat the old reply.
+        let store = MemoryStore()
+        let screen = FakeScreen()
+        screen.fields = [button(1, "打开", x: 2000), button(2, "设置", x: 2200), button(3, "帮助", x: 2400)]
+        let model = ScriptedModel(["Action: click(element='1')", "Action: finished(content='版本号是 3.2')"])
+        _ = TarsAgent(screen: screen, model: model, options: options(store)).run("打开看看版本号是多少")
+        #expect(store.procedures.first?.finish == .model)
+        // The wording asked for information, so no extra question went to the model.
+        #expect(model.seen.count == 2)
     }
 
     @Test func controlsAreFoundAgainWhereverTheyMoved() {

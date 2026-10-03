@@ -16,15 +16,25 @@ public interface IAgentScreen
     IReadOnlyList<Element> Elements();
 }
 
-public sealed record AgentOptions(int MaxSteps = 25, bool AllowSubmit = false, bool Foreground = false);
+/// <summary>
+/// With <paramref name="Procedures"/>, a run that worked is kept as a procedure for
+/// <paramref name="App"/>, and the next run of the same instruction replays it without the model.
+/// </summary>
+public sealed record AgentOptions(int MaxSteps = 25, bool AllowSubmit = false, bool Foreground = false,
+                                  IProcedureStore? Procedures = null, string App = "", int ReplayPatienceMs = 6000);
 
-public sealed record AgentResult(bool Done, string Reason, int Steps);
+/// <summary>
+/// How a run ended. <paramref name="ModelCalls"/> counts requests to the model, none when a
+/// learned procedure ran through; <paramref name="Replayed"/> the steps taken from one;
+/// <paramref name="Learned"/> what became of the run as a procedure.
+/// </summary>
+public sealed record AgentResult(bool Done, string Reason, int Steps, int ModelCalls = 0, int Replayed = 0, string? Learned = null);
 
 /// <summary>
 /// Runs an instruction with a UI-TARS model: screenshot, ask the model, act, repeat, until
 /// it finishes, asks for help, or a guard stops it.
 /// </summary>
-public sealed class Agent
+public sealed partial class Agent
 {
     public const string ActionSpaces = """
         click(start_box='[x1, y1, x2, y2]')
@@ -84,7 +94,58 @@ public sealed class Agent
 
     public AgentResult Run(string instruction)
     {
+        instruction = instruction.Trim();
+        trace.Clear();
+        unlearnable = null;
+        modelCalls = 0;
+        finishedContent = null;
+        startTexts = new();
+        if (options.Procedures is not { } store) return Explore(instruction, null);
+
+        var known = store.Load(options.App);
+        try
+        {
+            currentFrame = screen.Frame();
+            startTexts = Texts(Elements(), currentFrame);
+        }
+        catch (Exception) { }
+        if (Procedure.Best(instruction, known, options.AllowSubmit) is not { } best)
+            return Finish(Explore(instruction, null), instruction, store);
+        var (procedure, bindings) = best;
+        int position = known.FindIndex(p => p.Template == procedure.Template && p.AllowSubmit == procedure.AllowSubmit);
+
+        log($"~ replaying {procedure.Steps.Count} learned step(s)");
+        var (end, result, why, failed) = Replay(procedure, bindings, instruction);
+        if (end == ReplayEnd.Finished)
+        {
+            known[position].Successes++;
+            known[position].Failures = 0;
+            store.Save(known, options.App);
+            return result! with { Learned = "replayed" };
+        }
+        log($"~ {why}; the model takes over");
+        int replayed = trace.Count;
+        if (failed)
+        {
+            // Three replays in a row that broke off: it no longer fits.
+            if (++known[position].Failures >= 3) known.RemoveAt(position);
+            store.Save(known, options.App);
+        }
+        return Finish(Explore(instruction, (procedure, bindings, why!)), instruction, store) with { Replayed = replayed };
+    }
+
+    /// <summary>Run the instruction with the model, from the screen as it is; <paramref name="alreadyDone"/> says what a replay did before it stopped.</summary>
+    private AgentResult Explore(string instruction, (Procedure Procedure, List<string> Bindings, string Why)? alreadyDone)
+    {
         var messages = new List<Message> { new Message.User(Prompt(instruction)) };
+        if (alreadyDone is var (procedure, bindings, why))
+        {
+            var done = string.Join('\n', trace.Select((s, i) => $"{i + 1}. {s.Summary(bindings)}"));
+            messages.Add(new Message.User("These steps of a procedure learned for this task were just performed on this screen:\n" +
+                (done.Length == 0 ? "(none)" : done) + $"\nIt stopped there: {why}. Look at the screenshot and carry on from where " +
+                "things stand; do not repeat a step whose effect already shows." +
+                (procedure.Steps.Count == trace.Count ? " If the task is done, finish with the answer." : "")));
+        }
         int failedShots = 0;
         bool replyWithoutAction = false;
         for (int step = 1; step <= Math.Max(options.MaxSteps, 1); step++)
@@ -93,12 +154,13 @@ public sealed class Agent
             try
             {
                 frame = screen.Frame();
+                currentFrame = frame;
                 messages.Add(new Message.Screenshot(screen.Screenshot()));
             }
             catch (Exception error)
             {
                 log($"  ! screenshot: {error.Message}");
-                if (++failedShots >= 3) return new AgentResult(false, $"screenshots keep failing: {error.Message}", step);
+                if (++failedShots >= 3) return new AgentResult(false, $"screenshots keep failing: {error.Message}", step, modelCalls);
                 Thread.Sleep(1000);
                 continue;
             }
@@ -107,11 +169,12 @@ public sealed class Agent
             string reply;
             try
             {
+                modelCalls++;
                 reply = model.Complete(messages);
             }
             catch (Exception error)
             {
-                return new AgentResult(false, error.Message, step);
+                return new AgentResult(false, error.Message, step, modelCalls);
             }
             messages.Add(new Message.Assistant(ActionParser.Summary(reply)));
             var prediction = ActionParser.Parse(reply);
@@ -124,7 +187,11 @@ public sealed class Agent
                 log($"  ! no action in the reply: {reply}");
                 // Models that consider the task done tend to answer in prose. Remind once;
                 // a second answer without an action is final.
-                if (replyWithoutAction) return new AgentResult(true, reply.Trim(), step);
+                if (replyWithoutAction)
+                {
+                    finishedContent = reply.Trim();
+                    return new AgentResult(true, finishedContent, step, modelCalls);
+                }
                 replyWithoutAction = true;
                 messages.Add(new Message.User("Answer in the format `Thought: ...` then `Action: ...`, " +
                     "using one action from the action space; use finished(content='...') when the task is done."));
@@ -151,11 +218,14 @@ public sealed class Agent
                 foreach (var planned in Planner.Plan(action, context))
                 {
                     if (Execute(planned, prediction.Thought.Length > 0 ? prediction.Thought : reply) is { } end)
-                        return end with { Steps = step };
+                    {
+                        if (action.Type == "finished" && end.Done) finishedContent = end.Reason;
+                        return end with { Steps = step, ModelCalls = modelCalls };
+                    }
                 }
             }
         }
-        return new AgentResult(false, $"reached {options.MaxSteps} steps", options.MaxSteps);
+        return new AgentResult(false, $"reached {options.MaxSteps} steps", options.MaxSteps, modelCalls);
     }
 
     /// <summary>Run one step; returns how the run ends, if it does.</summary>
@@ -169,6 +239,7 @@ public sealed class Agent
             case Step.Wait wait:
                 log($"  wait {wait.Milliseconds / 1000} s");
                 Thread.Sleep(wait.Milliseconds);
+                if (options.Procedures is not null) trace.Add(new LearnedStep { Verb = "wait", Milliseconds = wait.Milliseconds });
                 return null;
             case Step.Run run:
             {
@@ -198,10 +269,13 @@ public sealed class Agent
                 if (words[0] == "type" && lastClick is { } clicked && Field(clicked) is { } field)
                     words.AddRange(new[] { "--index", field.Index.ToString(System.Globalization.CultureInfo.InvariantCulture) });
                 log($"  $ 2ndscreen {string.Join(' ', words)}");
+                var learned = options.Procedures is null ? null : Learn(words, run.Point);
                 try
                 {
                     var output = screen.Run(words);
                     if (output["ok"]?.GetValue<bool>() != true) log($"  ! {output["error"]}");
+                    // Only what worked is worth repeating.
+                    else if (learned is not null) trace.Add(learned);
                 }
                 catch (Exception error)
                 {

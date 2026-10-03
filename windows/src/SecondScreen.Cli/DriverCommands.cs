@@ -90,12 +90,31 @@ public static class DriverCommands
         var output = target.Json();
         output["elements"] = JsonSerializer.SerializeToNode(walked.Snapshot.Elements.Where(e => e.Index >= 0).Select(e => e.ToJson()));
         output["tree"] = walked.Snapshot.Tree;
+        if (IsSuspendedPackagedApp(target.Window.Handle))
+            output["warning"] = "this packaged (UWP) app is suspended, so only its frame shows: Windows suspends such apps " +
+                "while the screen is locked or the window is minimized; its controls come back once it resumes";
         if (args.Value("--screenshot") is { } shot)
         {
             WindowCapture.Save(target.Window.Handle, Path.GetFullPath(shot));
             output["screenshot"] = Path.GetFullPath(shot);
         }
         return output;
+    }
+
+    /// <summary>
+    /// Whether the window is a packaged app's frame without its content: the app's CoreWindow
+    /// leaves the frame host's window while Windows has the app suspended.
+    /// </summary>
+    private static bool IsSuspendedPackagedApp(nint window)
+    {
+        if (Win32.ClassName(window) != "ApplicationFrameWindow") return false;
+        bool content = false;
+        Win32.EnumChildWindows(window, (child, _) =>
+        {
+            if (Win32.ClassName(child) == "Windows.UI.Core.CoreWindow") content = true;
+            return !content;
+        }, 0);
+        return !content;
     }
 
     private static JsonObject Click(Target target, Arguments args)
@@ -110,6 +129,12 @@ public static class DriverCommands
         {
             RequireInWindow(target, point);
             described["point"] = new JsonObject { ["x"] = point.X, ["y"] = point.Y };
+            // A plain click on a button or the like under the point presses it through UI
+            // Automation, as a click on it by index does: packaged (UWP) apps ignore posted
+            // mouse messages. Web pages report nearly everything as pressable, so they get events.
+            if (!right && count == 1 && Automation.At(point, window) is { } under && Automation.IsPressable(under)
+                && !Automation.IsWeb(under) && Pattern(window, () => Automation.Press(under)) is { } pressed)
+                return Report(target, described, pressed);
             return Report(target, described, Input.Click(window, point, right, count));
         }
 

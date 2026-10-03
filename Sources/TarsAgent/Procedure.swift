@@ -81,6 +81,10 @@ public struct Procedure: Codable {
     public var steps: [LearnedStep]
     public var finish: Finish
     public var answerFrom: ElementRef?
+    /// The answer control's text with the answer marked ⟦⟧, such as
+    /// "显示为 ⟦⟧", when the control holds more than the answer; a replay
+    /// takes what stands in the mark.
+    public var answerPattern: String? = nil
     /// What the run reported; may hold slots.
     public var reason: String
     /// The action the learned run stopped before for a person to confirm,
@@ -103,7 +107,11 @@ public struct Procedure: Codable {
                             allowSubmit: Bool) -> (Procedure, [String])? {
         procedures
             .filter { $0.allowSubmit == allowSubmit }
-            .compactMap { procedure in Slots.match(procedure.template, instruction).map { (procedure, $0) } }
+            .compactMap { procedure -> (Procedure, [String])? in
+                guard let bindings = Slots.match(procedure.template, instruction) else { return nil }
+                let learned = Slots.match(procedure.template, procedure.instruction) ?? []
+                return Slots.sameTask(bindings, learned) ? (procedure, bindings) : nil
+            }
             .min { a, b in
                 let exact = (a.0.instruction == instruction ? 0 : 1, b.0.instruction == instruction ? 0 : 1)
                 return exact.0 != exact.1 ? exact.0 < exact.1 : a.0.slots < b.0.slots
@@ -120,6 +128,24 @@ public enum Slots {
     static let pattern = try! NSRegularExpression(pattern: #"⟦(\d+)⟧"#)
     /// Shorter texts match by accident: "1" is in most instructions.
     static let minLength = 2
+
+    /// Words that ask for a further step. A slot that takes one the learned run's
+    /// did not hold has swallowed more of the task: "写：周五见，然后发送" is not
+    /// "写：你好" with other words.
+    static let furtherSteps = try! NSRegularExpression(
+        pattern: #"然后|接着|之后|并且|同时|发送|發送|提交|删除|关闭|and then|then\b|\bsend\b|\bsubmit\b|\bdelete\b|\bclose\b"#,
+        options: .caseInsensitive)
+
+    /// Whether `bindings` fill the slots as the learned run's did, without taking in a further step.
+    public static func sameTask(_ bindings: [String], _ learned: [String]) -> Bool {
+        func steps(_ text: String) -> Set<String> {
+            Set(furtherSteps.matches(in: text, range: NSRange(text.startIndex..., in: text))
+                .compactMap { Range($0.range, in: text).map { text[$0].lowercased() } })
+        }
+        return bindings.enumerated().allSatisfy { number, value in
+            steps(value).isSubset(of: number < learned.count ? steps(learned[number]) : [])
+        }
+    }
 
     public static func hasSlot(_ text: String) -> Bool {
         pattern.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
@@ -265,8 +291,12 @@ extension ElementRef {
 
     /// The element this names among `elements`: same role and label, the
     /// one nearest to where it was. A label that was a slot matches labels
-    /// that start with what the slot now holds, a whole match first.
-    public func find(in elements: [AXElementInfo], frame: CGRect, bindings: [String] = []) -> AXElementInfo? {
+    /// that start with what the slot now holds, a whole match first. With
+    /// `anyLabel`, an empty label takes the nearest control of the role
+    /// whatever it is called, as for an answer whose label is the answer
+    /// itself ("Pressed 1", then "Pressed 2").
+    public func find(in elements: [AXElementInfo], frame: CGRect, bindings: [String] = [],
+                     anyLabel: Bool = false) -> AXElementInfo? {
         func distance(_ element: AXElementInfo) -> Double {
             let center = Self.center(element.frame!, in: frame)
             return hypot(center.x - x, center.y - y)
@@ -278,7 +308,7 @@ extension ElementRef {
             guard element.index >= 0, element.role == role, element.frame != nil else { return nil }
             let found = (element.label ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             if label.isEmpty {
-                return found.isEmpty && distance(element) <= Self.reach ? (element, 0, distance(element)) : nil
+                return (anyLabel || found.isEmpty) && distance(element) <= Self.reach ? (element, 0, distance(element)) : nil
             }
             if found == wanted { return (element, 0, distance(element)) }
             if Slots.hasSlot(label), found.hasPrefix(wanted) { return (element, 1, distance(element)) }
