@@ -16,10 +16,13 @@ test('reads the candidate from the header and resume summary', () => {
   });
 });
 
-test('reads the candidate\'s messages, not timestamps or system cards', () => {
+test('reads both sides of the conversation, not timestamps, statuses or system cards', () => {
+  // The recruiter's message has no avatar: it sits against the right edge,
+  // with its delivery status (送达) beside it.
   assert.deepEqual(chat(open.elements, open.windowFrame)!.messages, [
     { from: 'candidate', text: '您好，我看了这个职位，觉得比较匹配，想进一步沟通。' },
     { from: 'candidate', text: '请问这个岗位还在招吗？' },
+    { from: 'me', text: '方便发一份简历吗？' },
   ]);
 });
 

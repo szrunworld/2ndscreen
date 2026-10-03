@@ -50,8 +50,9 @@ assistant reads text rather than pixels:
 - `src/parse.ts` turns the message list into rows (name, position, time,
   unread count, latest message), grouping text by where each row's time sits.
 - `src/chat.ts` reads an open conversation: the candidate's header and
-  resume summary, and the messages, telling theirs from yours by which side
-  the avatar is on.
+  resume summary, and the messages: the candidate's sit beside their avatar
+  on the left; yours have no avatar and sit against the right edge, with a
+  delivery status (送达, 已读) beside them.
 - `src/boss.ts` acts through the `2ndscreen` command. Clicks name elements,
   because BOSS直聘 ignores background clicks at a point. Drafts are set
   with `type --replace`, which 2ndscreen applies through accessibility; the
@@ -69,9 +70,6 @@ npm test
 
 - Scrolling the message list in the background works on some launches and
   not others; new messages arrive at the top, so watching does not need it.
-- Your own messages are told apart by the avatar being on the right. That
-  side has not been seen yet in a test conversation, so check the first
-  sent reply shows as `我`.
 - BOSS直聘 forbids remote debugging (it quits if started with a debug
   port), and its terms may forbid automated messaging. Keep a person
   approving each reply, and keep the pace human.
