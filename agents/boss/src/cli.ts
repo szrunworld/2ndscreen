@@ -4,16 +4,29 @@
 // and ask in this terminal whether to send it. Nothing is sent without a
 // yes here.
 //
-//   ARK_API_KEY=... npx tsx src/cli.ts --screen boss --pid 1234 --brief "先请对方发简历"
+//   ARK_API_KEY=... npx tsx src/cli.ts --auto --brief "先请对方发简历"
 
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { parseArgs } from 'node:util';
 import { Boss, sleep } from './boss.ts';
 import { draftReply } from './draft.ts';
 import type { Conversation } from './parse.ts';
+import { defaults, Setup } from './setup.ts';
+import { Store } from './store.ts';
 
-const usage = `usage: boss --screen NAME --pid PID [--window-id ID] [--brief TEXT]
-            [--interval SECONDS] [--max N] [--once] [--name CANDIDATE]
+const usage = `usage: boss --auto [--take-over] [--brief TEXT] [--interval SECONDS] [--max N]
+            [--once] [--name CANDIDATE]
+       boss --screen NAME --pid PID [--window-id ID] [same options]
+
+With --auto it looks after its own surroundings before every check: a
+2ndscreen side instance on its own socket (started if needed), so other
+2ndscreen users restarting theirs leave it be; a screen named boss on it
+that never expires; and BOSS直聘 on that screen (launched if not running,
+moved back if it strays). A BOSS直聘 it did not launch is left alone, and
+the assistant waits, unless --take-over says to move it over. Without
+--auto, give the screen and BOSS直聘's pid yourself.
 
 Watches BOSS直聘 on the agent screen for conversations with unread
 messages. For each one it opens the conversation (the candidate then sees
@@ -28,9 +41,14 @@ Without a terminal to ask, drafts stay in the box unsent.
   --once           check once and exit
   --name NAME      handle only this candidate's conversation, read or not,
                    once, and exit
+  --state FILE     what has been handled, kept across restarts
+                   (default ~/.config/2ndscreen/boss-state.json)
 
 Environment: ARK_API_KEY, and optionally ARK_TEXT_MODEL (default
-doubao-seed-2-1-lite-260915), ARK_BASE_URL, SECONDSCREEN_CLI.`;
+doubao-seed-2-1-lite-260915), ARK_BASE_URL, SECONDSCREEN_CLI, and for
+--auto SECONDSCREEN_SOCKET and SECONDSCREEN_APP (the side instance's
+socket, default ~/Library/Caches/2ndscreen/boss.sock, and the app to start
+it from, default this repository's build/2ndscreen.app).`;
 
 const { values } = parseArgs({
   options: {
@@ -42,10 +60,13 @@ const { values } = parseArgs({
     max: { type: 'string', default: '3' },
     once: { type: 'boolean', default: false },
     name: { type: 'string' },
+    auto: { type: 'boolean', default: false },
+    'take-over': { type: 'boolean', default: false },
+    state: { type: 'string', default: join(homedir(), '.config/2ndscreen/boss-state.json') },
     help: { type: 'boolean', short: 'h' },
   },
 });
-if (values.help || !values.screen || !values.pid) {
+if (values.help || (!values.auto && (!values.screen || !values.pid))) {
   console.error(usage);
   process.exit(values.help ? 0 : 2);
 }
@@ -54,14 +75,22 @@ if (!process.env.ARK_API_KEY) {
   process.exit(2);
 }
 
-const boss = new Boss(values.screen, Number(values.pid), values['window-id'] ? Number(values['window-id']) : undefined);
+const log = (line: string) => console.error(`${new Date().toLocaleTimeString()} ${line}`);
+const store = new Store(values.state);
+const setup = values.auto
+  ? new Setup({ ...defaults(values.screen ?? 'boss'), takeOver: values['take-over'], log }, store)
+  : undefined;
+if (setup) {
+  // The Boss commands go to the side instance too.
+  process.env.SECONDSCREEN_SOCKET = setup.options.socket;
+  process.env.SECONDSCREEN_CLI = setup.options.cli;
+}
+let boss = setup ? undefined : new Boss(values.screen!, Number(values.pid), values['window-id'] ? Number(values['window-id']) : undefined);
 const ask = process.stdin.isTTY ? createInterface({ input: process.stdin, output: process.stderr }) : undefined;
-/** Conversations handled this run, by what their row showed. */
-const handled = new Set<string>();
 const key = (c: Conversation) => `${c.name}|${c.time}|${c.preview}`;
 let quitting = false;
 
-async function handle(conversation: Conversation): Promise<void> {
+async function handle(boss: Boss, conversation: Conversation): Promise<void> {
   const open = await boss.open(conversation);
   const c = open.candidate;
   console.error(`\n── ${c.name}（${c.summary}）· ${c.position}${c.expects ? ` · 期望 ${c.expects}` : ''}`);
@@ -91,19 +120,31 @@ async function handle(conversation: Conversation): Promise<void> {
 
 for (;;) {
   try {
+    if (setup) {
+      // Rebuild whatever went missing since the last check.
+      const where = await setup.ensure();
+      boss = where ? new Boss(setup.options.screen, where.pid, where.windowId, setup.options.cli) : undefined;
+    }
+    if (!boss) {
+      // Setup said why; try again next time.
+      if (values.once || values.name) break;
+      await sleep(Number(values.interval) * 1000);
+      continue;
+    }
     const listed = await boss.conversations();
     const waiting = values.name
       ? listed.filter((c) => c.name === values.name)
-      : listed.filter((c) => c.unread > 0 && !handled.has(key(c)));
+      : listed.filter((c) => c.unread > 0 && !store.has(key(c)));
     if (values.name && waiting.length === 0) console.error(`${values.name} is not in the visible list`);
     if (waiting.length === 0) console.error(`${new Date().toLocaleTimeString()} 没有新消息`);
     for (const conversation of waiting.slice(0, Number(values.max))) {
-      handled.add(key(conversation));
-      await handle(conversation);
+      // Recorded before handling, so a crash midway never opens it twice.
+      store.add(key(conversation));
+      await handle(boss, conversation);
       if (quitting) break;
     }
   } catch (error) {
-    console.error(`error: ${(error as Error).message}`);
+    log(`error: ${(error as Error).message}`);
   }
   if (values.once || values.name || quitting) break;
   await sleep(Number(values.interval) * 1000);
