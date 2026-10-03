@@ -13,6 +13,8 @@ import CoreMedia
 /// Over Wi-Fi, packets come in bursts after pauses of up to half a second
 /// (the phone's power saving holds them back), so the buffer starts short
 /// and grows each time it runs dry, and the burst after a pause is kept.
+/// What the burst leaves queued beyond the buffer is played off at 5%
+/// faster, with the pitch kept, so the delay comes back down without a gap.
 /// Thread use: the mirror's audio reader thread only.
 final class AndroidAudioPlayer {
     /// How far ahead of now playback restarts after running dry: at first,
@@ -24,6 +26,11 @@ final class AndroidAudioPlayer {
     /// after a pause refills what the pause used, so this covers the
     /// longest pause.
     private static let burstAllowance = CMTime(value: 400, timescale: 1000)
+    /// Catch up while more than this beyond the latency is queued, until
+    /// at most `caughtUp` is.
+    private static let catchUpAbove = CMTime(value: 120, timescale: 1000)
+    private static let caughtUp = CMTime(value: 30, timescale: 1000)
+    private static let catchUpRate: Float = 1.05
 
     private let renderer = AVSampleBufferAudioRenderer()
     private let synchronizer = AVSampleBufferRenderSynchronizer()
@@ -31,8 +38,12 @@ final class AndroidAudioPlayer {
     private var packetDuration = CMTime(value: 1024, timescale: 48000)
     private var next = CMTime.invalid
     private var latency = initialLatency
+    /// The rate last set. The synchronizer's own reads back 0 for a while
+    /// after a change to anything but 1.
+    private var rate: Float = 0
 
     init() {
+        renderer.audioTimePitchAlgorithm = .timeDomain
         synchronizer.addRenderer(renderer)
     }
 
@@ -66,14 +77,18 @@ final class AndroidAudioPlayer {
         guard let format, !packet.isEmpty else { return }
         if renderer.status == .failed { renderer.flush() }
         let now = synchronizer.currentTime()
-        if synchronizer.rate == 0 {
-            synchronizer.setRate(1, time: .zero)
+        if rate == 0 {
+            setRate(1, time: .zero)
             next = latency
         } else if !next.isValid || next < now + CMTime(value: 10, timescale: 1000) {
             latency = min(latency + Self.latencyStep, Self.maxLatency)
             next = now + latency
         } else if next > now + latency + Self.burstAllowance {
             return
+        } else if next > now + latency + Self.catchUpAbove {
+            if rate != Self.catchUpRate { setRate(Self.catchUpRate, time: now) }
+        } else if next <= now + latency + Self.caughtUp, rate != 1 {
+            setRate(1, time: now)
         }
         guard let sample = sampleBuffer(packet, format: format, at: next) else { return }
         renderer.enqueue(sample)
@@ -81,8 +96,13 @@ final class AndroidAudioPlayer {
     }
 
     func stop() {
-        synchronizer.setRate(0, time: .zero)
+        setRate(0, time: .zero)
         renderer.flush()
+    }
+
+    private func setRate(_ rate: Float, time: CMTime) {
+        self.rate = rate
+        synchronizer.setRate(rate, time: time)
     }
 
     private func sampleBuffer(_ packet: Data, format: CMAudioFormatDescription, at time: CMTime) -> CMSampleBuffer? {
