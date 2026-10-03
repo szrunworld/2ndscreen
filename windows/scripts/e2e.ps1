@@ -20,6 +20,10 @@ param(
 )
 # 2ndscreen writes UTF-8 to pipes; Windows PowerShell would read the console code page.
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
+# Read monitor bounds and the pointer in physical pixels, as 2ndscreen reports them,
+# rather than scaled for the main display.
+Add-Type -Name Dpi -Namespace SecondScreenE2e -MemberDefinition '[DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr value);'
+[SecondScreenE2e.Dpi]::SetProcessDpiAwarenessContext([IntPtr]-4) | Out-Null
 $ErrorActionPreference = "Continue"
 $Bin = (Resolve-Path $Bin).Path
 New-Item -ItemType Directory -Force $Out | Out-Null
