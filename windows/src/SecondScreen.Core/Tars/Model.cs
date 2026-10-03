@@ -40,7 +40,7 @@ public interface IVisionModel
 /// </summary>
 public sealed class ChatCompletionsModel : IVisionModel
 {
-    private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(60) };
+    private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(120) };
     public Uri BaseUrl { get; }
     public string ApiKey { get; }
     public string Name { get; }
@@ -83,7 +83,28 @@ public sealed class ChatCompletionsModel : IVisionModel
             values.GetValueOrDefault("ARK_MODEL") ?? "doubao-seed-2-1-lite-260915");
     }
 
+    /// <summary>
+    /// Ask once more after a timeout or a server error: a far-away endpoint now and then
+    /// takes longer than the timeout, and a retry usually answers.
+    /// </summary>
     public string Complete(IReadOnlyList<Message> messages)
+    {
+        try
+        {
+            return CompleteOnce(messages);
+        }
+        catch (Exception error) when (error is TaskCanceledException or HttpRequestException or ServerError)
+        {
+            return CompleteOnce(messages);
+        }
+    }
+
+    private sealed class ServerError : Exception
+    {
+        public ServerError(string message) : base(message) { }
+    }
+
+    private string CompleteOnce(IReadOnlyList<Message> messages)
     {
         // The settings UI-TARS's SDK uses; Doubao's thinking would only add delay.
         var body = new JsonObject
@@ -103,7 +124,10 @@ public sealed class ChatCompletionsModel : IVisionModel
         JsonNode? json = null;
         try { json = JsonNode.Parse(text); } catch (JsonException) { }
         if (!response.IsSuccessStatusCode)
-            throw new InvalidOperationException($"model request failed ({(int)response.StatusCode}): {json?["error"]?["message"]?.ToString() ?? text}");
+        {
+            var message = $"model request failed ({(int)response.StatusCode}): {json?["error"]?["message"]?.ToString() ?? text}";
+            throw (int)response.StatusCode >= 500 ? new ServerError(message) : new InvalidOperationException(message);
+        }
         var content = json?["choices"]?[0]?["message"]?["content"]?.ToString();
         return string.IsNullOrEmpty(content) ? throw new InvalidOperationException("the model returned no text") : content;
     }
