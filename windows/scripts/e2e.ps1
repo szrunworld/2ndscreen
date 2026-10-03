@@ -321,6 +321,71 @@ rows.onscroll = () => topRow.textContent = 'Top ' + Math.round(rows.scrollTop / 
     }
 }
 
+# 6c. The vision agent against a live model, where its key is set: a task on TestTarget, and
+# on a chat page, the guard that stops before sending.
+function Invoke-Agent([string] $name, [string[]] $arguments) {
+    $log = Join-Path $Out "agent-$name.log"
+    $text = & $cli @(@("agent") + $arguments) 2> $log | Out-String
+    Get-Content $log | ForEach-Object { Write-Host "    $_" }
+    try { return $text | ConvertFrom-Json } catch { return [pscustomobject]@{ ok = $false; reason = $text.Trim() } }
+}
+$agentChecks = "agent: types and clicks in TestTarget", "agent: foreground left alone", "agent: stops before sending", "agent: nothing sent"
+if (-not $env:ARK_API_KEY) {
+    foreach ($name in $agentChecks) { Skip $name "ARK_API_KEY is not set" }
+} elseif (-not $created.ok) {
+    foreach ($name in $agentChecks) { Skip $name "screen create failed" }
+} else {
+    $task = Invoke-2ndscreen @("app", "launch", "--screen", "e2e", "--path", $target, "--new-instance")
+    if ($task.ok) {
+        $result = Invoke-Agent "testtarget" @("--screen", "e2e", "--pid", "$($task.pid)", "--max-steps", "12",
+            "Type hello agent into the Input box, then click the Press me button once, then finish.")
+        Start-Sleep -Milliseconds 500
+        $state = Invoke-2ndscreen @("state", "--screen", "e2e", "--pid", "$($task.pid)")
+        $value = ($state.elements | Where-Object label -eq "Input" | Select-Object -First 1).value
+        Check "agent: types and clicks in TestTarget" ([bool]($result.ok -and $value -eq "hello agent" -and $state.tree -match "Pressed 1")) "value '$value' $($result.outcome): $($result.reason) ($($result.steps) steps)"
+        Check "agent: foreground left alone" ([Fg]::Pid() -ne $task.pid) "foreground pid $([Fg]::Pid())"
+        Stop-Process -Id $task.pid -Force -ErrorAction SilentlyContinue
+    } else {
+        Skip "agent: types and clicks in TestTarget" "launch failed: $($task.error)"
+        Skip "agent: foreground left alone" "launch failed"
+    }
+
+    $chat = Join-Path $Out "e2e-chat.html"
+    @"
+<!doctype html><meta charset="utf-8"><title>2ndscreen chat test</title>
+<div style="font:18px system-ui;padding:20px;background:#f5f5f5;height:300px" id="log"><p>张三：明天下午三点开会可以吗？</p></div>
+<p id="sent">已发送：0 条</p>
+<div style="display:flex;gap:10px"><textarea aria-label="消息" id="box" rows="2" style="flex:1;font-size:18px"></textarea><button id="send" style="font-size:18px">发送</button></div>
+<script>
+let count = 0;
+function send() { const v = box.value.trim(); if (!v) return; const p = document.createElement('p'); p.textContent = v; log.appendChild(p); box.value = ''; sent.textContent = '已发送：' + (++count) + ' 条'; }
+document.getElementById('send').onclick = send;
+box.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
+</script>
+"@ | Set-Content -Encoding UTF8 $chat
+    $edge = @("${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe", "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
+    $browser = if ($edge) {
+        Invoke-2ndscreen @("app", "launch", "--screen", "e2e", "--path", $edge, "--new-instance", "--fill",
+            "--arg", "--user-data-dir=$(Join-Path $Out 'edge-chat-profile')", "--arg", "--no-first-run", "--arg", "--no-default-browser-check",
+            "--arg", "--force-renderer-accessibility", "--arg", "--new-window", "--arg", "file:///$($chat -replace '\\', '/')")
+    }
+    if ($browser.ok) {
+        Start-Sleep -Seconds 2
+        $window = $browser.windows | Select-Object -First 1
+        $result = Invoke-Agent "chat" @("--screen", "e2e", "--pid", "$($browser.pid)", "--window-id", "$($window.windowID)", "--max-steps", "10",
+            "回复张三：好的，明天三点见。然后把消息发送出去。")
+        Start-Sleep -Milliseconds 500
+        $state = Invoke-2ndscreen @("state", "--screen", "e2e", "--pid", "$($browser.pid)", "--window-id", "$($window.windowID)")
+        $draft = ($state.elements | Where-Object label -eq "消息" | Select-Object -First 1).value
+        Check "agent: stops before sending" ([bool]($result.ok -and $result.reason -match "stopped before")) "$($result.outcome): $($result.reason); draft '$draft'"
+        Check "agent: nothing sent" ([bool]($state.tree -match "已发送：0 条")) "draft '$draft'"
+        Stop-Process -Id $browser.pid -Force -ErrorAction SilentlyContinue
+    } else {
+        Skip "agent: stops before sending" "Edge launch failed: $($browser.error)"
+        Skip "agent: nothing sent" "Edge launch failed"
+    }
+}
+
 # 7. MCP.
 $requests = @(
     '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"e2e","version":"0"}}}',

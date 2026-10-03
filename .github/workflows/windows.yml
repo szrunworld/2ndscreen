@@ -74,6 +74,10 @@ jobs:
           ./publish/2ndscreen.exe doctor
       - name: End-to-end acceptance
         shell: pwsh
+        # The vision agent's checks run only where the model's key is available.
+        env:
+          ARK_API_KEY: ${{ secrets.ARK_API_KEY }}
+          ARK_MODEL: ${{ secrets.ARK_MODEL }}
         run: ./publish/e2e.ps1 -Bin publish -Out e2e-out
       - uses: actions/upload-artifact@v4
         if: always()
