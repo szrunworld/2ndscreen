@@ -26,7 +26,7 @@
 | agents/boss 下 npm run typecheck | 通过 | TypeScript 静态检查 |
 | A0 下 npm ci、npm test、npm run typecheck | 31 项通过，协调者复跑测试和类型检查通过 | 公共契约，不是实现模块 |
 
-外部新增基线提交之后，还需在集成工作区重新执行旧功能回归；A7 集成验收也必须再次执行。
+外部新增基线提交之后，协调者已在集成工作区重新执行 swift test（66 项通过）、BOSS 的 npm ci/test/typecheck（15 项通过）以及 task-runtime 的 npm ci/test/typecheck（31 项通过）。A7 集成验收必须对最终代码再次执行。
 
 ## 证据存放
 
