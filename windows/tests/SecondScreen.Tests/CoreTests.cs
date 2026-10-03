@@ -104,18 +104,38 @@ public class LogicTests
 
 public class SnapshotTests
 {
-    private static Snapshot Calculator() =>
-        new(JsonDocument.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "cua-calculator-state.json"))).RootElement);
+    private static SnapshotNode Node(int depth, string role, string label = "", string value = "", bool offscreen = false,
+                                     Rect? frame = null, params string[] actions) =>
+        new(depth, role, label, value, actions, frame, offscreen);
+
+    private static Snapshot Calculator() => Snapshot.Build(new[]
+    {
+        Node(0, "Window", "Calculator"),
+        Node(1, "Pane"),
+        Node(2, "Button", "All Clear", frame: new Rect(10, 20, 40, 40), actions: "invoke"),
+        Node(2, "Button", "7", frame: new Rect(60, 20, 40, 40), actions: "invoke"),
+        Node(2, "Button", "Multiply", frame: new Rect(110, 20, 40, 40), actions: "invoke"),
+        Node(2, "Text", value: "42"),
+    });
+
+    [Fact]
+    public void IndexesWhatOneActsOnAndSkipsBarePanes()
+    {
+        var snapshot = Calculator();
+        Assert.Equal(new[] { 0, 1, 2, 3, 4 }, snapshot.Elements.Select(e => e.Index));
+        Assert.DoesNotContain(snapshot.Elements, e => e.Role == "Pane");
+        Assert.Equal("- [0] Window \"Calculator\"\n    - [1] Button \"All Clear\"", string.Join('\n', snapshot.Tree.Split('\n').Take(2)));
+    }
 
     [Fact]
     public void FindsButtonsByExactLabel()
     {
         var snapshot = Calculator();
         var seven = snapshot.ByText("7")!;
-        Assert.Equal("AXButton", seven.Role);
-        Assert.Equal("7", seven.Label);
-        Assert.NotNull(seven.Center);
+        Assert.Equal("Button", seven.Role);
+        Assert.Equal((80.0, 40.0), seven.Center);
         Assert.Equal("Multiply", snapshot.ByText("multiply")!.Label);
+        Assert.Equal("42", snapshot.ByText("42")!.Value);
     }
 
     [Fact]
@@ -128,21 +148,65 @@ public class SnapshotTests
     [Fact]
     public void FallsBackToNearestIndexedAncestorInTree()
     {
-        var raw = """
+        var snapshot = Snapshot.Build(new[]
         {
-          "snapshot_id": "s1",
-          "elements": [
-            {"element_index": 0, "element_token": "s1:0", "role": "AXWindow", "label": "App"},
-            {"element_index": 5, "element_token": "s1:5", "role": "AXLink", "frame": {"x": 10, "y": 20, "w": 30, "h": 40}}
-          ],
-          "tree_markdown": "- [0] AXWindow \"App\"\n  - [5] AXLink [actions=[press]]\n    - AXStaticText = \"消息\"\n    - AXStaticText = \"590\""
-        }
-        """;
-        var snapshot = new Snapshot(JsonDocument.Parse(raw).RootElement);
+            Node(0, "Window", "App"),
+            Node(1, "Hyperlink", frame: new Rect(10, 20, 30, 40), actions: "invoke"),
+            Node(2, "Group"),
+            Node(3, "Image"),
+        }.Append(new SnapshotNode(2, "Image", "", "消息", Array.Empty<string>(), null, false)));
         var link = snapshot.ByText("消息")!;
-        Assert.Equal(5, link.Index);
+        Assert.Equal(1, link.Index);
         Assert.Equal((25.0, 40.0), link.Center);
         Assert.Null(snapshot.ByText("not there"));
+    }
+
+    [Fact]
+    public void OffscreenAndFilteredNodesKeepTheNumbering()
+    {
+        var nodes = new[]
+        {
+            Node(0, "List", "Rows"),
+            Node(1, "ListItem", "Row 1", offscreen: true),
+            Node(1, "ListItem", "Row 2"),
+        };
+        var all = Snapshot.Build(nodes);
+        Assert.Equal(new[] { 0, 2 }, all.Elements.Select(e => e.Index));
+        Assert.Equal(2, Snapshot.Build(nodes, query: "row 2").Elements.Single().Index);
+    }
+}
+
+public class InputLogicTests
+{
+    [Fact]
+    public void KeyNames()
+    {
+        Assert.Equal(((ushort)0x0D, false), KeyCodes.VirtualKey("return"));
+        Assert.Equal(((ushort)'A', false), KeyCodes.VirtualKey("a"));
+        Assert.Equal(((ushort)0x28, true), KeyCodes.VirtualKey("down"));
+        Assert.Equal(((ushort)0x74, false), KeyCodes.VirtualKey("F5"));
+        Assert.Null(KeyCodes.VirtualKey("*"));
+        Assert.Equal(0x11, KeyCodes.Modifier("ctrl"));
+        Assert.Equal(0x5B, KeyCodes.Modifier("cmd"));
+        Assert.Throws<InvalidOperationException>(() => KeyCodes.Modifier("hyper"));
+    }
+
+    [Fact]
+    public void KeyParameters()
+    {
+        Assert.Equal((nint)0x001C0001, KeyCodes.KeyLParam(0x1C, extended: false, up: false));
+        Assert.Equal(unchecked((nint)(long)0xC1500001), KeyCodes.KeyLParam(0x50, extended: true, up: true));
+    }
+
+    [Fact]
+    public void MouseParameters()
+    {
+        Assert.Equal((nint)0x00C80064, Messages.MakeLParam(100, 200));
+        // Points left of or above a window's client area stay negative.
+        Assert.Equal(unchecked((nint)(int)0xFFFEFFFF), Messages.MakeLParam(-1, -2));
+        Assert.Equal(unchecked((nint)(int)0xFE200000), Messages.WheelWParam(-480));
+        Assert.Equal((-360, false), Messages.Wheel("down", 3));
+        Assert.Equal((120, true), Messages.Wheel("right", 1));
     }
 }
 

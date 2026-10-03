@@ -10,7 +10,6 @@ JSON output included.
 - Windows 10 or 11, x64
 - The [Virtual Display Driver](https://github.com/VirtualDrivers/Virtual-Display-Driver)
   (MIT), which provides the monitors
-- [cua-driver](https://cua.ai), only for `state`, `click`, `type`, `key`, `scroll` and `drag`
 - The .NET 8 SDK, only to build
 
 ## Install
@@ -20,12 +19,6 @@ As administrator:
 ```powershell
 .\scripts\install-driver.ps1        # or use the driver project's own installer
 .\SecondScreen.exe --setup          # once, if the driver's settings are not writable
-```
-
-Then for `state`, `click`, `type`, `key`, `scroll` and `drag`:
-
-```powershell
-irm https://cua.ai/driver/install.ps1 | iex
 ```
 
 ## Build
@@ -83,16 +76,34 @@ tools:
 Output is JSON, in UTF-8 when piped; in Windows PowerShell set
 `[Console]::OutputEncoding = [Text.Encoding]::UTF8` first.
 `2ndscreen --help` lists everything; `2ndscreen doctor` reports the displays,
-the driver's outputs and topology paths, and cua-driver.
+and the driver's outputs and topology paths.
 
 Programs start without activation, and `state`, `click`, `type`, `key`,
 `scroll` and `drag` refuse a window that is not on the named screen, so your
-foreground window stays put. Two actions need the foreground: cua-driver can
-turn the wheel at a point only with SendInput, and some programs (Chromium,
-WPF, GTK) ignore background drags. These run only with `--foreground`, which
-brings the program to the front and moves the real pointer; 2ndscreen puts
-the pointer back afterwards. Scrolling an element, or the focused area with
-no target, stays in the background.
+foreground window stays put. They work in the background, and each result
+names the `route` it took:
+
+- **`uia.*`**: UI Automation patterns (invoke, toggle, select, expand, value,
+  scroll), which reach a control without any input. A click on an element
+  with a pattern, and scrolling an element, go this way.
+- **`edit.replacesel`, `uia.value`**: typing into a named text box inserts at
+  its caret, or appends to its value; either counts only if the value shows
+  the text afterwards.
+- **`post.*`**: mouse, wheel and key messages posted to the deepest child
+  window under the point, or to the focused control. Text goes as characters,
+  so any script works without an input method. While they arrive the window
+  cannot activate, and if the program brings itself forward anyway, your
+  window goes back in front.
+- **`post.key+state`**: for shortcuts such as ctrl+a, posted modifier keys
+  are not enough, since programs read held keys from their input state; so
+  2ndscreen joins the program's input queue for the moment of the key and
+  marks the modifiers held there.
+
+Programs that read the real mouse rather than their messages (some Chromium,
+WPF and GTK cases) ignore background drags and wheels. For those, `scroll`
+and `drag` take `--foreground`, which brings the program to the front and
+moves the real pointer through the gesture; 2ndscreen puts the pointer and
+your window back afterwards.
 
 ## How it works
 
@@ -115,7 +126,7 @@ no target, stays in the background.
   (say 1920x1080 at 150%), so a full-screen preview there is one to one. A
   `--hidpi` screen has twice the pixels of its `--size` at 200%.
 - **Coordinates.** Frames are physical pixels on the virtual desktop, the
-  space cua-driver uses (macOS reports points).
+  space UI Automation and Win32 use (macOS reports points).
 
 ## Tests
 

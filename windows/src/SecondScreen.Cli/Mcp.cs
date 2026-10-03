@@ -244,8 +244,8 @@ public static class Mcp
                 if (a["modifiers"] is JsonArray mods && mods.Count > 0) w.AddRange(new[] { "--modifiers", string.Join(',', mods.Select(m => m?.ToString())) });
                 return w;
             }),
-        new("scroll", "Scroll with the mouse wheel over an element, or without one, with arrow or page keys in the focused area. " +
-            "A wheel at a point needs foreground, which brings the program to the front and moves the user's pointer briefly.",
+        new("scroll", "Scroll an element, or turn the mouse wheel at a point, in the background; without either, the window's middle. " +
+            "If the program ignores that, retry with foreground, which moves the user's pointer briefly.",
             Merge(WindowTarget, ElementTarget, PointTarget, Foreground, new JsonObject
             {
                 ["direction"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("up", "down", "left", "right") },

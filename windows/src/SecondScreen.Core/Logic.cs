@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Text.Json;
 
 namespace SecondScreen;
 
@@ -37,33 +36,14 @@ public static class Placement
     }
 }
 
-/// <summary>One element of a cua-driver accessibility snapshot.</summary>
-public sealed record Element(int Index, string Token, string Role, string Label, string Value,
+/// <summary>One element of a window's accessibility snapshot.</summary>
+/// <param name="Index">Its number in the snapshot, for <c>--index</c>; -1 for elements that
+/// are only context (unnamed panes and groups).</param>
+/// <param name="Role">The UI Automation control type, such as <c>Button</c> or <c>Edit</c>.</param>
+/// <param name="Actions">The patterns it supports: invoke, toggle, select, expand, value, scroll.</param>
+public sealed record Element(int Index, string Role, string Label, string Value,
                              IReadOnlyList<string> Actions, Rect? Frame)
 {
-    public static Element From(JsonElement raw)
-    {
-        static string Str(JsonElement e, string name) =>
-            e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? "" : "";
-
-        var label = Str(raw, "label");
-        if (label.Length == 0) label = Str(raw, "title");
-        if (label.Length == 0) label = Str(raw, "description");
-        var actions = raw.TryGetProperty("actions", out var a) && a.ValueKind == JsonValueKind.Array
-            ? a.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.String).Select(x => x.GetString()!).ToList()
-            : new List<string>();
-        Rect? frame = null;
-        if (raw.TryGetProperty("frame", out var f) && f.ValueKind == JsonValueKind.Object
-            && f.TryGetProperty("x", out var x) && f.TryGetProperty("y", out var y)
-            && f.TryGetProperty("w", out var w) && f.TryGetProperty("h", out var h))
-        {
-            frame = new Rect((int)x.GetDouble(), (int)y.GetDouble(), (int)w.GetDouble(), (int)h.GetDouble());
-        }
-        return new Element(
-            raw.TryGetProperty("element_index", out var i) && i.ValueKind == JsonValueKind.Number ? i.GetInt32() : -1,
-            Str(raw, "element_token"), Str(raw, "role"), label, Str(raw, "value"), actions, frame);
-    }
-
     public (double X, double Y)? Center => Frame is { } f ? (f.CenterX, f.CenterY) : null;
 
     public Dictionary<string, object> ToJson()
@@ -77,24 +57,84 @@ public sealed record Element(int Index, string Token, string Role, string Label,
     }
 }
 
-/// <summary>A cua-driver <c>get_window_state</c> result.</summary>
+/// <summary>
+/// One node met while walking a window's tree, in walk order, before it gets an index.
+/// </summary>
+public sealed record SnapshotNode(int Depth, string Role, string Label, string Value,
+                                  IReadOnlyList<string> Actions, Rect? Frame, bool Offscreen);
+
+/// <summary>A snapshot of one window's accessibility tree.</summary>
 public sealed class Snapshot
 {
-    public string Id { get; }
-    public IReadOnlyList<Element> Elements { get; }
-    public string Tree { get; }
-    public JsonElement Raw { get; }
-
-    public Snapshot(JsonElement raw)
+    /// <summary>Roles worth an index even without a name: things one acts on.</summary>
+    private static readonly HashSet<string> Actionable = new(StringComparer.OrdinalIgnoreCase)
     {
-        Raw = raw;
-        Id = raw.GetProperty("snapshot_id").GetString() ?? "";
-        Elements = raw.GetProperty("elements").EnumerateArray().Select(Element.From).ToList();
-        Tree = raw.TryGetProperty("tree_markdown", out var t) ? t.GetString() ?? "" : "";
+        "Button", "CheckBox", "RadioButton", "ComboBox", "Edit", "Document", "Hyperlink", "ListItem",
+        "MenuItem", "MenuBar", "Menu", "Slider", "Spinner", "SplitButton", "Tab", "TabItem", "TreeItem",
+        "DataItem", "List", "Tree", "Table", "DataGrid", "ScrollBar",
+    };
+
+    public IReadOnlyList<Element> Elements { get; }
+    /// <summary>An indented outline, one element a line, with <c>[N]</c> before indexed ones.</summary>
+    public string Tree { get; }
+
+    public Snapshot(IReadOnlyList<Element> elements, string tree)
+    {
+        Elements = elements;
+        Tree = tree;
+    }
+
+    /// <summary>
+    /// Number the nodes of a walk. Indexes depend only on the walk, so the same window
+    /// gives the same indexes from one command to the next while its UI is unchanged.
+    /// Off-screen nodes keep their place in the numbering but are left out of the output.
+    /// </summary>
+    public static Snapshot Build(IEnumerable<SnapshotNode> nodes, string? query = null)
+    {
+        var elements = new List<Element>();
+        var lines = new List<string>();
+        int next = 0;
+        foreach (var node in nodes)
+        {
+            bool interesting = IsIndexed(node);
+            int index = interesting ? next++ : -1;
+            if (node.Offscreen) continue;
+            if (query is { Length: > 0 } q && !(node.Label.Contains(q, StringComparison.OrdinalIgnoreCase)
+                || node.Value.Contains(q, StringComparison.OrdinalIgnoreCase)
+                || node.Role.Contains(q, StringComparison.OrdinalIgnoreCase))) continue;
+            if (!interesting && node.Role is "Pane" or "Group" or "Custom") continue;
+            var element = new Element(index, node.Role, node.Label, node.Value, node.Actions, node.Frame);
+            elements.Add(element);
+            lines.Add(Line(element, node.Depth));
+        }
+        return new Snapshot(elements, string.Join('\n', lines));
+    }
+
+    /// <summary>
+    /// Whether a node gets an index. Indexes count these nodes in walk order, so a walker
+    /// can keep the live element behind each index alongside.
+    /// </summary>
+    public static bool IsIndexed(SnapshotNode node) =>
+        Actionable.Contains(node.Role) || node.Label.Length > 0 || node.Actions.Count > 0
+        || (node.Role == "Text" && node.Value.Length > 0);
+
+    private static string Line(Element element, int depth)
+    {
+        var parts = new List<string> { new string(' ', depth * 2) + "-" };
+        if (element.Index >= 0) parts.Add($"[{element.Index}]");
+        parts.Add(element.Role);
+        if (element.Label.Length > 0) parts.Add($"\"{Clip(element.Label)}\"");
+        if (element.Value.Length > 0 && element.Value != element.Label) parts.Add($"= \"{Clip(element.Value)}\"");
+        return string.Join(' ', parts);
+    }
+
+    private static string Clip(string text)
+    {
+        var flat = text.Replace('\n', ' ').Replace('\r', ' ');
+        return flat.Length > 120 ? flat[..117] + "..." : flat;
     }
 
     public Element? ByIndex(int index) => Elements.FirstOrDefault(e => e.Index == index);
-
     /// <summary>
     /// The element whose text best matches: an exact label or value first, then one
     /// containing the text, then the nearest indexed ancestor of a tree line containing

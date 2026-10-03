@@ -74,7 +74,7 @@ public sealed class ScreenInfo
     [JsonPropertyName("width")] public int Width { get; set; }
     [JsonPropertyName("height")] public int Height { get; set; }
     [JsonPropertyName("hiDPI")] public bool HiDpi { get; set; }
-    /// <summary>Virtual-screen frame in physical pixels, the space Win32 and cua-driver use.</summary>
+    /// <summary>Virtual-screen frame in physical pixels, the space Win32 and UI Automation use.</summary>
     [JsonPropertyName("frame")] public Frame Frame { get; set; } = new();
     [JsonPropertyName("expiresIn")] public int? ExpiresIn { get; set; }
     [JsonPropertyName("idleTimeout")] public int? IdleTimeout { get; set; }

@@ -21,12 +21,12 @@ usage:
   2ndscreen type  --screen NAME --pid PID --value TEXT [--index N | --text TEXT]
   2ndscreen key   --screen NAME --pid PID --key NAME [--modifiers ctrl,shift]
   2ndscreen scroll --screen NAME --pid PID --direction up|down|left|right [--amount N] [--by line|page]
-                   [--index N | --text TEXT | --x X --y Y --foreground]
+                   [--index N | --text TEXT | --x X --y Y] [--foreground]
   2ndscreen drag  --screen NAME --pid PID --from-x X --from-y Y --to-x X --to-y Y
                   [--modifiers shift] [--duration-ms MS] [--foreground]
 
   2ndscreen mcp      serve these commands as MCP tools over stdio
-  2ndscreen doctor   report displays, the virtual display driver, and cua-driver
+  2ndscreen doctor   report displays and the virtual display driver
 
 Durations take s, m or h (90s, 30m, 2h). A screen is destroyed when its TTL
 passes, when no command has named it for its idle timeout (default 60m; 0
@@ -35,14 +35,14 @@ turns it off), or when its owner process exits.
 Sizes are logical pixels; with --hidpi the screen has twice as many physical
 pixels at 200% scale. Without --size, a screen matches the main display.
 Frames in the output are physical pixels on the virtual desktop, the same
-space as cua-driver.
+space as UI Automation.
 
-state, click, type, key, scroll and drag act through cua-driver's background
-routes and only on a window that is on the named screen. A wheel at a point,
-and drags that a program ignores in the background, need --foreground, which
-brings the program to the front and moves the real pointer (2ndscreen puts it
-back afterwards). Indexes come from state; click
-and type re-read the window, so run state again after the UI changes.
+state, click, type, key, scroll and drag act in the background, through UI
+Automation patterns or input posted to the window, and only on a window that
+is on the named screen. For programs that ignore background input, scroll and
+drag take --foreground, which brings the program to the front and moves the
+real pointer (2ndscreen puts both back afterwards). Indexes come from state;
+click and type re-read the window, so run state again after the UI changes.
 """;
 
 if (OperatingSystem.IsWindows()) Desktop.BecomeDpiAware();
