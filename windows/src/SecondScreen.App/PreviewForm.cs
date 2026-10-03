@@ -112,6 +112,8 @@ internal sealed class PreviewForm : Form
     {
         timer.Dispose();
         frame?.Dispose();
+        // Closing can remove the preview's desktop, during which Windows still sends paints.
+        frame = null;
         base.OnFormClosed(e);
     }
 }

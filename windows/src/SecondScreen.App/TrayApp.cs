@@ -231,13 +231,13 @@ internal sealed class TrayApp : ApplicationContext
         return true;
     }
 
-    private void SetPreviewOnOwnDesktop(bool on)
+    /// <summary>Show the second screen's preview on its own desktop, in a window, or not at all.</summary>
+    private void SetView(bool showPreview, bool ownDesktop)
     {
-        preferences.PreviewOnOwnDesktop = on;
+        preferences.PreviewOnOwnDesktop = ownDesktop;
         preferences.Save();
-        bool showing = previews.TryGetValue(Screens.PrimaryName, out var open);
-        open?.Close();
-        if (showing || on) TogglePreview(Screens.PrimaryName);
+        if (previews.TryGetValue(Screens.PrimaryName, out var open)) open.Close();
+        if (showPreview) TogglePreview(Screens.PrimaryName);
     }
 
     // MARK: Windows
@@ -260,16 +260,17 @@ internal sealed class TrayApp : ApplicationContext
     {
         menu.Items.Clear();
         var primary = screens.Primary;
-        menu.Items.Add(new ToolStripMenuItem(StatusLine(primary)) { Enabled = false });
-        menu.Items.Add(new ToolStripSeparator());
-
         if (!driver.IsInstalled)
         {
-            menu.Items.Add("Install Virtual Display Driver…", null, (_, _) => Open("https://github.com/VirtualDrivers/Virtual-Display-Driver/releases"));
+            menu.Items.Add(new ToolStripMenuItem(driver.Status()) { Enabled = false });
+            menu.Items.Add(L("Install Virtual Display Driver…", "安装虚拟显示驱动…"), null,
+                (_, _) => Open("https://github.com/VirtualDrivers/Virtual-Display-Driver/releases"));
             menu.Items.Add(new ToolStripSeparator());
         }
 
-        menu.Items.Add(Check("Virtual Display", primary is not null, () =>
+        // Your second screen: a display to the right of the main one, for your own windows.
+        AddHeader(menu, L("My Second Screen", "我的第二屏"), StatusLine(primary));
+        menu.Items.Add(Check(L("On", "开启"), primary is not null, () =>
         {
             preferences.Enabled = primary is null;
             preferences.Save();
@@ -277,11 +278,13 @@ internal sealed class TrayApp : ApplicationContext
         }));
 
         var current = PrimaryMode();
-        var resolution = new ToolStripMenuItem("Resolution");
+        var resolution = new ToolStripMenuItem(L("Resolution", "分辨率") + $"  ({current})");
         foreach (var display in Desktop.Displays().Where(d => !d.IsVirtual))
         {
             var match = Screens.Mode.Of(display);
-            resolution.DropDownItems.Add(Check($"Match {display.Device.TrimStart('\\', '.')} — {match}", match == current, () => SetPrimaryMode(match)));
+            var name = display.IsPrimary ? L("the main display", "主屏幕") : display.Device.TrimStart('\\', '.');
+            resolution.DropDownItems.Add(Check(L($"Match {name} — {match} (pixel for pixel)", $"与{name}一致 — {match}（逐像素）"),
+                match == current, () => SetPrimaryMode(match)));
         }
         resolution.DropDownItems.Add(new ToolStripSeparator());
         foreach (var (w, h) in Presets)
@@ -289,80 +292,95 @@ internal sealed class TrayApp : ApplicationContext
             var preset = Screens.Mode.Logical(w, h, current.Scale >= 200);
             resolution.DropDownItems.Add(Check($"{w}x{h}", preset == current, () => SetPrimaryMode(preset)));
         }
-        menu.Items.Add(resolution);
-        menu.Items.Add(Check("HiDPI (200%)", current.Scale >= 200,
+        resolution.DropDownItems.Add(new ToolStripSeparator());
+        resolution.DropDownItems.Add(Check("HiDPI (200%)", current.Scale >= 200,
             () => SetPrimaryMode(Screens.Mode.Logical(current.Width, current.Height, current.Scale < 200))));
-        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add(resolution);
 
-        var preview = Check("Show Preview", previews.ContainsKey(Screens.PrimaryName), () => TogglePreview(Screens.PrimaryName));
-        preview.Enabled = primary is not null;
-        menu.Items.Add(preview);
-        menu.Items.Add(Check("Keep Preview on Top", preferences.PreviewOnTop, () =>
+        var view = new ToolStripMenuItem(L("View", "查看方式")) { Enabled = primary is not null };
+        var showing = previews.TryGetValue(Screens.PrimaryName, out var open);
+        view.DropDownItems.Add(Check(L("Full Screen on Its Own Desktop (swipe four fingers)", "独立桌面全屏（四指滑动切换）"),
+            showing && preferences.PreviewOnOwnDesktop, () => SetView(showPreview: true, ownDesktop: true)));
+        view.DropDownItems.Add(Check(L("Preview Window", "预览窗口"),
+            showing && !preferences.PreviewOnOwnDesktop, () => SetView(showPreview: true, ownDesktop: false)));
+        view.DropDownItems.Add(Check(L("Don't Show", "不显示"), !showing, () => SetView(showPreview: false, ownDesktop: preferences.PreviewOnOwnDesktop)));
+        if (showing && !preferences.PreviewOnOwnDesktop)
         {
-            preferences.PreviewOnTop = !preferences.PreviewOnTop;
-            preferences.Save();
-            foreach (var form in previews.Values) form.TopMost = preferences.PreviewOnTop;
-        }));
-        var fullScreen = Check("Preview Full Screen", previews.TryGetValue(Screens.PrimaryName, out var p) && p.IsFullScreen,
-            () => { if (previews.TryGetValue(Screens.PrimaryName, out var form)) form.ToggleFullScreen(); });
-        fullScreen.Enabled = previews.ContainsKey(Screens.PrimaryName);
-        menu.Items.Add(fullScreen);
-        var ownDesktop = Check("Preview on Its Own Desktop", preferences.PreviewOnOwnDesktop,
-            () => SetPreviewOnOwnDesktop(!preferences.PreviewOnOwnDesktop));
-        ownDesktop.Enabled = primary is not null;
-        menu.Items.Add(ownDesktop);
-        menu.Items.Add(new ToolStripSeparator());
+            view.DropDownItems.Add(new ToolStripSeparator());
+            view.DropDownItems.Add(Check(L("Keep Preview Window on Top", "预览窗口置顶"), preferences.PreviewOnTop, () =>
+            {
+                preferences.PreviewOnTop = !preferences.PreviewOnTop;
+                preferences.Save();
+                foreach (var form in previews.Values) form.TopMost = preferences.PreviewOnTop;
+            }));
+            view.DropDownItems.Add(Check(L("Preview Window Full Screen", "预览窗口全屏"), open!.IsFullScreen, open.ToggleFullScreen));
+        }
+        menu.Items.Add(view);
 
         if (primary is not null)
         {
-            menu.Items.Add(new ToolStripMenuItem("Move Front Window to Other Screen", null, (_, _) => MoveFrontWindowToOtherScreen())
-            {
-                ShortcutKeyDisplayString = "Ctrl+Alt+Win+M",
-            });
-            AddWindows(menu, "Windows on 2ndscreen", primary.Bounds);
-            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add(new ToolStripMenuItem(L("Send Front Window There / Bring It Back", "把当前窗口送过去 / 拿回来"), null,
+                (_, _) => MoveFrontWindowToOtherScreen()) { ShortcutKeyDisplayString = "Ctrl+Alt+Win+M" });
+            AddWindows(menu, L("Windows on It", "第二屏上的窗口"), primary.Bounds);
         }
+        menu.Items.Add(new ToolStripSeparator());
 
+        // Agent screens: created and removed by agents through the 2ndscreen command or MCP.
         var agents = screens.Agents.ToList();
-        menu.Items.Add(new ToolStripMenuItem($"Agent Screens ({agents.Count})") { Enabled = false });
+        AddHeader(menu, L($"Agent Screens ({agents.Count}/{Screens.AgentLimit})", $"Agent 屏幕（{agents.Count}/{Screens.AgentLimit}）"),
+            L("Agents create these with the 2ndscreen command; they go away when done", "agent 通过 2ndscreen 命令临时创建，用完自动关闭"));
+        if (agents.Count == 0) menu.Items.Add(new ToolStripMenuItem(L("None right now", "目前没有")) { Enabled = false });
         foreach (var agent in agents)
         {
             var item = new ToolStripMenuItem($"{agent.Name} — {agent.Width}x{agent.Height}{(agent.HiDpi ? " HiDPI" : "")}");
-            item.DropDownItems.Add(Check("Show Preview", previews.ContainsKey(agent.Name), () => TogglePreview(agent.Name)));
+            item.DropDownItems.Add(Check(L("Show Preview Window", "显示预览窗口"), previews.ContainsKey(agent.Name), () => TogglePreview(agent.Name)));
             foreach (var window in Desktop.WindowsOn(agent.Bounds))
             {
-                item.DropDownItems.Add($"Bring Back: {window.Label}", null, (_, _) => BringBack(window));
+                item.DropDownItems.Add(L($"Bring Back: {window.Label}", $"拿回：{window.Label}"), null, (_, _) => BringBack(window));
             }
             item.DropDownItems.Add(new ToolStripSeparator());
-            item.DropDownItems.Add("Destroy", null, (_, _) => screens.Destroy(agent.Name));
+            item.DropDownItems.Add(L("Close This Screen", "关闭这个屏幕"), null, (_, _) => screens.Destroy(agent.Name));
             menu.Items.Add(item);
         }
-        if (agents.Count > 1) menu.Items.Add("Destroy All Agent Screens", null, (_, _) => screens.DestroyAgents());
+        if (agents.Count > 1) menu.Items.Add(L("Close All Agent Screens", "关闭全部 Agent 屏幕"), null, (_, _) => screens.DestroyAgents());
         menu.Items.Add(new ToolStripSeparator());
 
-        menu.Items.Add("Open Display Settings…", null, (_, _) => Open("ms-settings:display"));
-        menu.Items.Add("Quit 2ndscreen", null, (_, _) => ExitThread());
+        menu.Items.Add(L("Open Display Settings…", "打开显示设置…"), null, (_, _) => Open("ms-settings:display"));
+        menu.Items.Add(L("Quit 2ndscreen", "退出 2ndscreen"), null, (_, _) => ExitThread());
+    }
+
+    /// <summary>A bold section title with a grey explanation under it.</summary>
+    private static void AddHeader(ContextMenuStrip menu, string title, string detail)
+    {
+        var heading = new ToolStripLabel(title) { ForeColor = SystemColors.MenuText };
+        heading.Font = new Font(heading.Font, FontStyle.Bold);
+        menu.Items.Add(heading);
+        menu.Items.Add(new ToolStripLabel(detail) { ForeColor = SystemColors.GrayText });
     }
 
     private void AddWindows(ContextMenuStrip menu, string title, Rect bounds)
     {
         var windows = Desktop.WindowsOn(bounds);
         var parent = new ToolStripMenuItem($"{title} ({windows.Count})") { Enabled = windows.Count > 0 };
-        foreach (var window in windows) parent.DropDownItems.Add($"Bring Back: {window.Label}", null, (_, _) => BringBack(window));
+        foreach (var window in windows) parent.DropDownItems.Add(L($"Bring Back: {window.Label}", $"拿回：{window.Label}"), null, (_, _) => BringBack(window));
         if (windows.Count > 1)
         {
             parent.DropDownItems.Add(new ToolStripSeparator());
-            parent.DropDownItems.Add("Bring All Back", null, (_, _) => windows.ForEach(BringBack));
+            parent.DropDownItems.Add(L("Bring All Back", "全部拿回"), null, (_, _) => windows.ForEach(BringBack));
         }
         menu.Items.Add(parent);
     }
 
     private string StatusLine(Screens.Screen? primary)
     {
-        if (!driver.IsInstalled) return driver.Status();
-        if (primary?.Display is not { } display) return "Virtual display off";
-        return $"{display.Bounds.Width}x{display.Bounds.Height} at {display.ScalePercent}% · at ({display.Bounds.X}, {display.Bounds.Y})";
+        if (primary?.Display is not { } display) return L("Off", "已关闭");
+        var size = $"{display.Bounds.Width}x{display.Bounds.Height} @{display.ScalePercent}%";
+        return L($"{size}, to the right of the main display", $"{size}，在主屏幕右侧");
     }
+
+    /// <summary>English, or Chinese when Windows is in Chinese.</summary>
+    private static string L(string english, string chinese) =>
+        System.Globalization.CultureInfo.CurrentUICulture.TwoLetterISOLanguageName == "zh" ? chinese : english;
 
     private static ToolStripMenuItem Check(string text, bool on, Action action) =>
         new(text, null, (_, _) => action()) { Checked = on };

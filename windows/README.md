@@ -43,18 +43,24 @@ needs Windows.
 
 ## Using it
 
-Run `SecondScreen.exe`, which lives in the notification area. Its menu has
-**Virtual Display**, **Resolution**, **HiDPI (200%)**, the preview
-(**Show Preview**, **Keep Preview on Top**, **Preview Full Screen**,
-**Preview on Its Own Desktop**), and **Move Front Window to Other Screen**,
-also on Ctrl+Alt+Win+M.
+Run `SecondScreen.exe`, which lives in the notification area. By default
+there are two screens: your real one, and **your second screen**, a virtual
+display to its right that matches it pixel for pixel. Agents add **agent
+screens** of their own when they need them. The menu (in Chinese on a
+Chinese Windows) has a section for each:
 
-**Preview on Its Own Desktop** is the counterpart of a macOS full-screen
-Space: 2ndscreen adds a virtual desktop after yours with the preview
-covering the main display, so a four-finger swipe (or Ctrl+Win+Right)
-shows the screen. The desktop goes away with the preview. Creating it uses
-an undocumented shell interface checked against Windows 11 24H2 and 25H2;
-elsewhere the preview stays on the current desktop.
+- **My Second Screen**: turn it on or off, pick its **Resolution**, choose
+  how to **View** it, send the front window there or bring it back
+  (Ctrl+Alt+Win+M), and bring back any window on it.
+- **Agent Screens**: the screens agents have open, each with a preview,
+  its windows, and **Close This Screen**.
+
+**View** offers **Full Screen on Its Own Desktop**, the counterpart of a
+macOS full-screen Space: 2ndscreen adds a virtual desktop after yours with
+the screen covering the main display, so a four-finger swipe (or
+Ctrl+Win+Right) shows it. The desktop goes away with the view. Creating it
+uses an undocumented shell interface checked against Windows 11 24H2 and
+25H2; elsewhere the view falls back to a **Preview Window**.
 
 Agents use `2ndscreen.exe`, or `2ndscreen mcp` for the same commands as MCP
 tools:
