@@ -751,10 +751,24 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             submenu.addItem(fit)
             let sizes = NSMenuItem(title: "Size", action: nil, keyEquivalent: "")
             let sizeMenu = NSMenu()
+            // A size that cannot hold the app's window would cut it off:
+            // iPhone Mirroring, for one, cannot be turned or resized to fit,
+            // since the phone decides its orientation.
+            let needed = agentScreens.mainWindow(on: screen.name).map { window -> CGSize in
+                let bounds = screen.display.bounds
+                let visible = WindowMover.visibleFrame(of: screen.display.displayID)
+                return CGSize(width: window.frame.width,
+                              height: window.frame.height + max(0, visible.minY - bounds.minY))
+            }
             for (label, mode) in Self.agentScreenSizes {
                 let choice = item("\(label) — \(mode)", #selector(resizeAgentScreenItem(_:)),
                                   on: screen.display.mode == mode && !agentScreens.fitsWindow(screen.name))
                 choice.representedObject = [screen.name, "\(mode.width)x\(mode.height)"]
+                if let needed, CGFloat(mode.width) < needed.width || CGFloat(mode.height) < needed.height {
+                    choice.action = nil
+                    choice.toolTip = "Too small for \(Int(needed.width))×\(Int(needed.height)), the window"
+                        + " and the menu bar; the window cannot be turned or shrunk from here"
+                }
                 sizeMenu.addItem(choice)
             }
             sizes.submenu = sizeMenu
@@ -782,8 +796,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Sizes offered for agent screens in the menu.
     static let agentScreenSizes: [(String, VirtualDisplay.Mode)] = [
+        // No landscape phone size: the phone decides its orientation, and
+        // Fit to Window follows it when it turns.
         ("Phone", .init(width: 525, height: 1001)),
-        ("Phone, Landscape", .init(width: 944, height: 525)),
         ("Small", .init(width: 800, height: 600)),
         ("Laptop", .init(width: 1280, height: 800)),
         ("Desktop", .init(width: 1440, height: 900)),

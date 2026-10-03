@@ -99,7 +99,9 @@ macOS keeps inside the screen can make it smaller but not larger; use
 own size when it was created larger.
 
 The same is in the menu: each agent screen has **Fit to Window** and a
-**Size** submenu (choosing a size turns Fit to Window off), and its preview
+**Size** submenu (choosing a size turns Fit to Window off; sizes too small
+for the app's window are disabled, since an app such as iPhone Mirroring
+decides its own orientation and size), and its preview
 has title bar buttons to make the app's window smaller or larger (⌘- and
 ⌘=), plus Home Screen and App Switcher when the window is iPhone
 Mirroring's.
