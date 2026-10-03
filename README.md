@@ -30,6 +30,11 @@ open -n --env SECONDSCREEN_SOCKET=$SECONDSCREEN_SOCKET build/2ndscreen.app
 ```
 
 A side instance has agent screens only: no primary screen and no hot key.
+It keeps off the menu bar, so the user sees one 2ndscreen however many
+agents test theirs; the usual app lists side instances under **Test
+Copies**, where each can be quit. A side instance quits by itself after 30
+minutes without requests, unless it has an agent screen or a phone's
+mirror open. The usual app starts whether or not side instances run.
 While two instances ran, the first screen a fresh side instance created
 showed another display's picture; screens it created after that did not.
 Check a side instance's first screenshot.
