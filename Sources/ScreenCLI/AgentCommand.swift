@@ -11,11 +11,12 @@ enum AgentCommand {
         guard let screen = args.value("--screen"), let pid = args.value("--pid").flatMap(Int32.init),
               !instruction.isEmpty
         else { fail("usage: 2ndscreen agent --screen NAME --pid PID [--window-id ID] [--allow-submit] "
-            + "[--foreground] [--max-steps N] INSTRUCTION") }
+            + "[--foreground] [--no-elements] [--max-steps N] INSTRUCTION") }
 
         var options = TarsAgent.Options()
         options.allowSubmit = args.has("--allow-submit")
         options.foreground = args.has("--foreground")
+        options.listElements = !args.has("--no-elements")
         if let steps = args.value("--max-steps") {
             guard let number = Int(steps), number > 0 else { fail("--max-steps takes a positive number") }
             options.maxSteps = number

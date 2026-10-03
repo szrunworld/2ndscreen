@@ -187,9 +187,17 @@ $CLI drag --screen test-a --pid 1234 --from-x 2200 --from-y 500 --to-x 2500 --to
 
 `agent` runs an instruction with a [UI-TARS](https://github.com/bytedance/UI-TARS-desktop)
 vision model, which reads screenshots of the screen and answers with
-actions at coordinates. 2ndscreen carries them out in the background and
-only in the app you name. It suits apps whose controls accessibility
-cannot read, such as chat apps that draw their own interface.
+actions. 2ndscreen carries them out in the background and only in the app
+you name.
+
+Each step also lists the app's controls read through accessibility, with
+their labels, values and boxes, and the model acts on a listed control by
+its number: a native button is pressed, a field typed into, exactly where
+the app put them. Anything not listed it finds by sight and clicks at
+coordinates. Apps that draw their own interface list nothing and run on
+sight alone: WeChat 4.x takes background clicks, typing (Chinese included)
+and wheel scrolls of its chat history this way. `--no-elements` turns the
+list off.
 
 ```bash
 $CLI agent --screen test-a --pid 1234 "打开文件传输助手，读出最新一条消息"

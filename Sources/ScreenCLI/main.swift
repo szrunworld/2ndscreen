@@ -25,7 +25,7 @@ usage:
   2ndscreen drag  --screen NAME --pid PID --from-x X --from-y Y --to-x X --to-y Y --foreground
                   [--modifiers shift] [--duration-ms MS]
 
-  2ndscreen agent --screen NAME --pid PID [--window-id ID] [--allow-submit] [--foreground]
+  2ndscreen agent --screen NAME --pid PID [--window-id ID] [--allow-submit] [--foreground] [--no-elements]
                   [--max-steps N] INSTRUCTION
   2ndscreen mcp      serve these commands as MCP tools over stdio
 
@@ -37,7 +37,8 @@ with --foreground. Indexes come from the window's last state; run state again
 after the UI changes.
 
 agent runs INSTRUCTION with a UI-TARS vision model, which reads screenshots of
-the screen and acts by sight. Without --allow-submit it stops before anything
+the screen and the app's controls, acting on a listed control by its number
+and on anything else by sight; --no-elements leaves the controls out. Without --allow-submit it stops before anything
 that would send: Enter, typed text ending in a newline, or a click on Send.
 It reads ARK_API_KEY, ARK_MODEL and ARK_BASE_URL from the environment or
 ~/.config/2ndscreen/ark.env.

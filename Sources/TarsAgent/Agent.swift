@@ -23,6 +23,11 @@ extension AgentScreen {
 
 /// Runs an instruction with a UI-TARS model: screenshot, ask the model,
 /// act, repeat, until it finishes, asks for help, or a guard stops it.
+///
+/// Each step also lists the app's controls read through accessibility, when
+/// it exposes any, and the model may act on one by its number: exact where
+/// the app reports its controls, and the screenshot alone for apps that draw
+/// their own (WeChat 4.x), which list nothing.
 public final class TarsAgent {
     public struct Options {
         public var maxSteps = 25
@@ -35,6 +40,8 @@ public final class TarsAgent {
         /// one ends the run instead.
         public var submitLabels = try! NSRegularExpression(pattern: #"^(发送|發送|send)(\s*\(s\))?$"#,
                                                            options: .caseInsensitive)
+        /// Show the model the app's controls each step. On by default.
+        public var listElements = true
         public init() {}
     }
 
@@ -54,9 +61,11 @@ public final class TarsAgent {
         click(start_box='[x1, y1, x2, y2]')
         left_double(start_box='[x1, y1, x2, y2]')
         right_single(start_box='[x1, y1, x2, y2]')
+        click(element='N') #Click element N from the Elements list.
         drag(start_box='[x1, y1, x2, y2]', end_box='[x3, y3, x4, y4]')
         hotkey(key='')
         type(content='') #If you want to submit your input, use "\\n" at the end of `content`.
+        type(content='', element='N') #Type into text field N from the Elements list.
         scroll(start_box='[x1, y1, x2, y2]', direction='down or up or right or left')
         wait() #Sleep for 5s and take a screenshot to check for any changes.
         finished(content='') #Use this when the task is done; put any answer in content.
@@ -81,6 +90,10 @@ public final class TarsAgent {
 
         ## Note
         - Write a small plan and finally summarize your next action (with its target element) in one sentence in `Thought` part.
+        - A screenshot may come with an `## Elements` list, read from the app's accessibility tree: \
+        `[N] role "label" value="…" box=[x1, y1, x2, y2]`, boxes on the screenshot's 0-1000 scale. \
+        When your target is listed, act on it with element='N': it is exact. \
+        Use start_box for anything not listed.
 
         ## User Instruction
         \(instruction)
@@ -99,6 +112,9 @@ public final class TarsAgent {
     let onEvent: (Event) -> Void
     /// Where the model last clicked, to find the field it then types into.
     private var lastClick: CGPoint?
+    /// The app's elements as last read, which the engine's indexes refer
+    /// to; nil once an action may have changed the window.
+    private var elementCache: [AXElementInfo]?
 
     public init(screen: AgentScreen, model: VisionModel, options: Options = Options(),
                 onEvent: @escaping (Event) -> Void = { _ in }) {
@@ -125,6 +141,11 @@ public final class TarsAgent {
                 continue
             }
             Self.trimImages(&messages)
+            // The model numbers elements from this read; keep it until an action runs.
+            elementCache = nil
+            let listed = options.listElements ? Self.listable(currentElements(), in: frame) : []
+            messages.removeAll { if case .user(let text) = $0 { text.hasPrefix(Self.elementsHeading) } else { false } }
+            if !listed.isEmpty { messages.append(.user(Self.describe(listed, in: frame))) }
 
             let reply: String
             do {
@@ -153,6 +174,20 @@ public final class TarsAgent {
             var context = PlanContext(frame: frame, allowSubmit: options.allowSubmit, foreground: options.foreground)
             for var action in prediction.actions {
                 context.menuOpen = screen.menuOpen()
+                // An element the model named stands in for any box it gave.
+                var target: AXElementInfo?
+                if let raw = action.inputs["element"] {
+                    guard let number = Int(raw.filter(\.isNumber)),
+                          let element = listed.first(where: { $0.index == number }), let box = Self.box(element.frame, in: frame)
+                    else {
+                        onEvent(.error("no element \(raw) in the list"))
+                        messages.append(.user("There is no element \(raw) in the Elements list; "
+                            + "use one that is listed, or start_box."))
+                        break
+                    }
+                    action.boxes["start_box"] = box
+                    target = element
+                }
                 for name in ["start_box", "end_box"] where action.inputs[name] != nil && action.boxes[name] == nil {
                     if let box = ActionParser.recoverBox(reply, name) {
                         action.boxes[name] = box
@@ -164,7 +199,8 @@ public final class TarsAgent {
                     action.inputs["content"] = prediction.thought
                 }
                 for planned in Planner.plan(action, context) {
-                    if let stop = execute(planned, prediction: prediction.thought.isEmpty ? reply : prediction.thought) {
+                    if let stop = execute(planned, on: target,
+                                          prediction: prediction.thought.isEmpty ? reply : prediction.thought) {
                         return Result(outcome: stop.0, reason: stop.1, steps: step)
                     }
                 }
@@ -173,8 +209,9 @@ public final class TarsAgent {
         return Result(outcome: .user, reason: "reached \(options.maxSteps) steps", steps: options.maxSteps)
     }
 
-    /// Run one step; returns why the run ends, if it does.
-    private func execute(_ step: Step, prediction: String) -> (Outcome, String)? {
+    /// Run one step, on `target` if the model named an element; returns why
+    /// the run ends, if it does.
+    private func execute(_ step: Step, on target: AXElementInfo?, prediction: String) -> (Outcome, String)? {
         switch step {
         case .stop(let outcome, let reason):
             onEvent(.step(step))
@@ -196,6 +233,11 @@ public final class TarsAgent {
                     onEvent(.step(.stop(.done, reason)))
                     return (.done, reason)
                 }
+                if let target, Self.matches(options.submitLabels, (target.label ?? "").trimmingCharacters(in: .whitespaces)) {
+                    let reason = "stopped before clicking a control that submits"
+                    onEvent(.step(.stop(.done, reason)))
+                    return (.done, reason)
+                }
                 if let point = action.point, isSubmitControl(at: point) {
                     let reason = "stopped before clicking a control that submits"
                     onEvent(.step(.stop(.done, reason)))
@@ -203,11 +245,18 @@ public final class TarsAgent {
                 }
             }
             if action.kind == .click { lastClick = action.point }
-            // Keystrokes miss backgrounded web views without any error;
-            // typing into the field the model clicked goes through
-            // accessibility instead.
-            if action.kind == .type, let field = field(at: lastClick) { action.index = field.index }
+            if let target, [.click, .type, .scroll].contains(action.kind) {
+                // Indexes refer to the engine's last read, which an earlier
+                // action may have replaced; find the element again there.
+                action.index = currentElements().first { Self.same($0, target) }?.index
+            } else if action.kind == .type, let field = field(at: lastClick) {
+                // Keystrokes miss backgrounded web views without any error;
+                // typing into the field the model clicked goes through
+                // accessibility instead.
+                action.index = field.index
+            }
             onEvent(.step(.act(action)))
+            elementCache = nil
             do {
                 let response = try screen.perform(action)
                 if !response.ok { onEvent(.error(response.error ?? "\(action.kind) failed")) }
@@ -219,10 +268,19 @@ public final class TarsAgent {
         }
     }
 
+    /// The app's elements, read again only after an action ran, so the
+    /// indexes stay the ones the engine holds.
+    private func currentElements() -> [AXElementInfo] {
+        if let elementCache { return elementCache }
+        let elements = (try? screen.elements()) ?? []
+        elementCache = elements
+        return elements
+    }
+
     /// The smallest text field containing `point`.
     private func field(at point: CGPoint?) -> AXElementInfo? {
         guard let point else { return nil }
-        return ((try? screen.elements()) ?? [])
+        return currentElements()
             .filter { $0.index >= 0 && AXActions.isText($0) && Self.contains($0.frame, point) }
             .min { area($0.frame) < area($1.frame) }
     }
@@ -231,10 +289,61 @@ public final class TarsAgent {
     /// that do not expose their controls pass this check, so the Enter and
     /// newline rules matter as much.
     private func isSubmitControl(at point: CGPoint) -> Bool {
-        ((try? screen.elements()) ?? []).contains { element in
+        currentElements().contains { element in
             Self.matches(options.submitLabels, (element.label ?? "").trimmingCharacters(in: .whitespaces))
                 && Self.contains(element.frame, point)
         }
+    }
+
+    static let elementsHeading = "## Elements"
+    /// Elements beyond this many are left out of the list, to keep steps small.
+    static let maxListed = 80
+
+    /// Elements worth listing: numbered, on the screen, and named, holding
+    /// a value, or taking text.
+    static func listable(_ elements: [AXElementInfo], in frame: CGRect) -> [AXElementInfo] {
+        Array(elements.filter { element in
+            guard element.index >= 0, let box = element.frame, box.width > 0, box.height > 0,
+                  frame.contains(CGPoint(x: box.x + box.width / 2, y: box.y + box.height / 2))
+            else { return false }
+            return !(element.label ?? "").isEmpty || !(element.value ?? "").isEmpty || AXActions.isText(element)
+        }.prefix(maxListed))
+    }
+
+    /// The list the model reads, one element a line.
+    static func describe(_ elements: [AXElementInfo], in frame: CGRect) -> String {
+        func quoted(_ text: String?) -> String? {
+            guard var text = text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
+            if text.count > 60 { text = String(text.prefix(60)) + "…" }
+            return "\"" + text.replacingOccurrences(of: "\n", with: " ").replacingOccurrences(of: "\"", with: "'") + "\""
+        }
+        let lines = elements.map { element -> String in
+            var parts = ["[\(element.index)]", element.role.hasPrefix("AX") ? String(element.role.dropFirst(2)) : element.role]
+            if let label = quoted(element.label) { parts.append(label) }
+            if let value = quoted(element.value), element.value != element.label { parts.append("value=\(value)") }
+            if let box = box(element.frame, in: frame) {
+                parts.append("box=[" + box.map { String(Int(($0 * ActionParser.factor).rounded())) }
+                    .joined(separator: ", ") + "]")
+            }
+            return parts.joined(separator: " ")
+        }
+        return ([elementsHeading] + lines).joined(separator: "\n")
+    }
+
+    /// An element's frame as a box normalised to the screen, as the parser
+    /// stores model boxes.
+    static func box(_ element: Frame?, in frame: CGRect) -> [Double]? {
+        guard let element, frame.width > 0, frame.height > 0 else { return nil }
+        func clamp(_ value: Double) -> Double { min(max(value, 0), 1) }
+        return [clamp((element.x - frame.minX) / frame.width), clamp((element.y - frame.minY) / frame.height),
+                clamp((element.x + element.width - frame.minX) / frame.width),
+                clamp((element.y + element.height - frame.minY) / frame.height)]
+    }
+
+    /// Whether two reads describe the same element.
+    static func same(_ a: AXElementInfo, _ b: AXElementInfo) -> Bool {
+        guard a.role == b.role, a.label == b.label, let fa = a.frame, let fb = b.frame else { return false }
+        return abs(fa.x - fb.x) < 2 && abs(fa.y - fb.y) < 2 && abs(fa.width - fb.width) < 2 && abs(fa.height - fb.height) < 2
     }
 
     /// The last sentence of a thought, where UI-TARS summarises the action

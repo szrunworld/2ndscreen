@@ -94,8 +94,10 @@ CLI=2ndscreen   # or <repo>/.build/release/2ndscreen
    what you wanted: success means the UI changed. Run `state` again, or
    take a screenshot, and check for what you expected.
 
-   For apps whose controls accessibility cannot read, `agent` runs a
-   whole task with a vision model, if the user has set one up:
+   `agent` runs a whole task with a vision model, if the user has set one
+   up. It acts on the controls accessibility lists, and by sight on what
+   it does not list, so it also works in apps that draw their own
+   interface, such as WeChat:
 
    ```bash
    $CLI agent --screen login-test --pid PID "Open the settings and read the version number"
