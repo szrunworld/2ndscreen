@@ -199,6 +199,8 @@ internal sealed class Screens
         if (!newInstance && AppLauncher.IsRunning(resolved))
             return ControlResponse.Failure($"{Path.GetFileName(resolved)} is already running; pass --new-instance, or use window move");
 
+        var before = Desktop.Windows().Select(w => w.Handle).ToHashSet();
+        var foreground = Desktop.Foreground();
         int pid;
         try
         {
@@ -209,21 +211,30 @@ internal sealed class Screens
             return ControlResponse.Failure($"launch failed: {error.Message}");
         }
 
-        var window = await FirstWindow(pid, TimeSpan.FromSeconds(15));
-        if (window is null)
+        // Programs often hand their window to another process: a single-instance program
+        // to the copy already running, a packaged (UWP) app to the shell's frame host.
+        bool SameProgram(int owner) => string.Equals(AppLauncher.ExecutablePath(owner), resolved, StringComparison.OrdinalIgnoreCase);
+        // Only windows that appear during the launch; a packaged app activates its frame
+        // before its launcher has exited.
+        AppLauncher.GuardForeground(foreground, (window, owner) => !before.Contains(window)
+            && (owner == pid || SameProgram(owner) || AppLauncher.IsFrameHost(owner)), TimeSpan.FromSeconds(5));
+        var found = await FirstWindow(pid, before, SameProgram, TimeSpan.FromSeconds(15));
+        if (found is null)
         {
             return new ControlResponse
             {
                 Ok = false, Pid = pid,
-                Error = "the program started but showed no window within 15 seconds (some programs hand off to another process)",
+                Error = "the program started but showed no window within 15 seconds",
             };
         }
-        bool moved = Desktop.Move(window, screen.WorkArea, fill);
-        if (screen.Kind == ScreenInfo.Agent) bindings[pid] = screen.Name;
+        int owner = found.Pid;
+        bool moved = Desktop.Move(found, screen.WorkArea, fill);
+        // The frame host holds every packaged app's windows; following it would pull them all over.
+        if (screen.Kind == ScreenInfo.Agent && !AppLauncher.IsFrameHost(owner)) bindings[owner] = screen.Name;
         return new ControlResponse
         {
             Ok = moved, Error = moved ? null : "the program refused to move its window",
-            Pid = pid, Screen = Info(screen), Windows = await Settled(pid, screen),
+            Pid = owner, Screen = Info(screen), Windows = await Settled(owner, screen),
         };
     }
 
@@ -302,12 +313,29 @@ internal sealed class Screens
         }
     }
 
-    private static async Task<WindowInfo?> FirstWindow(int pid, TimeSpan timeout)
+    /// <summary>
+    /// The window a launch produced: a new one of the launched process, else of another
+    /// process of the same program, else, once the launched process has exited, of the
+    /// packaged-app frame host. A single-instance program that only raised a window it
+    /// already had yields that window.
+    /// </summary>
+    private static async Task<WindowInfo?> FirstWindow(int pid, HashSet<nint> before, Func<int, bool> sameProgram, TimeSpan timeout)
     {
         var deadline = DateTime.UtcNow + timeout;
+        DateTime? exited = null;
         while (DateTime.UtcNow < deadline)
         {
-            if (Desktop.WindowsOf(pid).FirstOrDefault() is { } window) return window;
+            var fresh = Desktop.Windows(w => !before.Contains(w.Handle));
+            if (fresh.FirstOrDefault(w => w.Pid == pid) is { } own) return own;
+            if (fresh.FirstOrDefault(w => sameProgram(w.Pid)) is { } handedOff) return handedOff;
+            if (exited is null && AppLauncher.HasExited(pid)) exited = DateTime.UtcNow;
+            if (exited is not null)
+            {
+                if (fresh.FirstOrDefault(w => AppLauncher.IsFrameHost(w.Pid)) is { } packaged) return packaged;
+                // Give a handed-off window a moment to appear before settling for an existing one.
+                if (DateTime.UtcNow - exited > TimeSpan.FromSeconds(3)
+                    && Desktop.Windows(w => sameProgram(w.Pid)).FirstOrDefault() is { } existing) return existing;
+            }
             await Task.Delay(200);
         }
         return null;
