@@ -156,6 +156,9 @@ if let first = args.positional.first, DriverCommands.verbs.contains(first) {
 if args.positional.first == "agent" {
     AgentCommand.run(args)
 }
+if args.positional.first == "iphone" {
+    IPhoneCommands.run(args)
+}
 let verb = args.positional.prefix(2).joined(separator: " ")
 
 var request: ControlRequest

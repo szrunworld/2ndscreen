@@ -107,6 +107,18 @@ public final class TarsAgent {
         call_user() # Submit the task and call the user when the task is unsolvable, or when you need the user's help.
         """
 
+    /// For an iPhone through iPhone Mirroring: taps, typing and Home only.
+    /// Mirroring ignores every swipe and scroll from the Mac, and an iPhone
+    /// has no Back key.
+    public static let iPhoneActionSpaces = """
+        click(start_box='[x1, y1, x2, y2]')
+        type(content='') #Tap the text field first. If you want to submit your input, use "\\n" at the end of `content`.
+        press_home()
+        wait() #Sleep for 5s and take a screenshot to check for any changes.
+        finished(content='') #Use this when the task is done; put any answer in content.
+        call_user() # Submit the task and call the user when the task is unsolvable, or when you need the user's help.
+        """
+
     /// UI-TARS's prompt (`@ui-tars/sdk`, Apache-2.0, ByteDance), with this
     /// agent's action space; the note on elements only when they are listed.
     static func prompt(_ instruction: String, actionSpaces: String = actionSpaces, elements: Bool = true) -> String {
