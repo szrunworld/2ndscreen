@@ -99,11 +99,41 @@ names the `route` it took:
   2ndscreen joins the program's input queue for the moment of the key and
   marks the modifiers held there.
 
-Programs that read the real mouse rather than their messages (some Chromium,
-WPF and GTK cases) ignore background drags and wheels. For those, `scroll`
-and `drag` take `--foreground`, which brings the program to the front and
-moves the real pointer through the gesture; 2ndscreen puts the pointer and
-your window back afterwards.
+WPF and Chromium (Chrome, Edge, Electron) draw their own controls and read
+the real keyboard and mouse for some things, so the routes differ there:
+
+- Typing into a web field writes its value through UI Automation, and
+  scrolling a page sets its position when it ignores the wheel.
+- A wheel at a point scrolls what lies under it through UI Automation, since
+  WPF sends the wheel to whatever is under the real pointer.
+- Shortcuts (ctrl+a and the like) in WPF and Chromium are refused in the
+  background, with a message saying so: they read held modifiers from the
+  real keyboard. `key --foreground` brings the program to the front for the
+  moment of the keys and puts your window back.
+
+For anything else a program ignores in the background, `key`, `scroll` and
+`drag` take `--foreground`, which brings the program to the front and uses
+the real keyboard or pointer; 2ndscreen puts the pointer and your window
+back afterwards. The end-to-end test covers a WinForms, a WPF and an Edge
+window.
+
+### Vision agent
+
+`2ndscreen agent` runs an instruction with a UI-TARS vision model, as on
+macOS: the model reads screenshots of the screen and acts by sight through
+the commands above, only in the program you name.
+
+```powershell
+2ndscreen agent --screen test --pid 1234 "Open Settings and read the version"
+```
+
+It needs a model behind an OpenAI-compatible API, by default Doubao Seed
+2.1 lite on Volcengine Ark: set `ARK_API_KEY` (and optionally `ARK_MODEL`,
+`ARK_BASE_URL`), or put them in `%USERPROFILE%\.config\2ndscreen\ark.env`.
+It stops before anything that would send unless given `--allow-submit`
+(Enter, typed text ending in a newline, a click on Send, or a click its
+reply describes as sending), and before shortcuts that close or switch
+programs (alt+f4, alt+tab, Windows-key shortcuts).
 
 ## How it works
 
