@@ -51,14 +51,23 @@ export function chat(elements: Element[], window: Frame): Chat | undefined {
   const name = header.sort((a, b) => a.frame!.x - b.frame!.x)[0];
   const summaryLine = texts.filter((e) => Math.abs(local(e, window).y - 62) <= 10 && local(e, window).x < 900);
 
-  // Resume summary: a list of history lines, dates then place, and the
-  // position and expectations beside it.
+  // Resume summary and messages each sit in an AXList when the reader
+  // reports lists; otherwise they are found by where they sit: the history
+  // in the left half below the header, the messages between the first
+  // timestamp and the row of quick actions above the message box.
   const lists = framed.filter((e) => e.role === 'AXList').sort((a, b) => a.frame!.y - b.frame!.y);
-  const historyList = lists.find((l) => local(l, window).y < 220);
-  const messageList = lists.find((l) => local(l, window).y >= 200);
-  const within = (e: Element, box?: Element) => !!box && e.frame!.y >= box.frame!.y - 4
-    && e.frame!.y < box.frame!.y + box.frame!.height && e.frame!.x >= box.frame!.x - 4
-    && e.frame!.x < box.frame!.x + box.frame!.width;
+  const box = (x: number, y: number, right: number, bottom: number): Frame =>
+    ({ x, y, width: right - x, height: bottom - y });
+  const historyList = lists.find((l) => local(l, window).y < 220)?.frame
+    ?? box(window.x + 520, window.y + 105, window.x + 900, window.y + 215);
+  const actions = texts.find((e) => ['求简历', '换电话', '不合适'].includes(text(e)));
+  const firstStamp = texts.filter((e) => STAMP.test(text(e)) && local(e, window).y > 150)
+    .sort((a, b) => a.frame!.y - b.frame!.y)[0];
+  const messageList = lists.find((l) => local(l, window).y >= 200)?.frame
+    ?? box(window.x + 500, (firstStamp?.frame!.y ?? window.y + 220) - 4,
+      window.x + window.width - 57, (actions ?? input).frame!.y - 4);
+  const within = (e: Element, area: Frame) => e.frame!.y >= area.y - 4 && e.frame!.y < area.y + area.height
+    && e.frame!.x >= area.x - 4 && e.frame!.x < area.x + area.width;
   const history = lines(texts.filter((e) => within(e, historyList)));
   const after = (label: string) => {
     const at = texts.find((e) => text(e).startsWith(label));
@@ -73,8 +82,8 @@ export function chat(elements: Element[], window: Frame): Chat | undefined {
   // a delivery status (送达, 已读) beside them. Times, statuses and system
   // cards in the middle are neither.
   const avatars = framed.filter((e) => e.role === 'AXImage' && within(e, messageList))
-    .filter((e) => messageList && e.frame!.x < messageList.frame!.x + messageList.frame!.width / 2);
-  const right = messageList ? messageList.frame!.x + messageList.frame!.width : window.x + window.width;
+    .filter((e) => e.frame!.x < messageList.x + messageList.width / 2);
+  const right = messageList.x + messageList.width;
   const said: { from: Message['from']; y: number; x: number; text: string }[] = [];
   for (const e of texts.filter((e) => within(e, messageList))) {
     const t = text(e);
