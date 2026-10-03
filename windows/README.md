@@ -10,7 +10,7 @@ JSON output included.
 - Windows 10 or 11, x64
 - The [Virtual Display Driver](https://github.com/VirtualDrivers/Virtual-Display-Driver)
   (MIT), which provides the monitors
-- [cua-driver](https://cua.ai), only for `state`, `click`, `type` and `key`
+- [cua-driver](https://cua.ai), only for `state`, `click`, `type`, `key`, `scroll` and `drag`
 - The .NET 8 SDK, only to build
 
 ## Install
@@ -22,7 +22,7 @@ As administrator:
 .\SecondScreen.exe --setup          # once, if the driver's settings are not writable
 ```
 
-Then for `state`, `click`, `type` and `key`:
+Then for `state`, `click`, `type`, `key`, `scroll` and `drag`:
 
 ```powershell
 irm https://cua.ai/driver/install.ps1 | iex
@@ -73,6 +73,9 @@ tools:
 2ndscreen app launch --screen test --path C:\path\to\App.exe
 2ndscreen state --screen test --pid 1234
 2ndscreen click --screen test --pid 1234 --text "Press me"
+2ndscreen click --screen test --pid 1234 --text "File" --right      # or --double
+2ndscreen scroll --screen test --pid 1234 --index 5 --direction down --amount 5
+2ndscreen drag --screen test --pid 1234 --from-x 2200 --from-y 500 --to-x 2500 --to-y 600
 2ndscreen screenshot --screen test --output shot.png
 2ndscreen screen destroy test
 ```
@@ -82,8 +85,14 @@ Output is JSON, in UTF-8 when piped; in Windows PowerShell set
 `2ndscreen --help` lists everything; `2ndscreen doctor` reports the displays,
 the driver's outputs and topology paths, and cua-driver.
 
-Programs start without activation, and `state`/`click`/`type`/`key` refuse a
-window that is not on the named screen, so your foreground window stays put.
+Programs start without activation, and `state`, `click`, `type`, `key`,
+`scroll` and `drag` refuse a window that is not on the named screen, so your
+foreground window stays put. Two actions need the foreground: cua-driver can
+turn the wheel at a point only with SendInput, and some programs (Chromium,
+WPF, GTK) ignore background drags. These run only with `--foreground`, which
+brings the program to the front and moves the real pointer; 2ndscreen puts
+the pointer back afterwards. Scrolling an element, or the focused area with
+no target, stays in the background.
 
 ## How it works
 

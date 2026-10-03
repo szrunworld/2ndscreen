@@ -49,7 +49,7 @@ public static class Mcp
                     ["capabilities"] = new JsonObject { ["tools"] = new JsonObject() },
                     ["serverInfo"] = new JsonObject { ["name"] = "2ndscreen", ["version"] = "0.1.0" },
                     ["instructions"] = "Private virtual screens for testing Windows programs without touching the user's screen, pointer, or focus. " +
-                        "Create a screen, launch the program there, look with state or screenshot, act with click/type/key, verify, " +
+                        "Create a screen, launch the program there, look with state or screenshot, act with click/type/key/scroll/drag, verify, " +
                         "then close the program and destroy the screen. Only act on programs you launched.",
                 });
             case "ping":
@@ -97,6 +97,20 @@ public static class Mcp
         ["index"] = Prop("integer", "Element index from the latest state"),
         ["text"] = Prop("string", "Visible text or label of the element"),
     };
+
+    private static readonly JsonObject PointTarget = new()
+    {
+        ["x"] = Prop("number", "Screen x, if no element"),
+        ["y"] = Prop("number", "Screen y, if no element"),
+    };
+
+    private static readonly JsonObject Foreground = new()
+    {
+        ["foreground"] = Prop("boolean", "Accept bringing the program to the front and moving the user's real pointer briefly"),
+    };
+
+    private static List<string> PointWords(JsonObject a) =>
+        a["x"] is not null && a["y"] is not null ? new() { "--x", S(a, "x"), "--y", S(a, "y") } : new();
 
     private static string S(JsonObject a, string key) => a[key]?.ToString() ?? "";
     private static bool B(JsonObject a, string key) => a[key] is JsonValue v && v.TryGetValue<bool>(out var b) && b;
@@ -188,15 +202,21 @@ public static class Mcp
                 if (a["screenshot_path"] is not null) w.AddRange(new[] { "--screenshot", S(a, "screenshot_path") });
                 return w;
             }, "screenshot_path"),
-        new("click", "Click an element in the background, by index or text, or a point on the screen.",
-            Merge(WindowTarget, ElementTarget, new JsonObject { ["x"] = Prop("number", "Screen x, if no element"), ["y"] = Prop("number", "Screen y, if no element") }),
+        new("click", "Click an element in the background, by index or text, or a point on the screen. Set button to right for a context menu, or double for a double-click.",
+            Merge(WindowTarget, ElementTarget, PointTarget, new JsonObject
+            {
+                ["button"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("left", "right"), ["description"] = "Default left" },
+                ["double"] = Prop("boolean", "Double-click"),
+            }),
             new[] { "screen", "pid" },
             a =>
             {
                 var w = new List<string> { "click" };
                 w.AddRange(TargetWords(a));
                 w.AddRange(ElementWords(a));
-                if (a["x"] is not null && a["y"] is not null) w.AddRange(new[] { "--x", S(a, "x"), "--y", S(a, "y") });
+                w.AddRange(PointWords(a));
+                if (S(a, "button") == "right") w.Add("--right");
+                if (B(a, "double")) w.Add("--double");
                 return w;
             }),
         new("type", "Type text into an element (by index or text), or into the focused one.",
@@ -222,6 +242,45 @@ public static class Mcp
                 w.AddRange(TargetWords(a));
                 w.AddRange(new[] { "--key", S(a, "key") });
                 if (a["modifiers"] is JsonArray mods && mods.Count > 0) w.AddRange(new[] { "--modifiers", string.Join(',', mods.Select(m => m?.ToString())) });
+                return w;
+            }),
+        new("scroll", "Scroll with the mouse wheel over an element, or without one, with arrow or page keys in the focused area. " +
+            "A wheel at a point needs foreground, which brings the program to the front and moves the user's pointer briefly.",
+            Merge(WindowTarget, ElementTarget, PointTarget, Foreground, new JsonObject
+            {
+                ["direction"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("up", "down", "left", "right") },
+                ["amount"] = Prop("integer", "Wheel notches or key presses, 1 to 50; default 3"),
+                ["by"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("line", "page"), ["description"] = "Step size; default line" },
+            }), new[] { "screen", "pid", "direction" },
+            a =>
+            {
+                var w = new List<string> { "scroll" };
+                w.AddRange(TargetWords(a));
+                w.AddRange(ElementWords(a));
+                w.AddRange(PointWords(a));
+                w.AddRange(new[] { "--direction", S(a, "direction") });
+                if (a["amount"] is not null) w.AddRange(new[] { "--amount", S(a, "amount") });
+                if (a["by"] is not null) w.AddRange(new[] { "--by", S(a, "by") });
+                if (B(a, "foreground")) w.Add("--foreground");
+                return w;
+            }),
+        new("drag", "Press at one screen point, move to another, and release, e.g. to move a slider or drop an item. Both points must be in the window. " +
+            "Runs in the background; if the program ignores that, retry with foreground, which moves the user's pointer briefly.",
+            Merge(WindowTarget, Foreground, new JsonObject
+            {
+                ["from_x"] = Prop("number", "Screen x to press at"), ["from_y"] = Prop("number", "Screen y to press at"),
+                ["to_x"] = Prop("number", "Screen x to release at"), ["to_y"] = Prop("number", "Screen y to release at"),
+                ["modifiers"] = new JsonObject { ["type"] = "array", ["items"] = new JsonObject { ["type"] = "string" }, ["description"] = "Held throughout: ctrl, shift, alt" },
+                ["duration_ms"] = Prop("integer", "How long the move takes; default 500"),
+            }), new[] { "screen", "pid", "from_x", "from_y", "to_x", "to_y" },
+            a =>
+            {
+                var w = new List<string> { "drag" };
+                w.AddRange(TargetWords(a));
+                foreach (var name in new[] { "from_x", "from_y", "to_x", "to_y" }) w.AddRange(new[] { "--" + name.Replace('_', '-'), S(a, name) });
+                if (a["modifiers"] is JsonArray mods && mods.Count > 0) w.AddRange(new[] { "--modifiers", string.Join(',', mods.Select(m => m?.ToString())) });
+                if (a["duration_ms"] is not null) w.AddRange(new[] { "--duration-ms", S(a, "duration_ms") });
+                if (B(a, "foreground")) w.Add("--foreground");
                 return w;
             }),
     };

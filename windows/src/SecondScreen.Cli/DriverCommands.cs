@@ -198,10 +198,10 @@ public sealed class Target
     };
 }
 
-/// <summary><c>state</c>, <c>click</c>, <c>type</c> and <c>key</c>.</summary>
+/// <summary><c>state</c>, <c>click</c>, <c>type</c>, <c>key</c>, <c>scroll</c> and <c>drag</c>.</summary>
 public static class DriverCommands
 {
-    public static readonly HashSet<string> Verbs = new() { "state", "click", "type", "key" };
+    public static readonly HashSet<string> Verbs = new() { "state", "click", "type", "key", "scroll", "drag" };
 
     public static int Run(string verb, Arguments args)
     {
@@ -215,6 +215,8 @@ public static class DriverCommands
                 "state" => State(target, driver, args),
                 "click" => Click(target, driver, args),
                 "type" => Type(target, driver, args),
+                "scroll" => Scroll(target, driver, args),
+                "drag" => Drag(target, driver, args),
                 _ => Key(target, driver, args),
             };
             output["ok"] ??= true;
@@ -240,28 +242,17 @@ public static class DriverCommands
 
     private static JsonObject Click(Target target, Driver driver, Arguments args)
     {
+        if (args.Has("--right") && args.Has("--double")) throw new InvalidOperationException("give --right or --double, not both");
+        var tool = args.Has("--right") ? "right_click" : args.Has("--double") ? "double_click" : "click";
         var arguments = new JsonObject { ["pid"] = target.Pid, ["window_id"] = target.Window.Id };
-        var described = new JsonObject();
+        var described = new JsonObject { ["button"] = args.Has("--right") ? "right" : "left", ["count"] = args.Has("--double") ? 2 : 1 };
 
-        if (double.TryParse(args.Value("--x"), out var x) && double.TryParse(args.Value("--y"), out var y))
+        if (GlobalPoint(args, "--x", "--y") is { } point)
         {
-            // A global point. cua-driver's pixel route wants coordinates in the window
-            // screenshot it captured last, so take one to learn its scale.
-            if (!target.Window.Frame.Contains(x, y)) throw new InvalidOperationException($"({x}, {y}) is outside the window");
-            var scratch = Path.Combine(Path.GetTempPath(), $"2ndscreen-click-{Environment.ProcessId}.png");
-            try
-            {
-                var snapshot = driver.State(target.Window.Id, target.Pid, screenshot: scratch);
-                double width = snapshot.Raw.TryGetProperty("screenshot_width", out var w) ? w.GetDouble() : target.Window.Frame.Width;
-                double scale = width / target.Window.Frame.Width;
-                arguments["x"] = (x - target.Window.Frame.X) * scale;
-                arguments["y"] = (y - target.Window.Frame.Y) * scale;
-            }
-            finally
-            {
-                File.Delete(scratch);
-            }
-            described["point"] = new JsonObject { ["x"] = x, ["y"] = y };
+            var (x, y) = WindowPixels(new[] { point }, target, driver)[0];
+            arguments["x"] = x;
+            arguments["y"] = y;
+            described["point"] = new JsonObject { ["x"] = point.X, ["y"] = point.Y };
         }
         else
         {
@@ -273,7 +264,7 @@ public static class DriverCommands
             described["snapshot"] = snapshot.Id;
         }
 
-        return Report(driver.Act("click", arguments), target, described);
+        return Report(driver.Act(tool, arguments), target, described);
     }
 
     private static JsonObject Type(Target target, Driver driver, Arguments args)
@@ -295,8 +286,7 @@ public static class DriverCommands
     private static JsonObject Key(Target target, Driver driver, Arguments args)
     {
         var key = args.Value("--key") ?? throw new InvalidOperationException("key needs --key NAME, such as return");
-        var modifiers = (args.Value("--modifiers") ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Select(m => m.ToLowerInvariant()).ToList();
+        var modifiers = ModifierList(args);
         var arguments = new JsonObject { ["pid"] = target.Pid, ["window_id"] = target.Window.Id };
         JsonObject result;
         if (modifiers.Count == 0)
@@ -311,6 +301,144 @@ public static class DriverCommands
         }
         return Report(result, target, new JsonObject { ["key"] = key, ["modifiers"] = JsonSerializer.SerializeToNode(modifiers) });
     }
+
+    /// <summary>
+    /// A mouse wheel over an element, or with neither element nor point, arrow or page keys
+    /// to the focused scroller; both stay in the background. A wheel at a point needs
+    /// SendInput, which moves the real pointer, so it runs only with --foreground.
+    /// </summary>
+    private static JsonObject Scroll(Target target, Driver driver, Arguments args)
+    {
+        var direction = args.Value("--direction")?.ToLowerInvariant();
+        if (direction is not ("up" or "down" or "left" or "right"))
+            throw new InvalidOperationException("scroll needs --direction up, down, left or right");
+        var arguments = new JsonObject { ["pid"] = target.Pid, ["window_id"] = target.Window.Id, ["direction"] = direction };
+        var described = new JsonObject { ["direction"] = direction };
+        if (args.Value("--amount") is { } amount)
+        {
+            if (!int.TryParse(amount, out var notches) || notches is < 1 or > 50)
+                throw new InvalidOperationException("--amount takes a number from 1 to 50");
+            arguments["amount"] = notches;
+            described["amount"] = notches;
+        }
+        if (args.Value("--by") is { } by)
+        {
+            if (by is not ("line" or "page")) throw new InvalidOperationException("--by takes line or page");
+            arguments["by"] = by;
+            described["by"] = by;
+        }
+
+        if (GlobalPoint(args, "--x", "--y") is { } point)
+        {
+            RequireForeground(args, "scroll at a point");
+            var (x, y) = WindowPixels(new[] { point }, target, driver)[0];
+            arguments["x"] = x;
+            arguments["y"] = y;
+            arguments["delivery_mode"] = "foreground";
+            described["point"] = new JsonObject { ["x"] = point.X, ["y"] = point.Y };
+            return Report(KeepingPointer(() => driver.Act("scroll", arguments)), target, described);
+        }
+        var (element, snapshot) = Resolve(target, driver, args, required: false);
+        if (element is not null)
+        {
+            arguments["element_token"] = element.Token;
+            described["element"] = JsonSerializer.SerializeToNode(element.ToJson());
+            described["snapshot"] = snapshot!.Id;
+        }
+        return Report(driver.Act("scroll", arguments), target, described);
+    }
+
+    /// <summary>
+    /// Press at one point, move to another, release. Both ends must be in the window.
+    /// In the background unless --foreground, for programs that ignore background drags.
+    /// </summary>
+    private static JsonObject Drag(Target target, Driver driver, Arguments args)
+    {
+        if (GlobalPoint(args, "--from-x", "--from-y") is not { } from || GlobalPoint(args, "--to-x", "--to-y") is not { } to)
+            throw new InvalidOperationException("drag needs --from-x X --from-y Y --to-x X --to-y Y");
+        var local = WindowPixels(new[] { from, to }, target, driver);
+        var arguments = new JsonObject
+        {
+            ["pid"] = target.Pid, ["window_id"] = target.Window.Id,
+            ["from_x"] = local[0].X, ["from_y"] = local[0].Y, ["to_x"] = local[1].X, ["to_y"] = local[1].Y,
+        };
+        var modifiers = ModifierList(args);
+        if (modifiers.Count > 0) arguments["modifier"] = JsonSerializer.SerializeToNode(modifiers);
+        if (args.Value("--duration-ms") is { } duration)
+        {
+            if (!int.TryParse(duration, out var milliseconds) || milliseconds is < 0 or > 10000)
+                throw new InvalidOperationException("--duration-ms takes a number from 0 to 10000");
+            arguments["duration_ms"] = milliseconds;
+        }
+        var described = new JsonObject
+        {
+            ["from"] = new JsonObject { ["x"] = from.X, ["y"] = from.Y }, ["to"] = new JsonObject { ["x"] = to.X, ["y"] = to.Y },
+            ["modifiers"] = JsonSerializer.SerializeToNode(modifiers),
+        };
+        if (!args.Has("--foreground")) return Report(driver.Act("drag", arguments), target, described);
+        arguments["delivery_mode"] = "foreground";
+        return Report(KeepingPointer(() => driver.Act("drag", arguments)), target, described);
+    }
+
+    private static void RequireForeground(Arguments args, string what)
+    {
+        if (!args.Has("--foreground"))
+            throw new InvalidOperationException($"{what} needs --foreground (foreground: true over MCP): it brings the program " +
+                "to the front and moves the real pointer, so ask the user first");
+    }
+
+    /// <summary>Run a foreground action and put the user's pointer back where it was.</summary>
+    private static JsonObject KeepingPointer(Func<JsonObject> action)
+    {
+        var pointer = Desktop.CursorPosition();
+        try
+        {
+            return action();
+        }
+        finally
+        {
+            Desktop.SetCursorPosition(pointer);
+        }
+    }
+
+    /// <summary>The point in two options, null if neither is given.</summary>
+    private static (double X, double Y)? GlobalPoint(Arguments args, string xName, string yName)
+    {
+        var (x, y) = (args.Value(xName), args.Value(yName));
+        if (x is null && y is null) return null;
+        if (!double.TryParse(x, out var px) || !double.TryParse(y, out var py))
+            throw new InvalidOperationException($"give both {xName} and {yName} as numbers");
+        return (px, py);
+    }
+
+    /// <summary>
+    /// Points on the desktop as pixels in the window screenshot cua-driver captured last,
+    /// which its pixel routes take. Takes one to learn its scale.
+    /// </summary>
+    private static (double X, double Y)[] WindowPixels((double X, double Y)[] points, Target target, Driver driver)
+    {
+        var frame = target.Window.Frame;
+        foreach (var (x, y) in points)
+        {
+            if (!frame.Contains(x, y)) throw new InvalidOperationException($"({x}, {y}) is outside the window");
+        }
+        var scratch = Path.Combine(Path.GetTempPath(), $"2ndscreen-pixels-{Environment.ProcessId}.png");
+        try
+        {
+            var snapshot = driver.State(target.Window.Id, target.Pid, screenshot: scratch);
+            double width = snapshot.Raw.TryGetProperty("screenshot_width", out var w) ? w.GetDouble() : frame.Width;
+            double scale = width / frame.Width;
+            return points.Select(p => ((p.X - frame.X) * scale, (p.Y - frame.Y) * scale)).ToArray();
+        }
+        finally
+        {
+            File.Delete(scratch);
+        }
+    }
+
+    private static List<string> ModifierList(Arguments args) =>
+        (args.Value("--modifiers") ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(m => m.ToLowerInvariant()).ToList();
 
     /// <summary>The element named by --index or --text, from a fresh snapshot.</summary>
     private static (Element? Element, Snapshot? Snapshot) Resolve(Target target, Driver driver, Arguments args, bool required)
@@ -348,6 +476,9 @@ public static class DriverCommands
             var error = Driver.Describe(result, "the action was refused");
             if (error.Contains("same_pid_keyboard_ambiguity"))
                 error += "; the program has several windows, so name the field with --index or --text";
+            // Some programs (Chromium, WPF, GTK) ignore background input of some kinds.
+            if (error.Contains("background_unavailable"))
+                error += "; this program needs --foreground for it, which moves the real pointer, so ask the user first";
             output["error"] = error;
         }
         return output;

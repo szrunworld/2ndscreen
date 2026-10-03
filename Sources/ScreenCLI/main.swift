@@ -16,14 +16,20 @@ usage:
   2ndscreen screenshot --screen NAME --output FILE.png
 
   2ndscreen state --screen NAME --pid PID [--window-id ID] [--query TEXT] [--screenshot FILE.png]
-  2ndscreen click --screen NAME --pid PID (--index N | --text TEXT | --x X --y Y)
+  2ndscreen click --screen NAME --pid PID (--index N | --text TEXT | --x X --y Y) [--right | --double]
   2ndscreen type  --screen NAME --pid PID --value TEXT [--index N | --text TEXT]
   2ndscreen key   --screen NAME --pid PID --key NAME [--modifiers cmd,shift]
+  2ndscreen scroll --screen NAME --pid PID --direction up|down|left|right [--amount N] [--by line|page]
+                   [--index N | --text TEXT | --x X --y Y]
+  2ndscreen drag  --screen NAME --pid PID --from-x X --from-y Y --to-x X --to-y Y --foreground
+                  [--modifiers shift] [--duration-ms MS]
 
   2ndscreen mcp      serve these commands as MCP tools over stdio
 
-state, click, type and key act through cua-driver's background routes and
-only on a window that is on the named screen. Indexes come from state; click
+state, click, type, key, scroll and drag act through cua-driver's background routes and
+only on a window that is on the named screen. drag is the exception: macOS
+offers no background drag, so it brings the app to the front and moves the
+real pointer, and runs only with --foreground. Indexes come from state; click
 and type re-read the window, so run state again after the UI changes.
 
 Durations take s, m or h (90s, 30m, 2h). A screen is destroyed when its TTL
@@ -50,7 +56,9 @@ struct Arguments {
     static let valued: Set<String> = ["--name", "--size", "--screen", "--bundle", "--path",
                                       "--pid", "--window-id", "--output", "--query", "--screenshot",
                                       "--index", "--text", "--x", "--y", "--value", "--key",
-                                      "--modifiers", "--ttl", "--idle-timeout", "--owner-pid"]
+                                      "--modifiers", "--ttl", "--idle-timeout", "--owner-pid",
+                                      "--direction", "--amount", "--by", "--from-x", "--from-y",
+                                      "--to-x", "--to-y", "--duration-ms"]
 
     init(_ words: [String]) {
         var iterator = words.makeIterator()

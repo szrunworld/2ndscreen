@@ -197,4 +197,6 @@ public static class Desktop
 
     public static (int X, int Y) CursorPosition() =>
         Native.GetCursorPos(out var p) ? (p.X, p.Y) : (0, 0);
+
+    public static void SetCursorPosition((int X, int Y) point) => Native.SetCursorPos(point.X, point.Y);
 }

@@ -147,7 +147,9 @@ if ($created.ok) {
 
 # 6. Clicking and typing through cua-driver, if installed and the launch worked.
 if ($SkipDriver -or -not $launched.ok) {
-    foreach ($name in "state reads the window", "click through cua-driver", "type through cua-driver") {
+    foreach ($name in "state reads the window", "click through cua-driver", "type through cua-driver",
+                      "scroll a list in the background", "double-click", "right-click", "drag", "wheel at a point needs --foreground",
+                      "wheel at a point with --foreground", "pointer put back after --foreground") {
         Skip $name $(if ($SkipDriver) { "cua-driver not installed" } else { "launch failed" })
     }
 } else {
@@ -163,6 +165,45 @@ if ($SkipDriver -or -not $launched.ok) {
     Check "type through cua-driver" ([bool]($typed.ok -and $state.tree -match "hello from 2ndscreen")) "$($typed.effect) $($typed.error)"
     Check "foreground still left alone" ([Fg]::Pid() -ne $targetPid)
     Invoke-2ndscreen @("screenshot", "--screen", "e2e", "--output", (Join-Path $Out "e2e-typed.png")) | Out-Null
+
+    # Scrolling, double- and right-clicks, and drags. TestTarget reports the list's top
+    # row as "Top N" and what reached its pad as "Pad idle double right drag".
+    $target = @("--screen", "e2e", "--pid", "$targetPid")
+    $scrolled = Invoke-2ndscreen (@("scroll") + $target + @("--text", "Rows", "--direction", "down", "--amount", "10"))
+    Start-Sleep -Milliseconds 500
+    $state = Invoke-2ndscreen @("state", "--screen", "e2e", "--pid", "$targetPid")
+    Check "scroll a list in the background" ([bool]($scrolled.ok -and $state.tree -match "Top [1-9]")) "$($scrolled.effect) $($scrolled.error)"
+    Check "foreground left alone after scroll" ([Fg]::Pid() -ne $targetPid)
+
+    $frame = ($state.elements | Where-Object label -eq "Pad" | Select-Object -First 1).frame
+    $cx = $frame.x + [int]($frame.width / 2); $cy = $frame.y + [int]($frame.height / 2)
+    $double = Invoke-2ndscreen (@("click") + $target + @("--x", "$cx", "--y", "$cy", "--double"))
+    $right = Invoke-2ndscreen (@("click") + $target + @("--x", "$cx", "--y", "$cy", "--right"))
+    $drag = Invoke-2ndscreen (@("drag") + $target + @("--from-x", "$($cx - 80)", "--from-y", "$cy", "--to-x", "$($cx + 80)", "--to-y", "$cy"))
+    Start-Sleep -Milliseconds 500
+    $state = Invoke-2ndscreen @("state", "--screen", "e2e", "--pid", "$targetPid")
+    Check "double-click" ([bool]($double.ok -and $state.tree -match "Pad idle.* double")) "$($double.effect) $($double.error)"
+    Check "right-click" ([bool]($right.ok -and $state.tree -match "Pad idle.* right")) "$($right.effect) $($right.error)"
+    Check "drag" ([bool]($drag.ok -and $state.tree -match "Pad idle.* drag")) "$($drag.effect) $($drag.error)"
+    Check "foreground left alone after clicks and drag" ([Fg]::Pid() -ne $targetPid)
+
+    # A wheel at a point moves the real pointer, so it needs --foreground, and the
+    # pointer goes back afterwards.
+    $listFrame = ($state.elements | Where-Object label -eq "Rows" | Select-Object -First 1).frame
+    $lx = $listFrame.x + [int]($listFrame.width / 2); $ly = $listFrame.y + [int]($listFrame.height / 2)
+    $refused = Invoke-2ndscreen (@("scroll") + $target + @("--x", "$lx", "--y", "$ly", "--direction", "down"))
+    Check "wheel at a point needs --foreground" ([bool](-not $refused.ok -and $refused.error -match "--foreground")) "$($refused.error)"
+    Add-Type -AssemblyName System.Windows.Forms
+    $before = [System.Windows.Forms.Cursor]::Position
+    $topBefore = [int]([regex]::Match($state.tree, "Top (\d+)").Groups[1].Value)
+    $wheel = Invoke-2ndscreen (@("scroll") + $target + @("--x", "$lx", "--y", "$ly", "--direction", "down", "--amount", "5", "--foreground"))
+    $after = [System.Windows.Forms.Cursor]::Position
+    Start-Sleep -Milliseconds 500
+    $state = Invoke-2ndscreen @("state", "--screen", "e2e", "--pid", "$targetPid")
+    $topAfter = [int]([regex]::Match($state.tree, "Top (\d+)").Groups[1].Value)
+    Check "wheel at a point with --foreground" ([bool]($wheel.ok -and $topAfter -gt $topBefore)) "Top $topBefore -> $topAfter $($wheel.error)"
+    Check "pointer put back after --foreground" ($before -eq $after) "$before -> $after"
+    Invoke-2ndscreen @("screenshot", "--screen", "e2e", "--output", (Join-Path $Out "e2e-input.png")) | Out-Null
 }
 
 # 7. MCP.
@@ -174,7 +215,7 @@ $requests = @(
 ) -join "`n"
 $mcp = $requests | & $cli mcp | ForEach-Object { $_ | ConvertFrom-Json }
 $tools = ($mcp | Where-Object id -eq 2).result.tools.name
-Check "mcp lists tools" ($tools.Count -eq 10) ($tools -join ",")
+Check "mcp lists tools" ($tools.Count -eq 12) ($tools -join ",")
 Check "mcp screen_list" (-not ($mcp | Where-Object id -eq 3).result.isError)
 
 # 8. Cleanup: destroying the screen moves the test window back to a real display.

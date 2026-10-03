@@ -98,15 +98,39 @@ Things to know:
 - The menu lists agent screens, each with its own preview, its windows,
   and **Destroy**.
 
-Agents then look and act with `state`, `click`, `type` and `key`, which
-run through [cua-driver](https://github.com/trycua/cua)'s background
-routes and show the agent cursor:
+Agents then look and act with `state`, `click`, `type`, `key` and
+`scroll`, which run through [cua-driver](https://github.com/trycua/cua)'s
+background routes and show the agent cursor:
 
 ```bash
 $CLI state --screen test-a --pid 1234 [--screenshot before.png]   # elements + accessibility tree
 $CLI click --screen test-a --pid 1234 --text "Sign In"            # or --index N, or --x/--y
 $CLI type  --screen test-a --pid 1234 --index 7 --value "hello"
 $CLI key   --screen test-a --pid 1234 --key n --modifiers cmd
+$CLI click --screen test-a --pid 1234 --text "Message" --right     # or --double
+$CLI scroll --screen test-a --pid 1234 --index 5 --direction down [--amount N] [--by page]
+```
+
+`scroll` turns the wheel over an element or point (`--x/--y`), so it
+reaches a list nested inside a larger window. Without either it sends
+arrow or page keys to the focused area. cua-driver 0.32's background wheel
+scrolls the opposite way to the direction it is given, in AppKit and
+WebKit and whatever the natural scrolling setting; 2ndscreen sends the
+opposite direction to correct this.
+
+A right-click at a point reaches the app twice (a web page saw two
+`contextmenu` events), because cua-driver posts each event through two
+routes so that it reaches backgrounded apps. A context menu usually just
+opens again; check the result before acting on it.
+
+`drag` is the exception to working in the background. cua-driver has no
+background drag on macOS: its foreground drag brings the app to the front
+and moves the real pointer for about a second. So `drag` runs only with
+`--foreground`, and 2ndscreen puts the pointer back afterwards. In testing,
+3 of 5 drags in a row reached a web view, so verify each one.
+
+```bash
+$CLI drag --screen test-a --pid 1234 --from-x 2200 --from-y 500 --to-x 2500 --to-y 600 --foreground
 ```
 
 These refuse any window that is not on the named screen, so an agent
@@ -131,7 +155,8 @@ agent, or install it as a Claude Code skill.
 
 `2ndscreen mcp` serves the same commands as MCP tools over stdio:
 `screen_create`, `screen_list`, `screen_destroy`, `app_launch`,
-`window_move`, `screenshot`, `state`, `click`, `type` and `key`. Each tool
+`window_move`, `screenshot`, `state`, `click`, `type`, `key`, `scroll` and
+`drag`. Each tool
 runs the matching CLI command, so the guards and output are identical.
 `screenshot`, and `state` with `screenshot: true`, also return the image,
 downscaled to 1280 px as JPEG.
