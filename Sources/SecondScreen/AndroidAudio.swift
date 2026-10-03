@@ -73,10 +73,11 @@ final class AndroidAudioPlayer {
         if renderer.status == .failed { renderer.flush() }
         if rate == 0 { setRate(1, time: .zero) }
         // The phone's player holds its picture back by its speaker's
-        // latency, which the captured sound skips, so the sound can come
-        // early. `defaults write io.github.szrunworld.2ndscreen
-        // androidAudioDelay -float SECONDS` adds delay, taking effect at once.
-        jitter.setExtraDelay(UserDefaults.standard.double(forKey: "androidAudioDelay"))
+        // latency, which the captured sound skips, so the sound comes early:
+        // 1 s lined it up by ear on a Honor phone over Wi-Fi.
+        // `defaults write io.github.szrunworld.2ndscreen androidAudioDelay
+        // -float SECONDS` sets another, taking effect at once.
+        jitter.setExtraDelay(UserDefaults.standard.object(forKey: "androidAudioDelay") as? Double ?? 1)
         var now = synchronizer.currentTime()
         let host = CACurrentMediaTime()
         if now.seconds != lastClock {

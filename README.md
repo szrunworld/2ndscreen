@@ -310,11 +310,20 @@ title bar has Back, Home and Recents, and ⌘V pastes the Mac's clipboard.
 The phone's sound plays on the Mac while its mirror is open (Android 11
 and later), and the phone itself goes quiet, as with iPhone Mirroring:
 scrcpy's default source, the only one that captures every app. It comes as
-AAC at about 130 kbit/s. Over Wi-Fi the phone sends it in bursts after
-pauses of up to half a second, so the buffer starts at 100 ms and grows
-each time a pause runs it dry, to at most 500 ms; what a burst leaves
-queued beyond that plays 5% faster, pitch kept, until the delay is back
-down. Voice and video calls cannot be captured.
+AAC at about 130 kbit/s, beside video at 3 Mbit/s. Over Wi-Fi the phone
+sends it in bursts after hold-ups of up to two seconds, so the buffer
+adapts: running dry grows it by as long as the hold-up was, up to 2 s,
+and the burst that follows refills it without dropping any; 20 s without
+running dry shrinks it by half its spare, down to 200 ms, playing the
+excess 5% faster, pitch kept. The log category `android-audio` records
+each change. Voice and video calls cannot be captured.
+
+The sound is held back a further second by default. A phone's video
+player delays its picture by its speaker's latency, which the captured
+sound skips, so without it the sound runs ahead of the picture.
+`defaults write io.github.szrunworld.2ndscreen androidAudioDelay -float 0.5`
+sets another delay, taking effect at once; the log category `android-av`
+reports how far the sound plays behind the picture as it arrives.
 
 Agents use the same phone from the command line:
 
