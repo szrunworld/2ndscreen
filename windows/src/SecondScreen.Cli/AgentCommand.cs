@@ -18,7 +18,7 @@ public static class AgentCommand
         var instruction = string.Join(' ', args.Positional.Skip(1)).Trim();
         if (args.Value("--screen") is not { } screen || !int.TryParse(args.Value("--pid"), out var pid) || instruction.Length == 0)
         {
-            Console.Error.WriteLine("usage: 2ndscreen agent --screen NAME --pid PID [--window-id ID] [--allow-submit] [--foreground] [--max-steps N] INSTRUCTION");
+            Console.Error.WriteLine("usage: 2ndscreen agent --screen NAME --pid PID [--window-id ID] [--allow-submit] [--foreground] [--no-learn] [--max-steps N] INSTRUCTION");
             return 2;
         }
         long? windowId = long.TryParse(args.Value("--window-id"), out var id) ? id : null;
@@ -35,7 +35,8 @@ public static class AgentCommand
             var model = ChatCompletionsModel.FromEnvironment();
             var target = new ControlScreen(screen, pid, windowId);
             var agent = new Agent(target, model, new PlanContext(screen, pid, windowId, target.Frame()),
-                new AgentOptions(maxSteps, args.Has("--allow-submit"), args.Has("--foreground")),
+                new AgentOptions(maxSteps, args.Has("--allow-submit"), args.Has("--foreground"),
+                    args.Has("--no-learn") ? null : FileProcedureStore.Standard, ProgramName(pid)),
                 line => Console.Error.WriteLine(line));
             result = agent.Run(instruction);
         }
@@ -46,9 +47,25 @@ public static class AgentCommand
         var output = new JsonObject
         {
             ["ok"] = result.Done, ["outcome"] = result.Done ? "done" : "user", ["reason"] = result.Reason, ["steps"] = result.Steps,
+            ["modelCalls"] = result.ModelCalls, ["replayedSteps"] = result.Replayed,
         };
+        if (result.Learned is { } learned) output["learned"] = learned;
         Console.WriteLine(output.ToJsonString(new JsonSerializerOptions { WriteIndented = true, Encoder = ProtocolJson.Pretty.Encoder }));
         return result.Done ? 0 : 1;
+    }
+
+    /// <summary>Procedures are kept by program: its executable's name, such as CalculatorApp.</summary>
+    private static string ProgramName(int pid)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(pid);
+            return process.ProcessName;
+        }
+        catch (Exception)
+        {
+            return $"pid-{pid}";
+        }
     }
 
     /// <summary>The agent's view of one program on one screen, through the tray app and this command.</summary>
