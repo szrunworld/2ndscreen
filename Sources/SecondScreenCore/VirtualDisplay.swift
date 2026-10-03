@@ -39,6 +39,9 @@ public final class VirtualDisplay {
     }
 
     public private(set) var mode: Mode
+    /// The largest size `apply` can switch to: the descriptor reserves
+    /// pixels for it and nothing bigger.
+    public let largest: Mode
     public private(set) var hiDPI: Bool
     public let refreshRate: Double
     public var displayID: CGDirectDisplayID { display.displayID }
@@ -59,6 +62,7 @@ public final class VirtualDisplay {
         let candidates = Self.presets + reserving + [mode]
         let widest = candidates.map(\.width).max()!
         let tallest = candidates.map(\.height).max()!
+        largest = Mode(width: widest, height: tallest)
 
         let descriptor = CGVirtualDisplayDescriptor()
         descriptor.setDispatchQueue(DispatchQueue.main)

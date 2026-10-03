@@ -142,6 +142,26 @@ func stopReason(_ steps: [Step]) -> (Outcome, String)? {
         #expect(steps.first?.kind == .drag && steps.first?.foreground == true && steps.first?.toX == 2176)
     }
 
+    @Test func dragsStayDragsWithoutGestures() {
+        // On iPhone Mirroring a click is a tap, so a drag must never become
+        // clicks; it goes to the screen as a drag, which refuses it.
+        var phone = context
+        phone.gestures = false
+        let drag = action("drag(start_box='[450, 850, 450, 850]', end_box='[450, 300, 450, 300]')")
+        let steps = inputs(Planner.plan(drag, phone))
+        #expect(steps.map(\.kind) == [.drag] && steps[0].foreground != true)
+    }
+
+    @Test func iPhoneOptionsOfferNoSwipes() {
+        var options = TarsAgent.Options()
+        options.forIPhone()
+        #expect(!options.gestures && !options.listElements)
+        for word in ["scroll(", "drag(", "long_press(", "press_back("] {
+            #expect(!options.actionSpaces.contains(word), "\(word)")
+        }
+        #expect(options.actionSpaces.contains("press_home()"))
+    }
+
     @Test func scrollAtAPoint() {
         let steps = inputs(Planner.plan(action("scroll(start_box='[500, 500, 500, 500]', direction='down')"), context))
         #expect(steps.first?.direction == "down" && steps.first?.x == 2560)

@@ -83,11 +83,34 @@ $CLI screen create --name test-a --size 1280x800      # HiDPI follows the main d
 $CLI app launch --screen test-a --path build/MyApp.app --fill
 $CLI app launch --screen test-a --bundle com.apple.Chess
 $CLI window move --screen test-a --pid 1234 [--window-id 5678] [--fill]
+$CLI window move --screen phone --pid 1234 --fit-screen  # the screen follows the window's size
+$CLI screen resize test-a --size 1024x768              # change a screen's size in place
 $CLI window release --screen test-a --pid 1234        # give its windows back to the main display
 $CLI screenshot --screen test-a --output shot.png
 $CLI screen list
 $CLI screen destroy test-a
 ```
+
+`--fit-screen` (on `app launch` and `window move`) keeps the screen sized
+to the app's largest window plus the menu bar, so nothing else shows around
+it and its preview has the window's shape. When iPhone Mirroring turns
+landscape for a video, or is made larger or smaller, the screen follows
+about a second after the window settles, and the window is put back at the
+top, centered. A screen that prefers HiDPI is grown to the smallest size
+macOS runs at 2x (800 points on the long side, 525 on the short), so a
+phone screen stays sharp: 525x1001 upright, 944x525 turned. Windows that
+macOS keeps inside the screen can make it smaller but not larger; use
+`screen resize` for that. A screen can be resized up to 2560x1440, or its
+own size when it was created larger.
+
+The same is in the menu: each agent screen has **Fit to Window** and a
+**Size** submenu (choosing a size turns Fit to Window off; sizes too small
+for the app's window are disabled, since an app such as iPhone Mirroring
+decides its own orientation and size), and its preview
+has title bar buttons to make the app's window smaller or larger (⌘- and
+⌘=), to turn the picture a quarter (the view only: the app, and a phone,
+keep their own orientation), and to set the Mac's output volume, plus
+Home Screen and App Switcher when the window is iPhone Mirroring's.
 
 Every command prints one JSON object and exits non-zero on failure.
 Frames are global, top-left-origin points, the same space accessibility
@@ -283,6 +306,32 @@ claude mcp add --transport stdio 2ndscreen -- 2ndscreen mcp
 Any MCP client works: point it at `2ndscreen mcp` (use the absolute path
 if `2ndscreen` is not on its PATH).
 
+## iPhone
+
+2ndscreen runs iPhone Mirroring on an agent screen and lets the vision
+agent use it from the command line, like an Android phone.
+
+```bash
+$CLI iphone setup                # a "phone" screen with iPhone Mirroring on it, kept sized to its window
+$CLI agent --iphone "打开微信，告诉我第一个聊天的名字"
+```
+
+What iPhone Mirroring allows from a Mac shapes what the agent can do:
+
+- Taps work in the background, and Home (⌘1).
+- Nothing swipes or scrolls: wheel events, trackpad phases and drags are
+  ignored, in the background and in front, so the agent is offered none,
+  and a drag the model asks for anyway is refused, never turned into taps.
+  It uses search instead.
+- Typed text reaches the phone's keyboard as key codes, which a Chinese
+  keyboard turns into pinyin. Text is pasted: once you have not touched the
+  keyboard or mouse for three seconds, iPhone Mirroring comes to the front
+  for about a second for ⌘V, and your clipboard and frontmost app are put
+  back after.
+- Without the phone it shows "iPhone in Use" or "Connection Paused"; the
+  agent presses Connect, Try Again or Resume when offered and stops
+  otherwise. Lock the phone and leave it near the Mac.
+
 ## Android phones
 
 2ndscreen mirrors and controls Android phones over Wi-Fi, with nothing
@@ -366,10 +415,7 @@ $CLI agent --android [--serial S] "打开微信，给文件传输助手写一句
 
 The guards are the desktop's: it stops before Enter, text ending in a
 newline, or a tap the model describes as sending, and the result's
-`pending` holds the `2ndscreen` arguments that would do it. **Android Phones →
-UI-TARS Panel** in the menu bar opens the same agent in a panel beside
-the phone, run in the app itself, with Confirm and Discard for what it
-held back.
+`pending` holds the `2ndscreen` arguments that would do it.
 
 Things to know:
 

@@ -11,9 +11,11 @@ enum AgentCommand {
     static func run(_ args: Arguments) -> Never {
         let instruction = args.positional.dropFirst().joined(separator: " ").trimmingCharacters(in: .whitespaces)
         let android = args.has("--android")
+        let iphone = args.has("--iphone")
         let usage = "usage: 2ndscreen agent --screen NAME --pid PID [--window-id ID] [--allow-submit] "
             + "[--foreground] [--no-elements] [--no-learn] [--max-steps N] INSTRUCTION\n"
-            + "       2ndscreen agent --android [--serial SERIAL] [--allow-submit] [--max-steps N] INSTRUCTION"
+            + "       2ndscreen agent --android [--serial SERIAL] [--allow-submit] [--max-steps N] INSTRUCTION\n"
+            + "       2ndscreen agent --iphone [--screen phone] [--allow-submit] [--max-steps N] INSTRUCTION"
         guard !instruction.isEmpty else { fail(usage) }
 
         var options = TarsAgent.Options()
@@ -21,7 +23,10 @@ enum AgentCommand {
         options.foreground = args.has("--foreground")
         options.listElements = !args.has("--no-elements")
         let target: AgentScreen
-        if android {
+        if iphone {
+            target = IPhoneAgentScreen(screen: args.value("--screen") ?? "phone")
+            options.forIPhone()
+        } else if android {
             target = AndroidAgentScreen(serial: args.value("--serial"))
             options.forPhone()
         } else {
