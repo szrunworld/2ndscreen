@@ -240,7 +240,8 @@ test('relative points pass through; external-submit is forbidden; bad requests a
   const { session, adapter } = await openSession();
   const r = await session.act({ actionId: 'r', action: { kind: 'click', target: { kind: 'relative', point: { x: 0.2, y: 0.3 } }, effect: 'read' } });
   assert.equal(r.status, 'ok');
-  assert.equal(adapter.observes.length, 0);
+  assert.deepEqual(adapter.observes, [{ elements: false }], 'a fresh read measures the window first');
+  assert.ok(r.beforeSnapshotId);
   await assert.rejects(session.act({ actionId: 's', action: { kind: 'key', key: 'return', effect: 'external-submit' } }), (e) => isRuntimeError(e, 'forbidden_effect'));
   await assert.rejects(session.act({ actionId: 'i', action: { kind: 'click', target: { kind: 'element', index: 1 }, effect: 'read' } }), (e) => isRuntimeError(e, 'invalid_input'));
   assert.equal(adapter.acts.length, 1);
@@ -394,28 +395,32 @@ test('check evaluates element, text, page, window, file and composite conditions
   }
 });
 
-test('rebind moves back only the process this session launched, recognised by pid and start time', async () => {
+test('rebind never widens takeOver: even the process this session launched, once off screen, ends in conflict, not a move', async () => {
   const adapter = fakeAdapter();
   const { session } = await openSession({ adapter });
-  // The screen was rebuilt: our own process is now off screen.
+  // The screen was rebuilt and our own process is off it; the adapter cannot
+  // promise to move only that process, so the session does not ask it to.
   adapter.bind = (takeOver) => {
     if (!takeOver) throw new RuntimeError('conflict', 'running elsewhere', { pid: 4242, processStartedAt: '2026-09-17T21:55:13.000Z', bundleId: BUNDLE });
     return { screenId: profile.id, socket: '/tmp/s.sock', window: windowOf(4242, 90), launchedByRuntime: false };
   };
+  await assert.rejects(session.rebind(), (e) => isRuntimeError(e, 'conflict'));
+  assert.deepEqual(adapter.bindCalls.slice(1), [{ takeOver: false }]);
+  assert.equal(session.binding().window.windowId, 77, 'the old binding is kept, not replaced by a half-done rebind');
+
+  // Back on its screen with a new window: the same process keeps its ownership.
+  adapter.bind = () => ({ screenId: profile.id, socket: '/tmp/s.sock', window: windowOf(4242, 90), launchedByRuntime: false });
   const stale = await session.observe();
   const rebound = await session.rebind();
   assert.equal(rebound.window.windowId, 90);
   assert.equal(rebound.launchedByRuntime, true, 'still the process this session launched');
-  assert.deepEqual(adapter.bindCalls.slice(1), [{ takeOver: false }, { takeOver: true }]);
   assert.equal((await session.act(click({ kind: 'element', index: 0 }, stale.snapshotId))).status, 'stale_snapshot');
 
-  // Same pid but a different start time is someone else's process: left alone.
-  adapter.bind = () => {
-    throw new RuntimeError('conflict', 'running elsewhere', { pid: 4242, processStartedAt: '2026-10-04T09:00:00.000Z', bundleId: BUNDLE });
-  };
-  await assert.rejects(session.rebind(), (e) => isRuntimeError(e, 'conflict'));
-  assert.equal(adapter.bindCalls.at(-1)?.takeOver, false);
-  await session.close({ keepWindow: true });
+  // Same pid, different start time: a new process, which this session did not launch.
+  adapter.bind = () => ({ screenId: profile.id, socket: '/tmp/s.sock', window: windowOf(4242, 91, '2026-10-04T09:00:00.000Z'), launchedByRuntime: false });
+  assert.equal((await session.rebind()).launchedByRuntime, false);
+  await session.close({ keepWindow: false });
+  assert.equal(adapter.released.length, 0, 'a process it did not launch is not released');
 });
 
 test('rebind of an attached app never takes it over unless the task allowed it', async () => {
@@ -478,6 +483,34 @@ test('close releases the window unless kept, gives back the lease once, and ends
   await kept.session.close({ keepWindow: true });
   assert.equal(kept.adapter.released.length, 0);
   assert.equal(kept.leases.leases.size, 0);
+});
+
+test('close never releases a window the session only attached to or took over', async () => {
+  for (const takeOver of [false, true]) {
+    const adapter = fakeAdapter();
+    adapter.bind = () => ({ screenId: profile.id, socket: '/tmp/s.sock', window: windowOf(), launchedByRuntime: false });
+    const { session, leases } = await openSession({ adapter, takeOver });
+    await session.close({ keepWindow: false });
+    assert.equal(adapter.released.length, 0, `takeOver=${takeOver}`);
+    assert.equal(leases.leases.size, 0);
+  }
+});
+
+test('every read re-measures the window, and the binding follows it', async () => {
+  const adapter = fakeAdapter();
+  const { session } = await openSession({ adapter });
+  const moved = { x: 5000, y: 100, width: 1440, height: 875 };
+  const observe = adapter.observe;
+  adapter.observe = async (b, o, s) => {
+    const r = await observe(b, o, s);
+    return { ...r, window: { ...r.window, frame: moved, contentFrame: moved } };
+  };
+  await session.observe();
+  assert.deepEqual(session.binding().window.frame, moved);
+  assert.deepEqual(session.binding().window.contentFrame, moved);
+  await session.act(click({ kind: 'relative', point: { x: 0.5, y: 0.5 } }));
+  assert.deepEqual(adapter.acts.at(-1)!.binding.window.frame, moved, 'input goes out with the measured geometry');
+  await session.close({ keepWindow: true });
 });
 
 test('close stops an outstanding grant and waits for the actor to finish before letting go', async () => {

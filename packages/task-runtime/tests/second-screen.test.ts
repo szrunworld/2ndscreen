@@ -90,7 +90,7 @@ async function withDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
 const binding: WindowBinding = {
   screenId: profile.id,
   socket: SOCKET,
-  window: { pid: 4242, windowId: 77, processStartedAt: '2026-09-17T21:55:13.000Z', bundleId: BUNDLE, title: 'Synthetic', frame: MAIN, contentFrame: MAIN, scale: 2, displayId: 7 },
+  window: { pid: 4242, windowId: 77, processStartedAt: parseProcessStart('Thu Sep 17 21:55:13 2026'), bundleId: BUNDLE, title: 'Synthetic', frame: MAIN, contentFrame: MAIN, scale: 2, displayId: 7 },
   launchedByRuntime: true,
 };
 
@@ -125,14 +125,14 @@ test('ensureScreen starts the side instance on its own socket and creates an own
   assert.equal(flag(create.args, '--idle-timeout'), '30m');
 });
 
-test('ensureScreen reuses a matching screen, resizes a different one, and never destroys screens', async () => {
-  const sized = { ...SCREEN, width: 1280, height: 800 };
-  let current = sized;
+test('ensureScreen reuses a matching screen, resizes a different one it owns, and never destroys screens', async () => {
+  const sized = { ...SCREEN, width: 1280, height: 800, ownerPID: process.pid };
+  let current: object = sized;
   const { run, calls } = fakeRunner({
     cli: (args) => {
       if (verb(args) === 'screen list') return { ok: true, screens: [current] };
       if (verb(args) === 'screen resize') {
-        current = SCREEN;
+        current = { ...SCREEN, ownerPID: process.pid };
         return { ok: true };
       }
       return { ok: false, error: 'unexpected' };
@@ -315,7 +315,7 @@ test('observe follows a geometry change but reports a replaced window as window_
 });
 
 test('act maps each action to its CLI words and route, in the bound window only', async () => {
-  const { run, calls } = fakeRunner({ cli: () => ({ ok: true, route: 'event.pid' }) });
+  const { run, calls } = fakeRunner({ cli: () => ({ ok: true, route: 'event.pid' }), tools: identityTools });
   const adapter = createSecondScreenAdapter({ cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' });
   const base = ['--screen', profile.id, '--pid', '4242', '--window-id', '77'];
 
@@ -323,6 +323,8 @@ test('act maps each action to its CLI words and route, in the bound window only'
   assert.equal(r.status, 'ok');
   assert.equal(r.route, 'element');
   assert.deepEqual(calls.at(-1)!.args, ['click', ...base, '--double', '--index', '3']);
+  // Each input is preceded by a fresh identity read of the bound pid.
+  assert.deepEqual(calls.slice(-3, -1).map((c) => c.file), ['lsappinfo', 'ps']);
 
   r = await adapter.act(binding, { actionId: 'a2', action: { kind: 'click', target: { kind: 'relative', point: { x: 0.5, y: 0.25 } }, button: 'right', effect: 'read' } });
   assert.equal(r.route, 'coordinate');
@@ -339,11 +341,11 @@ test('act maps each action to its CLI words and route, in the bound window only'
   await adapter.act(binding, { actionId: 'a5', snapshotId: 's', action: { kind: 'type', value: 'x', replace: true, target: { kind: 'element', index: 2 }, effect: 'navigation' } });
   assert.deepEqual(calls.at(-1)!.args, ['type', ...base, '--value', 'x', '--replace', '--index', '2']);
 
-  const count = calls.length;
+  const count = calls.filter((c) => c.file === 'cli').length;
   r = await adapter.act(binding, { actionId: 'a6', action: { kind: 'click', target: { kind: 'element', label: 'Open' }, effect: 'read' } });
   assert.equal(r.status, 'failed');
   assert.equal(r.error?.code, 'invalid_input');
-  assert.equal(calls.length, count, 'the adapter never resolves semantic locators itself');
+  assert.equal(calls.filter((c) => c.file === 'cli').length, count, 'the adapter never resolves semantic locators itself');
 });
 
 test('act reports stale indexes, classified failures, and unknown when a command is cut off', async () => {
@@ -353,6 +355,7 @@ test('act reports stale indexes, classified failures, and unknown when a command
       if (typeof reply === 'function') reply();
       return reply as object;
     },
+    tools: identityTools,
   });
   const adapter = createSecondScreenAdapter({ cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' });
   const click = { actionId: 'a', snapshotId: 's', action: { kind: 'click' as const, target: { kind: 'element' as const, index: 9 }, effect: 'read' as const } };
@@ -383,20 +386,19 @@ test('an aborted signal stops every operation before it runs a command', async (
 
 test('releaseWindow releases only the bound window and tolerates one already gone', async () => {
   let gone = false;
-  const { run, calls } = fakeRunner({ cli: () => (gone ? { ok: false, error: 'pid 4242 has no matching window on screen "x"' } : { ok: true }) });
+  const { run, calls } = fakeRunner({ cli: () => (gone ? { ok: false, error: 'pid 4242 has no matching window on screen "x"' } : { ok: true }), tools: identityTools });
   const adapter = createSecondScreenAdapter({ cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' });
   await adapter.releaseWindow(binding);
-  assert.deepEqual(calls[0]!.args, ['window', 'release', '--screen', profile.id, '--pid', '4242', '--window-id', '77']);
+  assert.deepEqual(calls.find((c) => c.file === 'cli')!.args, ['window', 'release', '--screen', profile.id, '--pid', '4242', '--window-id', '77']);
   gone = true;
   await adapter.releaseWindow(binding);
 });
 
-test('capabilities probe permissions against an agent screen and report P0 input gaps', async () => {
+test('capabilities probe only by reading, and report what they cannot verify as false', async () => {
   await withDir(async (dir) => {
-    const { run } = fakeRunner({
+    const { run, calls } = fakeRunner({
       cli: async (args) => {
         if (verb(args) === 'screen list') return { ok: true, screens: [SCREEN] };
-        if (verb(args) === 'window release') return { ok: false, error: 'pid 0 has no matching window on screen "x"' };
         if (args[0] === 'screenshot') {
           await writeFile(flag(args, '--output')!, png(2, 2));
           return { ok: true };
@@ -412,10 +414,12 @@ test('capabilities probe permissions against an agent screen and report P0 input
       backgroundScroll: true,
       backgroundType: false,
       screenshot: true,
-      accessibility: true,
+      accessibility: false,
       screenRecordingPermission: true,
-      accessibilityPermission: true,
+      accessibilityPermission: false,
     });
+    const verbs = calls.filter((c) => c.file === 'cli').map((c) => c.args[0]);
+    assert.deepEqual(verbs, ['screen', 'screenshot'], 'no window, input or screen mutation is used as a probe');
     const { readdir } = await import('node:fs/promises');
     assert.deepEqual(await readdir(dir), [], 'the probe screenshot is removed');
   });
@@ -441,4 +445,119 @@ test('createCommandRunner resolves exit codes and turns timeouts, aborts and mis
   setTimeout(() => controller.abort(), 50);
   await assert.rejects(pending, (e) => isRuntimeError(e, 'cancelled'));
   await assert.rejects(run('/nonexistent/program', [], { timeoutMs: 1000 }), (e) => isRuntimeError(e, 'capability_missing'));
+});
+
+// Review regressions: ownership, process identity, child termination and geometry.
+
+test('ensureScreen will not resize a screen it does not own', async () => {
+  for (const ownerPID of [undefined, process.pid + 1]) {
+    const { run, calls } = fakeRunner({ cli: (args) => (verb(args) === 'screen list' ? { ok: true, screens: [{ ...SCREEN, width: 1280, height: 800, ownerPID }] } : { ok: true }) });
+    const adapter = createSecondScreenAdapter({ cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' });
+    await assert.rejects(adapter.ensureScreen(profile), (e) => isRuntimeError(e, 'conflict'));
+    assert.deepEqual(calls.map((c) => verb(c.args)), ['screen list', 'screen list'], 'listed only; nothing resized, created or destroyed');
+  }
+  // A right-sized screen of someone else's is used as it is, without change.
+  const { run, calls } = fakeRunner({ cli: () => ({ ok: true, screens: [{ ...SCREEN, ownerPID: 1 }] }) });
+  await createSecondScreenAdapter({ cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' }).ensureScreen(profile);
+  assert.ok(calls.every((c) => verb(c.args) === 'screen list'));
+});
+
+test('input and release are refused for a recycled pid, another app, or a binding without a start time', async () => {
+  const cases: Array<[string, WindowBinding, Record<string, Handler>]> = [
+    ['recycled pid', binding, { ...identityTools, ps: () => ({ stdout: 'Sun Oct  4 09:00:00 2026\n' }) }],
+    ['other app', binding, { ...identityTools, lsappinfo: () => ({ stdout: '"CFBundleIdentifier"="com.other.app"' }) }],
+    ['process gone', binding, { lsappinfo: () => ({ stdout: '' }), ps: () => ({ code: 1, stdout: '' }) }],
+    ['no start time', { ...binding, window: { ...binding.window, processStartedAt: undefined } }, identityTools],
+  ];
+  for (const [name, bound, tools] of cases) {
+    const { run, calls } = fakeRunner({ cli: () => ({ ok: true }), tools });
+    const adapter = createSecondScreenAdapter({ cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' });
+    const r = await adapter.act(bound, { actionId: 'a', action: { kind: 'click', target: { kind: 'relative', point: { x: 0.5, y: 0.5 } }, effect: 'read' } });
+    assert.equal(r.status, 'failed', name);
+    assert.equal(r.error?.code, 'window_lost', name);
+    await assert.rejects(adapter.releaseWindow(bound), (e) => isRuntimeError(e, 'window_lost'), name);
+    assert.equal(calls.filter((c) => c.file === 'cli').length, 0, `${name}: no input and no window move was sent`);
+  }
+});
+
+test('session and adapter together map window fractions against the window as it is now, after a move or resize', async () => {
+  const { createSessionManager } = await import('../src/session.ts');
+  await withDir(async (dir) => {
+    let frame = MAIN;
+    const { run, calls } = fakeRunner({
+      cli: async (args) => {
+        switch (verb(args)) {
+          case 'screen list':
+            return { ok: true, screens: [{ ...SCREEN, ownerPID: process.pid }] };
+          case 'state': {
+            const shot = flag(args, '--screenshot');
+            if (shot) await writeFile(shot, png(frame.width * 2, frame.height * 2));
+            return { ok: true, pid: 4242, windowID: 77, app: 'Synthetic', windowFrame: frame, screenshot: shot, elements: [] };
+          }
+          default:
+            return { ok: true };
+        }
+      },
+      tools: { ...identityTools, lsappinfo: (args) => (args.includes('bundleID') ? { stdout: `"CFBundleIdentifier"="${BUNDLE}"` } : { stdout: '"pid"=4242' }) },
+    });
+    const adapter = createSecondScreenAdapter({ cli: 'cli', socket: SOCKET, run, screenshotDir: dir });
+    const vision = {
+      // The text sits at the centre of whatever image it is given.
+      async ocr(_p: string, _o?: unknown) {
+        return { imageSha256: 'h', widthPx: frame.width * 2, heightPx: frame.height * 2, lines: [{ text: 'Open', box: { x: frame.width - 10, y: frame.height - 10, width: 20, height: 20 }, confidence: 1 }] };
+      },
+      async compare() {
+        return { similarity: 1 };
+      },
+      async close() {},
+    };
+    const leases = {
+      async acquireLease(r: { scopeKey: string; holder: 'runtime'; ownerPid: number; taskId?: string; ttlMs: number }) {
+        return { scopeKey: r.scopeKey, holder: r.holder, ownerPid: r.ownerPid, taskId: r.taskId, leaseId: 'l', expiresAt: new Date(Date.now() + r.ttlMs).toISOString() };
+      },
+      async renewLease(id: string, ttl: number) {
+        return { leaseId: id, scopeKey: `${BUNDLE}:*`, holder: 'runtime' as const, ownerPid: 1, expiresAt: new Date(Date.now() + ttl).toISOString() };
+      },
+      async releaseLease() {},
+    };
+    const session = await createSessionManager({ adapter, leases, policy: { submitAllowed: false, foregroundAllowed: false }, vision }).open({ taskId: 't', profile, takeOver: false, leaseTtlMs: 60_000 });
+    assert.deepEqual(session.binding().window.frame, MAIN);
+
+    // The window moves to another place and size after binding.
+    frame = { x: 5000, y: 100, width: 1440, height: 875 };
+    const clicks = () => calls.filter((c) => c.file === 'cli' && c.args[0] === 'click');
+    await session.act({ actionId: 'r', action: { kind: 'click', target: { kind: 'relative', point: { x: 0.5, y: 0.5 } }, effect: 'read' } });
+    assert.deepEqual([flag(clicks().at(-1)!.args, '--x'), flag(clicks().at(-1)!.args, '--y')], [String(5000 + 720), String(100 + 437.5)]);
+    assert.deepEqual(session.binding().window.frame, frame, 'the binding carries the measured geometry');
+
+    frame = { x: 6000, y: 50, width: 1200, height: 800 };
+    await session.act({ actionId: 'o', action: { kind: 'click', target: { kind: 'ocr', text: 'Open' }, effect: 'read' } });
+    assert.deepEqual([flag(clicks().at(-1)!.args, '--x'), flag(clicks().at(-1)!.args, '--y')], [String(6000 + 600), String(50 + 400)]);
+    await session.close({ keepWindow: true });
+  });
+});
+
+test('createCommandRunner settles a stopped child only after it has exited, killing one that ignores SIGTERM', async () => {
+  await withDir(async (dir) => {
+    const pids = join(dir, 'pids');
+    const run = createCommandRunner();
+    const started = Date.now();
+    // The shell and its background child both ignore SIGTERM.
+    const pending = run('/bin/sh', ['-c', `trap "" TERM; sleep 30 & echo "$$ $!" > ${pids}; wait`], { timeoutMs: 200 });
+    await assert.rejects(pending, (e) => isRuntimeError(e, 'timeout'));
+    const elapsed = Date.now() - started;
+    assert.ok(elapsed >= 2_000, `settled after the SIGKILL grace, not at the abort (${elapsed} ms)`);
+    assert.ok(elapsed < 5_000, `bounded (${elapsed} ms)`);
+    const [shell, sleeper] = (await readFile(pids, 'utf8')).trim().split(' ').map(Number);
+    await new Promise((r) => setTimeout(r, 100));
+    for (const pid of [shell!, sleeper!]) assert.throws(() => process.kill(pid, 0), /ESRCH/, `pid ${pid} is gone`);
+
+    // A child that honours SIGTERM settles as soon as it has exited.
+    const controller = new AbortController();
+    const quick = run('/bin/sleep', ['30'], { timeoutMs: 10_000, signal: controller.signal });
+    setTimeout(() => controller.abort(), 50);
+    const t = Date.now();
+    await assert.rejects(quick, (e) => isRuntimeError(e, 'cancelled'));
+    assert.ok(Date.now() - t < 1_500);
+  });
 });

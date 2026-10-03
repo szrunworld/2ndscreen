@@ -312,6 +312,9 @@ class TaskSession implements Session {
     if (observation.window.pid !== binding.window.pid || observation.window.windowId !== binding.window.windowId)
       throw new RuntimeError('window_lost', 'the observation is of another window');
     throwIfAborted(signal);
+    // Every read re-measures the window; later coordinates use this geometry, not the bind-time one.
+    if (this.currentBinding === binding)
+      this.currentBinding = { ...binding, window: { ...binding.window, frame: observation.window.frame, contentFrame: observation.window.contentFrame } };
     const own: Observation = { ...observation, sessionId: this.id };
     this.current = own;
     return own;
@@ -344,7 +347,10 @@ class TaskSession implements Session {
         return refuse('stale_snapshot', 'snapshot_stale', 'the element index belongs to an older snapshot; observe again', request.snapshotId);
       if (!before.elements?.some((e) => e.index === target.index))
         return refuse('stale_snapshot', 'snapshot_stale', `element ${target.index} is not in snapshot ${before.snapshotId}`, before.snapshotId);
-    } else if (target && target.kind !== 'relative') {
+    } else if (target?.kind === 'relative') {
+      // A window fraction becomes a point only against the window as it is now.
+      before = await this.read({ elements: false }, signal);
+    } else if (target) {
       // Semantic and visual locators are resolved on a fresh read, never on a cached one.
       const visual = target.kind === 'ocr' || target.kind === 'template';
       if (visual && !this.deps.vision) return refuse('failed', 'capability_missing', `${target.kind} locators need local vision`);
@@ -504,17 +510,10 @@ class TaskSession implements Session {
       this.current = undefined;
       const screen = await this.deps.adapter.ensureScreen(this.profile, linked);
       this.keeper.check();
-      let next: WindowBinding;
-      try {
-        next = await this.deps.adapter.bindApp(screen.screenId, this.profile, { takeOver: this.request.takeOver }, linked);
-      } catch (error) {
-        // The app this session launched may move back onto its screen (the
-        // screen was rebuilt); anyone else's process stays where it is.
-        if (!(isRuntimeError(error, 'conflict') && old.launchedByRuntime && sameProcess(error.details, old.window))) throw error;
-        this.keeper.check();
-        next = await this.deps.adapter.bindApp(screen.screenId, this.profile, { takeOver: true }, linked);
-        if (!sameProcess(next.window, old.window)) throw new RuntimeError('conflict', 'a different process took the app over during the rebind');
-      }
+      // Never widened beyond the task's own takeOver: the adapter cannot
+      // promise to move only a given process, so a window that left the
+      // screen without that permission ends in conflict, not a move.
+      const next = await this.deps.adapter.bindApp(screen.screenId, this.profile, { takeOver: this.request.takeOver }, linked);
       if (next.window.bundleId !== this.profile.bundleId)
         throw new RuntimeError('conflict', `the bound window belongs to ${next.window.bundleId}, not ${this.profile.bundleId}`);
       throwIfAborted(linked);
@@ -553,8 +552,9 @@ class TaskSession implements Session {
     await this.keeper.stop();
     this.current = undefined;
     let failure: unknown;
-    // A fenced session no longer owns the window; another holder may be using it.
-    if (!policy.keepWindow && !this.keeper.fenced) {
+    // Only a window this session launched is handed back. One it attached
+    // to, or took over, stays where it is; a fenced session owns nothing.
+    if (!policy.keepWindow && this.currentBinding.launchedByRuntime && !this.keeper.fenced) {
       try {
         await this.deps.adapter.releaseWindow(this.currentBinding);
       } catch (error) {

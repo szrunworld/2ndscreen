@@ -10,7 +10,7 @@
 // created with the worker as its owner process and an idle timeout, so a
 // crashed worker does not leave a screen behind forever.
 
-import { execFile } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -80,6 +80,8 @@ interface ScreenRecord {
   height: number;
   hiDPI: boolean;
   frame: Rect;
+  /** The process whose exit destroys the screen, if any. */
+  ownerPID?: number;
 }
 
 /** Sorts a 2ndscreen error message into a runtime error code. */
@@ -170,7 +172,7 @@ export function createSecondScreenAdapter(options: SecondScreenAdapterOptions): 
     return (Array.isArray(reply.json.screens) ? reply.json.screens : []).flatMap((s: any): ScreenRecord[] => {
       const frame = toRect(s?.frame);
       return frame && typeof s.name === 'string'
-        ? [{ name: s.name, kind: s.kind, displayID: Number(s.displayID), width: Number(s.width), height: Number(s.height), hiDPI: !!s.hiDPI, frame }]
+        ? [{ name: s.name, kind: s.kind, displayID: Number(s.displayID), width: Number(s.width), height: Number(s.height), hiDPI: !!s.hiDPI, frame, ownerPID: Number.isInteger(s.ownerPID) ? s.ownerPID : undefined }]
         : [];
     });
   }
@@ -208,6 +210,20 @@ export function createSecondScreenAdapter(options: SecondScreenAdapterOptions): 
     const bundleId = /"CFBundleIdentifier"\s*=\s*"([^"]+)"/.exec(info.stdout)?.[1];
     const ps = await tool('ps', ['-o', 'lstart=', '-p', String(pid)], signal);
     return { bundleId, startedAt: ps.code === 0 ? parseProcessStart(ps.stdout) : undefined };
+  }
+
+  /**
+   * Refuses unless the bound pid is still the same app process: same bundle
+   * and the same start time. A binding without a start time proves nothing,
+   * and a recycled pid shows a different one.
+   */
+  async function sameProcess(binding: WindowBinding, signal?: AbortSignal): Promise<RuntimeError | undefined> {
+    const { pid, bundleId, processStartedAt } = binding.window;
+    if (!processStartedAt) return new RuntimeError('window_lost', `pid ${pid} has no recorded start time, so it cannot be told from a recycled pid`, { pid });
+    const now = await identity(pid, signal);
+    if (now.bundleId !== bundleId || now.startedAt !== processStartedAt)
+      return new RuntimeError('window_lost', `pid ${pid} is no longer the bound ${bundleId} process`, { pid, bundleId: now.bundleId, processStartedAt: now.startedAt });
+    return undefined;
   }
 
   function windowOf(reply: CliReply): { pid: number; windowId: number; frame: Rect } | undefined {
@@ -304,16 +320,14 @@ export function createSecondScreenAdapter(options: SecondScreenAdapterOptions): 
         const read = await tool('plutil', ['-extract', 'CFBundleShortVersionString', 'raw', '-o', '-', join(options.app, 'Contents/Info.plist')], signal);
         if (read.code === 0 && read.stdout.trim()) version = read.stdout.trim();
       }
-      // Permissions can only be probed against an agent screen. Without one
-      // they are reported false, meaning unverified, not refused.
+      // Only read-only probes. Screen Recording is shown by capturing an
+      // existing agent screen into a scratch file. The CLI has no read-only
+      // check for Accessibility, so it is reported false: unverified, not
+      // refused. Without an agent screen both are unverified.
       const agent = list.find((s) => s.kind === 'agent');
-      let accessibilityPermission = false;
+      const accessibilityPermission = false;
       let screenRecordingPermission = false;
       if (agent) {
-        // Releasing pid 0 (kernel_task, never a window) changes nothing; the app checks
-        // the Accessibility permission before it looks for windows.
-        const probe = await cli(['window', 'release', '--screen', agent.name, '--pid', '0'], signal);
-        accessibilityPermission = probe.ok || classifyCliError(probe.error ?? '') !== 'permission_missing';
         const path = join(options.screenshotDir, `probe-${randomUUID()}.png`);
         try {
           screenRecordingPermission = (await cli(['screenshot', '--screen', agent.name, '--output', path], signal)).ok;
@@ -348,6 +362,12 @@ export function createSecondScreenAdapter(options: SecondScreenAdapterOptions): 
         );
         if (!created.ok) throw cliError('cannot create the agent screen', created);
       } else if (existing.width !== profile.logicalWidth || existing.height !== profile.logicalHeight) {
+        // Only a screen this worker owns may be resized; anyone else's is left as it is.
+        if (existing.ownerPID !== process.pid)
+          throw new RuntimeError('conflict', `screen ${profile.id} is ${existing.width}x${existing.height}, not ${size}, and belongs to ${existing.ownerPID === undefined ? 'no owner process' : `pid ${existing.ownerPID}`}`, {
+            screenId: profile.id,
+            ownerPid: existing.ownerPID,
+          });
         const resized = await cli(['screen', 'resize', profile.id, '--size', size], signal);
         if (!resized.ok) {
           const error = cliError(`screen ${profile.id} is ${existing.width}x${existing.height}, not ${size}`, resized);
@@ -442,6 +462,8 @@ export function createSecondScreenAdapter(options: SecondScreenAdapterOptions): 
       });
       const target = targetArgs(binding, action.kind === 'key' ? undefined : action.target);
       if (target.error) return failed('invalid_input', target.error);
+      const replaced = await sameProcess(binding, signal);
+      if (replaced) return failed(replaced.code, replaced.message);
       const words = [action.kind, '--screen', binding.screenId, '--pid', String(binding.window.pid), '--window-id', String(binding.window.windowId)];
       let route = target.route;
       switch (action.kind) {
@@ -481,6 +503,9 @@ export function createSecondScreenAdapter(options: SecondScreenAdapterOptions): 
     },
 
     async releaseWindow(binding, signal) {
+      // Never move a window of a process that merely reuses the pid.
+      const replaced = await sameProcess(binding, signal);
+      if (replaced) throw replaced;
       const reply = await cli(['window', 'release', '--screen', binding.screenId, '--pid', String(binding.window.pid), '--window-id', String(binding.window.windowId)], signal);
       // A window that is already gone needs no release.
       if (!reply.ok && classifyCliError(reply.error ?? '') !== 'window_lost') throw cliError('cannot release the window', reply);
@@ -488,28 +513,57 @@ export function createSecondScreenAdapter(options: SecondScreenAdapterOptions): 
   };
 }
 
-/** Runs a program with execFile; kills it on abort or timeout. Non-zero exits resolve with their code. */
+/** How long a stopped child gets between SIGTERM and SIGKILL. */
+const KILL_GRACE_MS = 2_000;
+
+/**
+ * Runs a program to completion. Non-zero exits resolve with their code. On
+ * abort or timeout it sends SIGTERM to the child's whole process group, then
+ * SIGKILL after a bounded grace, and settles only once the child has exited.
+ */
 export function createCommandRunner(): CommandRunner {
   return (file, args, options) =>
     new Promise((resolve, reject) => {
       throwIfAborted(options.signal);
-      const timeout = AbortSignal.timeout(options.timeoutMs);
-      const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
-      execFile(
-        file,
-        [...args],
-        { env: { ...process.env, ...options.env }, signal, maxBuffer: 64 * 1024 * 1024, encoding: 'utf8' },
-        (error, stdout, stderr) => {
-          if (!error) return resolve({ code: 0, stdout, stderr });
-          const failure = error as NodeJS.ErrnoException & { code?: number | string };
-          if (failure.name === 'AbortError' || signal.aborted) {
-            if (options.signal?.aborted) return reject(new RuntimeError('cancelled', `${file} was cancelled`));
-            return reject(new RuntimeError('timeout', `${file} took longer than ${options.timeoutMs} ms`));
-          }
-          if (failure.code === 'ENOENT') return reject(new RuntimeError('capability_missing', `${file} is not installed`));
-          if (typeof failure.code === 'number') return resolve({ code: failure.code, stdout, stderr });
-          reject(new RuntimeError('io', `${file}: ${failure.message}`));
-        },
-      );
+      // Its own process group, so a stop also reaches anything it started.
+      const child = spawn(file, [...args], { env: { ...process.env, ...options.env }, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+      const out: Buffer[] = [];
+      const err: Buffer[] = [];
+      child.stdout.on('data', (chunk: Buffer) => out.push(chunk));
+      child.stderr.on('data', (chunk: Buffer) => err.push(chunk));
+      let stopped: RuntimeError | undefined;
+      let escalation: ReturnType<typeof setTimeout> | undefined;
+      const signalGroup = (sig: NodeJS.Signals) => {
+        try {
+          if (child.pid !== undefined) process.kill(-child.pid, sig);
+        } catch {
+          child.kill(sig);
+        }
+      };
+      const stop = (reason: RuntimeError) => {
+        if (stopped) return;
+        stopped = reason;
+        signalGroup('SIGTERM');
+        escalation = setTimeout(() => signalGroup('SIGKILL'), KILL_GRACE_MS);
+      };
+      const timer = setTimeout(() => stop(new RuntimeError('timeout', `${file} took longer than ${options.timeoutMs} ms`)), options.timeoutMs);
+      const onAbort = () => stop(new RuntimeError('cancelled', `${file} was cancelled`));
+      options.signal?.addEventListener('abort', onAbort, { once: true });
+      const settle = () => {
+        clearTimeout(timer);
+        clearTimeout(escalation);
+        options.signal?.removeEventListener('abort', onAbort);
+      };
+      child.once('error', (error: NodeJS.ErrnoException) => {
+        // Only a child that never started settles here; a running one settles on close.
+        if (child.pid !== undefined) return;
+        settle();
+        reject(error.code === 'ENOENT' ? new RuntimeError('capability_missing', `${file} is not installed`) : new RuntimeError('io', `${file}: ${error.message}`));
+      });
+      child.once('close', (code) => {
+        settle();
+        if (stopped) return reject(stopped);
+        resolve({ code: code ?? 1, stdout: Buffer.concat(out).toString('utf8'), stderr: Buffer.concat(err).toString('utf8') });
+      });
     });
 }
