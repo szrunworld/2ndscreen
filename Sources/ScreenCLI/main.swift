@@ -13,6 +13,7 @@ usage:
   2ndscreen screen destroy NAME
   2ndscreen app launch --screen NAME (--bundle ID | --path APP) [--new-instance] [--fill]
   2ndscreen window move --screen NAME --pid PID [--window-id ID] [--fill]
+  2ndscreen window release --screen NAME --pid PID [--window-id ID]
   2ndscreen screenshot --screen NAME --output FILE.png
 
   2ndscreen state --screen NAME --pid PID [--window-id ID] [--query TEXT] [--screenshot FILE.png]
@@ -33,6 +34,8 @@ turns it off), or when its owner process exits.
 Sizes are in points. Without --size, a new screen matches the main display's
 full-screen area, so its full-screen preview is pixel for pixel. Frames in
 the output use global top-left coordinates, the same space as cua-driver.
+HiDPI follows the main display. macOS allows it only from 800 points on the
+long side and 525 on the short side; smaller screens are created at 1x.
 """
 
 func fail(_ message: String, code: Int32 = 2) -> Never {
@@ -141,6 +144,12 @@ case "window move":
     request.pid = pid
     request.windowID = args.value("--window-id").flatMap(UInt32.init)
     request.fill = args.has("--fill")
+case "window release":
+    request = ControlRequest(command: .windowRelease)
+    request.screen = args.value("--screen")
+    guard let pid = args.value("--pid").flatMap(Int32.init) else { fail("window release needs --pid") }
+    request.pid = pid
+    request.windowID = args.value("--window-id").flatMap(UInt32.init)
 default:
     if args.positional.first == "screenshot" {
         request = ControlRequest(command: .screenshot)

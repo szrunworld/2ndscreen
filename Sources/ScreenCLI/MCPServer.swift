@@ -105,7 +105,7 @@ enum MCPServer {
                 "name": described(string, "Unique name, e.g. after your task"),
                 "width": described(integer, "Width in points"),
                 "height": described(integer, "Height in points"),
-                "hidpi": described(boolean, "Render at 2x; defaults to the main display's scale"),
+                "hidpi": described(boolean, "Render at 2x; defaults to the main display's scale. Needs at least 800 points on the long side and 525 on the short side"),
                 "ttl": described(string, "Destroy after this long, e.g. 30m"),
                 "idle_timeout": described(string, "Destroy after this long unused; default 60m, 0 for never"),
              ],
@@ -158,6 +158,19 @@ enum MCPServer {
                  var w = ["window", "move", "--screen", a["screen"] as? String ?? "", "--pid", "\(intValue(a["pid"]) ?? 0)"]
                  if let v = intValue(a["window_id"]) { w += ["--window-id", "\(v)"] }
                  if a["fill"] as? Bool == true { w.append("--fill") }
+                 return w
+             }),
+        Tool(name: "window_release",
+             description: "Give an app's windows on an agent screen back to the user's main display, and stop keeping its windows on the screen.",
+             properties: [
+                "screen": described(string, "Screen name"),
+                "pid": described(integer, "Process ID"),
+                "window_id": described(integer, "Only this window"),
+             ],
+             required: ["screen", "pid"],
+             words: { a in
+                 var w = ["window", "release", "--screen", a["screen"] as? String ?? "", "--pid", "\(intValue(a["pid"]) ?? 0)"]
+                 if let v = intValue(a["window_id"]) { w += ["--window-id", "\(v)"] }
                  return w
              }),
         Tool(name: "screenshot",

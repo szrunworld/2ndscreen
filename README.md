@@ -60,10 +60,12 @@ work in the background while you keep your own screen.
 CLI=.build/release/2ndscreen
 
 $CLI screen create --name test-a --size 1280x800      # HiDPI follows the main display;
-                                                      # add --hidpi or --no-hidpi to choose
+                                                      # add --hidpi or --no-hidpi to choose;
+                                                      # under 800x525 (either way up) it is 1x
 $CLI app launch --screen test-a --path build/MyApp.app --fill
 $CLI app launch --screen test-a --bundle com.apple.Chess
 $CLI window move --screen test-a --pid 1234 [--window-id 5678] [--fill]
+$CLI window release --screen test-a --pid 1234        # give its windows back to the main display
 $CLI screenshot --screen test-a --output shot.png
 $CLI screen list
 $CLI screen destroy test-a
@@ -123,6 +125,8 @@ switching apps during background clicks was undone 4 times in 8 with
 upstream and 0 times in 10 with the patch. Apps placed with `app launch` or
 `window move` stay bound to their screen: windows they open later are
 moved onto it as they appear, instead of popping up in front of you.
+`window release` ends that and moves the windows to the main display, for
+when you need to use one yourself, such as to type a password.
 
 `skills/2ndscreen/SKILL.md` is the agent-facing guide; give it to an
 agent, or install it as a Claude Code skill.

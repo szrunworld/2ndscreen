@@ -30,6 +30,14 @@ public final class VirtualDisplay {
         Mode(width: 2560, height: 1440),
     ]
 
+    /// Whether macOS will run a display of this size at 2x. It lists a 2x
+    /// variant for any size, but refuses to switch to one whose long side is
+    /// under 800 points or whose short side is under 525 (found by probing
+    /// on macOS 15), and falls back to some other mode instead.
+    public static func supportsHiDPI(_ mode: Mode) -> Bool {
+        max(mode.width, mode.height) >= 800 && min(mode.width, mode.height) >= 525
+    }
+
     public private(set) var mode: Mode
     public private(set) var hiDPI: Bool
     public let refreshRate: Double
@@ -127,6 +135,18 @@ public final class VirtualDisplay {
         guard let current = CGDisplayCopyDisplayMode(displayID) else { return false }
         return current.width == mode.width && current.height == mode.height
             && current.pixelWidth == (hiDPI ? mode.width * 2 : mode.width)
+    }
+
+    /// Whether another online display has the same unit number as `id`.
+    /// macOS remembers a unit number for each vendor/product/serial and can
+    /// hand two live displays the same one; ScreenCaptureKit then captures
+    /// one of them for both, so screenshots and previews show the wrong screen.
+    public static func sharesUnitNumber(_ id: CGDirectDisplayID) -> Bool {
+        var ids = [CGDirectDisplayID](repeating: 0, count: 32)
+        var count: UInt32 = 0
+        guard CGGetOnlineDisplayList(UInt32(ids.count), &ids, &count) == .success else { return false }
+        let unit = CGDisplayUnitNumber(id)
+        return ids.prefix(Int(count)).contains { $0 != id && CGDisplayUnitNumber($0) == unit }
     }
 
     /// The display's frame in global points, once macOS has placed it.

@@ -38,6 +38,8 @@ final class AgentScreens {
     /// Serials below this belong to the app's own display (1) and the
     /// vdisplay CLI (2). macOS remembers each serial's arrangement.
     private static let firstSerial: UInt32 = 100
+    /// Serials to try before giving up on a unit number of its own.
+    private static let serialAttempts = 8
 
     private(set) var screens: [Screen] = []
     /// Apps an agent placed on a screen. Apps open later windows wherever
@@ -76,8 +78,11 @@ final class AgentScreens {
 
     // MARK: Requests
 
-    func create(name requested: String?, width: Int, height: Int, hiDPI: Bool,
-                ttl: TimeInterval?, idleTimeout: TimeInterval?, ownerPID: pid_t?) async -> ControlResponse {
+    /// - Parameters:
+    ///   - hiDPI: what the agent asked for, or nil to use `defaultHiDPI`
+    ///     where macOS allows 2x at this size.
+    func create(name requested: String?, width: Int, height: Int, hiDPI requestedHiDPI: Bool?,
+                defaultHiDPI: Bool, ttl: TimeInterval?, idleTimeout: TimeInterval?, ownerPID: pid_t?) async -> ControlResponse {
         guard screens.count < Self.limit else {
             return .failure("at most \(Self.limit) agent screens can exist at once")
         }
@@ -92,13 +97,31 @@ final class AgentScreens {
             return .failure("owner pid \(ownerPID) is not running")
         }
         if let ttl, ttl <= 0 { return .failure("--ttl must be positive") }
-        let serial = nextSerial()
         let mode = VirtualDisplay.Mode(width: width, height: height)
-        guard let display = VirtualDisplay(
-            name: name, mode: mode, hiDPI: hiDPI, reserving: [mode], serialNumber: serial,
-            onTerminate: { [weak self] in self?.remove(named: name) })
-        else {
-            return .failure("macOS refused to create a \(mode)\(hiDPI ? " HiDPI" : "") display")
+        let hiDPIAllowed = VirtualDisplay.supportsHiDPI(mode)
+        if requestedHiDPI == true, !hiDPIAllowed {
+            return .failure("macOS runs a screen at HiDPI only when it is at least 800 points"
+                + " on its long side and 525 on its short side; use --no-hidpi or a larger --size")
+        }
+        let hiDPI = requestedHiDPI ?? (defaultHiDPI && hiDPIAllowed)
+        // A serial whose remembered unit number is already taken gives a
+        // screen that captures as another one; try the next serial instead.
+        var tried: Set<UInt32> = []
+        var created: (VirtualDisplay, UInt32)?
+        while created == nil, tried.count < Self.serialAttempts {
+            let serial = nextSerial(excluding: tried)
+            tried.insert(serial)
+            guard let display = VirtualDisplay(
+                name: name, mode: mode, hiDPI: hiDPI, reserving: [mode], serialNumber: serial,
+                onTerminate: { [weak self] in self?.remove(named: name) })
+            else {
+                return .failure("macOS refused to create a \(mode)\(hiDPI ? " HiDPI" : "") display")
+            }
+            if !VirtualDisplay.sharesUnitNumber(display.displayID) { created = (display, serial) }
+        }
+        guard let (display, serial) = created else {
+            return .failure("macOS gave every new display the unit number of an existing one;"
+                + " destroy a screen and try again")
         }
         let idle = idleTimeout ?? Self.defaultIdleTimeout
         let screen = Screen(name: name, display: display, serialNumber: serial,
@@ -111,6 +134,14 @@ final class AgentScreens {
         // creating it; agents need the final frame.
         for _ in 0..<60 where display.bounds.isEmpty || !display.isSettled {
             try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        // macOS can accept the settings yet run the display in another mode.
+        // A screen of the wrong size breaks every frame an agent computes.
+        guard display.isSettled else {
+            let actual = CGDisplayCopyDisplayMode(display.displayID)
+                .map { "\($0.width)×\($0.height)\($0.pixelWidth > $0.width ? " HiDPI" : "")" } ?? "no mode"
+            remove(named: name)
+            return .failure("macOS ran the screen at \(actual) instead of \(mode)\(hiDPI ? " HiDPI" : "")")
         }
         var response = ControlResponse()
         response.screen = info(screen)
@@ -180,7 +211,7 @@ final class AgentScreens {
         var response = moved ? ControlResponse() : ControlResponse.failure("the app refused to move its window")
         response.pid = pid
         response.screen = target
-        response.windows = await Self.settledSummaries(of: pid, on: target)
+        response.windows = await Self.settledSummaries(of: pid, on: target.displayID)
         return response
     }
 
@@ -192,7 +223,29 @@ final class AgentScreens {
         bind(pid, to: target)
         var response = failed.isEmpty ? ControlResponse() : .failure("\(failed.count) window(s) refused to move")
         response.screen = target
-        response.windows = await Self.settledSummaries(of: pid, on: target)
+        response.windows = await Self.settledSummaries(of: pid, on: target.displayID)
+        return response
+    }
+
+    /// Move an app's windows from `source` to the main display and stop
+    /// pulling its windows back onto `source`. Without this, the only way to
+    /// give a window back to the user is destroying the screen.
+    func releaseWindows(from source: ScreenInfo, pid: pid_t, windowID: CGWindowID?) async -> ControlResponse {
+        guard WindowMover.isTrusted else { return .failure("2ndscreen needs the Accessibility permission to move windows") }
+        let bounds = CGDisplayBounds(source.displayID)
+        let windows = WindowMover.windows(ofPID: pid).filter {
+            (windowID == nil || $0.windowID == windowID)
+                && bounds.contains(CGPoint(x: $0.frame.midX, y: $0.frame.midY))
+        }
+        guard !windows.isEmpty else { return .failure("pid \(pid) has no matching window on screen \"\(source.name)\"") }
+        // Unbind first, or the follow timer pulls the windows straight back.
+        if bindings[pid] == source.name { bindings.removeValue(forKey: pid) }
+        let main = CGMainDisplayID()
+        let failed = windows.filter { !WindowMover.move($0, to: main) }
+        var response = failed.isEmpty ? ControlResponse() : .failure("\(failed.count) window(s) refused to move")
+        response.pid = pid
+        let moved = Set(windows.map(\.windowID))
+        response.windows = await Self.settledSummaries(of: pid, on: main).filter { moved.contains($0.windowID) }
         return response
     }
 
@@ -200,6 +253,10 @@ final class AgentScreens {
     func screenshot(displayID: CGDirectDisplayID, to output: String) async -> ControlResponse {
         guard CGPreflightScreenCaptureAccess() else {
             return .failure("2ndscreen needs the Screen Recording permission to take screenshots")
+        }
+        guard !VirtualDisplay.sharesUnitNumber(displayID) else {
+            return .failure("macOS gave this screen the same unit number as another display, so a"
+                + " screenshot would show the wrong screen; destroy it and create a new one")
         }
         let url = URL(fileURLWithPath: (output as NSString).expandingTildeInPath)
         do {
@@ -301,16 +358,16 @@ final class AgentScreens {
         return "agent-\(index)"
     }
 
-    private func nextSerial() -> UInt32 {
+    private func nextSerial(excluding tried: Set<UInt32> = []) -> UInt32 {
         var serial = Self.firstSerial
-        while screens.contains(where: { $0.serialNumber == serial }) { serial += 1 }
+        while tried.contains(serial) || screens.contains(where: { $0.serialNumber == serial }) { serial += 1 }
         return serial
     }
 
     /// The window list lags a move by a few frames. Wait until one of the
     /// app's windows shows up on `target` (at most a second), then report.
-    private static func settledSummaries(of pid: pid_t, on target: ScreenInfo) async -> [WindowSummary] {
-        let bounds = CGDisplayBounds(target.displayID)
+    private static func settledSummaries(of pid: pid_t, on displayID: CGDirectDisplayID) async -> [WindowSummary] {
+        let bounds = CGDisplayBounds(displayID)
         for _ in 0..<10 {
             let windows = WindowMover.windows(ofPID: pid)
             if windows.contains(where: { bounds.contains(CGPoint(x: $0.frame.midX, y: $0.frame.midY)) }) {

@@ -65,7 +65,9 @@ enum DriverCommands {
         } else {
             let (element, snapshot) = try resolve(target, driver, args, required: true)
             guard let element, let center = element.center else {
-                throw DriverError("the element has no frame to click")
+                // Menu bar items have no frame until their menu opens, and
+                // cua-driver refuses them as outside the window.
+                throw DriverError("the element has no frame to click; for a menu item, press its keyboard shortcut with key")
             }
             point = center
             arguments["element_token"] = element.token
@@ -102,7 +104,14 @@ enum DriverCommands {
         let base: [String: Any] = ["pid": target.pid, "window_id": target.window.windowID]
         let result: [String: Any]
         if modifiers.isEmpty {
-            result = try driver.act("press_key", base.merging(["key": key]) { $1 })
+            let pressed = try driver.act("press_key", base.merging(["key": key]) { $1 })
+            // press_key knows key names, not shifted symbols such as "*";
+            // a single character still arrives when typed as text.
+            if key.count == 1, Driver.describe(pressed, fallback: "").contains("delivery_failed") {
+                result = try driver.act("type_text", base.merging(["text": key]) { $1 })
+            } else {
+                result = pressed
+            }
         } else {
             result = try driver.act("hotkey", base.merging(["keys": modifiers + [key]]) { $1 })
         }

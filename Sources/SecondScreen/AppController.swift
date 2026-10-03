@@ -239,7 +239,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 name: request.screen,
                 width: request.width ?? main?.mode.width ?? 1440,
                 height: request.height ?? main?.mode.height ?? 900,
-                hiDPI: request.hiDPI ?? main?.hiDPI ?? false,
+                hiDPI: request.hiDPI, defaultHiDPI: main?.hiDPI ?? false,
                 ttl: request.ttl, idleTimeout: request.idleTimeout, ownerPID: request.ownerPID)
         case .screenList:
             var response = ControlResponse()
@@ -261,6 +261,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let pid = request.pid else { return .failure("give the window's app with --pid") }
             return await agentScreens.moveWindows(to: screen, pid: pid, windowID: request.windowID,
                                             fill: request.fill ?? false)
+        case .windowRelease:
+            guard let screen = target() else { return missingScreen }
+            guard screen.kind == .agent else {
+                return .failure("window release works on agent screens; use the menu bar for the primary screen")
+            }
+            guard let pid = request.pid else { return .failure("give the window's app with --pid") }
+            return await agentScreens.releaseWindows(from: screen, pid: pid, windowID: request.windowID)
         case .screenshot:
             guard let screen = target() else { return missingScreen }
             guard let output = request.output else { return .failure("give a PNG path with --output") }
