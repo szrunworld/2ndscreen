@@ -410,6 +410,10 @@ func field(index: Int, x: Double, y: Double, width: Double, height: Double, labe
         #expect(down["--to-y"]! >= 300 && down["--y"]! <= 1700)
         let left = numbers(try commands("scroll(start_box='[500, 500, 500, 500]', direction='left')")[0])
         #expect(left["--x"]! < left["--to-x"]!)
+        // Pointing near the bottom still swipes the full reach, moved inward.
+        let low = numbers(try commands("scroll(start_box='[450, 900, 450, 900]', direction='down')")[0])
+        #expect(low["--y"]! - low["--to-y"]! == 600)
+        #expect(low["--y"]! <= 1700)
     }
 
     @Test func typingThatWouldSubmitIsHeld() throws {

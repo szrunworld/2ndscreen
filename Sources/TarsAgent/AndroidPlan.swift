@@ -42,12 +42,16 @@ public enum AndroidPlan {
             let dx: CGFloat = direction == "left" ? 1 : direction == "right" ? -1 : 0
             let dy: CGFloat = direction == "up" ? 1 : direction == "down" ? -1 : 0
             let reach = min(size.width, size.height) * 0.6
-            // Keep off the edges, where a swipe is the system's Back or Home gesture.
-            func clamp(_ value: CGFloat, _ limit: CGFloat) -> CGFloat {
-                min(max(value, limit * 0.15), limit * 0.85).rounded()
+            // Keep off the edges, where a swipe is the system's Back or Home
+            // gesture, by moving the whole swipe inward rather than cutting
+            // it short: models point near the bottom of a list.
+            func center(_ value: CGFloat, _ limit: CGFloat, _ half: CGFloat) -> CGFloat {
+                min(max(value, limit * 0.15 + half), limit * 0.85 - half)
             }
-            let start = CGPoint(x: clamp(p.x - dx * reach / 2, size.width), y: clamp(p.y - dy * reach / 2, size.height))
-            let end = CGPoint(x: clamp(p.x + dx * reach / 2, size.width), y: clamp(p.y + dy * reach / 2, size.height))
+            let middle = CGPoint(x: center(p.x, size.width, abs(dx) * reach / 2),
+                                 y: center(p.y, size.height, abs(dy) * reach / 2))
+            let start = CGPoint(x: (middle.x - dx * reach / 2).rounded(), y: (middle.y - dy * reach / 2).rounded())
+            let end = CGPoint(x: (middle.x + dx * reach / 2).rounded(), y: (middle.y + dy * reach / 2).rounded())
             return [swipe(start, end, 0.35)]
 
         case .type:
