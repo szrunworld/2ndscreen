@@ -43,7 +43,7 @@ final class AgentScreens {
     /// Apps an agent placed on a screen. Apps open later windows wherever
     /// they like, usually on the main display, in front of the user; these
     /// get moved onto the app's screen as they appear.
-    private var bindings: [pid_t: String] = [:]
+    private var bindings: [pid_t: Binding] = [:]
     private var followTimer: Timer?
     private var reapTimer: Timer?
     /// Called after a screen is created or removed, so the app can add or
@@ -176,7 +176,8 @@ final class AgentScreens {
             return response
         }
         let moved = WindowMover.move(window, to: target.displayID, fill: fill)
-        bind(pid, to: target)
+        // A new process: every window it opens is the agent's.
+        bind(pid, to: target, leaving: [])
         var response = moved ? ControlResponse() : ControlResponse.failure("the app refused to move its window")
         response.pid = pid
         response.screen = target
@@ -189,7 +190,10 @@ final class AgentScreens {
         let windows = WindowMover.windows(ofPID: pid).filter { windowID == nil || $0.windowID == windowID }
         guard !windows.isEmpty else { return .failure("pid \(pid) has no matching on-screen window") }
         let failed = windows.filter { !WindowMover.move($0, to: target.displayID, fill: fill) }
-        bind(pid, to: target)
+        // The app's other windows are the user's; only windows it opens from
+        // now on follow the moved ones.
+        let moved = Set(windows.map(\.windowID))
+        bind(pid, to: target, leaving: WindowMover.allWindowIDs(ofPID: pid).subtracting(moved), moved: moved)
         var response = failed.isEmpty ? ControlResponse() : .failure("\(failed.count) window(s) refused to move")
         response.screen = target
         response.windows = await Self.settledSummaries(of: pid, on: target)
@@ -231,7 +235,7 @@ final class AgentScreens {
     private func remove(named name: String) {
         guard screens.contains(where: { $0.name == name }) else { return }
         screens.removeAll { $0.name == name }
-        bindings = bindings.filter { $0.value != name }
+        bindings = bindings.filter { $0.value.screen != name }
         onChange?()
     }
 
@@ -263,14 +267,28 @@ final class AgentScreens {
 
     // MARK: Following new windows
 
-    /// Keep `pid`'s windows on `target`. Agent screens only: the primary
-    /// screen is the user's, so windows moved there stay where they are put.
-    private func bind(_ pid: pid_t, to target: ScreenInfo) {
+    /// An app whose new windows go to an agent screen, and the windows it
+    /// already had there that stay where they are.
+    private struct Binding {
+        var screen: String
+        var leaving: Set<CGWindowID>
+    }
+
+    /// Keep `pid`'s windows on `target`, except those in `leaving`, which
+    /// were the app's before the agent took it over. Agent screens only: the
+    /// primary screen is the user's, so windows moved there stay put.
+    private func bind(_ pid: pid_t, to target: ScreenInfo, leaving: Set<CGWindowID>, moved: Set<CGWindowID> = []) {
         guard target.kind == .agent else {
             bindings.removeValue(forKey: pid)
             return
         }
-        bindings[pid] = target.name
+        // Moving more windows of an app already bound there keeps the
+        // windows it left before, less the ones moved now.
+        if let existing = bindings[pid], existing.screen == target.name {
+            bindings[pid]?.leaving = existing.leaving.subtracting(moved)
+        } else {
+            bindings[pid] = Binding(screen: target.name, leaving: leaving)
+        }
         guard followTimer == nil else { return }
         followTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.followWindows() }
@@ -278,14 +296,15 @@ final class AgentScreens {
     }
 
     private func followWindows() {
-        for (pid, name) in bindings {
-            guard NSRunningApplication(processIdentifier: pid) != nil, let screen = screen(named: name) else {
+        for (pid, binding) in bindings {
+            guard NSRunningApplication(processIdentifier: pid) != nil, let screen = screen(named: binding.screen) else {
                 bindings.removeValue(forKey: pid)
                 continue
             }
             let bounds = screen.display.bounds
             for window in WindowMover.windows(ofPID: pid)
-            where !bounds.contains(CGPoint(x: window.frame.midX, y: window.frame.midY)) {
+            where !binding.leaving.contains(window.windowID)
+                && !bounds.contains(CGPoint(x: window.frame.midX, y: window.frame.midY)) {
                 WindowMover.move(window, to: screen.display.displayID)
             }
         }
