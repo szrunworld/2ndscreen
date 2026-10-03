@@ -6,9 +6,21 @@ import Foundation
 /// Each connection carries one JSON request line and one JSON response line
 /// over a Unix socket that only the current user can open.
 public enum ControlProtocol {
-    /// `~/Library/Application Support/2ndscreen/control.sock`
+    /// `~/Library/Application Support/2ndscreen/control.sock`, or
+    /// `$SECONDSCREEN_SOCKET`, which lets a second build of the app run beside
+    /// the usual one, as when testing a change.
+    /// Whether this process uses `$SECONDSCREEN_SOCKET`. The app then runs
+    /// as a side instance for testing: beside the usual one, without the
+    /// primary screen or the global hot key.
+    public static var isSideInstance: Bool {
+        !(ProcessInfo.processInfo.environment["SECONDSCREEN_SOCKET"] ?? "").isEmpty
+    }
+
     public static var socketURL: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        if let path = ProcessInfo.processInfo.environment["SECONDSCREEN_SOCKET"], !path.isEmpty {
+            return URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+        }
+        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("2ndscreen", isDirectory: true)
             .appendingPathComponent("control.sock")
     }
@@ -22,6 +34,10 @@ public struct ControlRequest: Codable {
         case appLaunch = "app.launch"
         case windowMove = "window.move"
         case screenshot
+        /// Read a window's accessibility tree.
+        case windowState = "window.state"
+        /// Click, type, press keys, scroll or drag in a window, in the background.
+        case input
     }
 
     public var command: Command
@@ -41,6 +57,9 @@ public struct ControlRequest: Codable {
     public var windowID: UInt32?
     /// Where `screenshot` writes its PNG.
     public var output: String?
+    /// `screenshot`: compose the screen from its windows instead of
+    /// capturing the display.
+    public var windowsOnly: Bool?
     /// `screen.create`: destroy the screen this many seconds after creation.
     public var ttl: Double?
     /// `screen.create`: destroy the screen after this many seconds without
@@ -48,6 +67,10 @@ public struct ControlRequest: Codable {
     public var idleTimeout: Double?
     /// `screen.create`: destroy the screen when this process exits.
     public var ownerPID: Int32?
+    /// `window.state`: only elements whose text or role contains this.
+    public var query: String?
+    /// `input`: what to do.
+    public var input: InputAction?
 
     public init(command: Command) {
         self.command = command
@@ -70,7 +93,7 @@ public struct ScreenInfo: Codable {
     public var height: Int
     public var hiDPI: Bool
     /// Global frame in CoreGraphics coordinates (top-left origin), the space
-    /// cua-driver reports element frames in.
+    /// accessibility reports element frames in.
     public var frame: Frame
     /// Seconds until the TTL destroys the screen, if it has one.
     public var expiresIn: Int?
@@ -121,6 +144,50 @@ public struct WindowSummary: Codable {
     }
 }
 
+/// One input action in a window on an agent screen. Points are global,
+/// top-left-origin points and must fall in the window.
+public struct InputAction: Codable {
+    public enum Kind: String, Codable {
+        case click, type, key, scroll, drag
+    }
+
+    public var kind: Kind
+    /// `click`: "left" (default) or "right", and 1 or 2 clicks.
+    public var button: String?
+    public var count: Int?
+    public var x: Double?
+    public var y: Double?
+    /// `drag`: where to release.
+    public var toX: Double?
+    public var toY: Double?
+    /// An element by its index in the window's last `window.state`.
+    public var index: Int?
+    /// An element by its text, from a fresh read of the window.
+    public var text: String?
+    /// `type`: the text to enter.
+    public var value: String?
+    /// `key`: a key name such as return, a, f5 or down, and modifiers
+    /// (cmd, shift, option, ctrl).
+    public var key: String?
+    public var modifiers: [String]?
+    /// `scroll`: up, down, left or right; notches (default 3); "line" or "page".
+    public var direction: String?
+    public var amount: Int?
+    public var by: String?
+    /// `drag`: let the action take the real pointer and the foreground.
+    public var foreground: Bool?
+    public var durationMs: Int?
+
+    public init(_ kind: Kind) {
+        self.kind = kind
+    }
+
+    public var point: CGPoint? {
+        guard let x, let y else { return nil }
+        return CGPoint(x: x, y: y)
+    }
+}
+
 public struct ControlResponse: Codable {
     public var ok: Bool
     public var error: String?
@@ -129,6 +196,15 @@ public struct ControlResponse: Codable {
     public var pid: Int32?
     public var windows: [WindowSummary]?
     public var output: String?
+    /// `window.state` and `input`: the window acted on.
+    public var window: WindowSummary?
+    /// `window.state`: the elements, and the tree they come from.
+    public var elements: [AXElementInfo]?
+    public var tree: String?
+    /// `input`: how the action was delivered, such as `ax.press` or
+    /// `event.pid`, and the element it went to, if any.
+    public var route: String?
+    public var element: AXElementInfo?
 
     public init(ok: Bool = true) {
         self.ok = ok

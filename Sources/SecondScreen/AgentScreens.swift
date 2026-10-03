@@ -37,7 +37,8 @@ final class AgentScreens {
     static let limit = 8
     /// Serials below this belong to the app's own display (1) and the
     /// vdisplay CLI (2). macOS remembers each serial's arrangement.
-    private static let firstSerial: UInt32 = 100
+    /// A side instance numbers its displays apart from the usual instance's.
+    private static let firstSerial: UInt32 = ControlProtocol.isSideInstance ? 900 : 100
 
     private(set) var screens: [Screen] = []
     /// Apps an agent placed on a screen. Apps open later windows wherever
@@ -215,6 +216,72 @@ final class AgentScreens {
             let image = try await SCScreenshotManager.captureImage(
                 contentFilter: SCContentFilter(display: display, excludingWindows: []), configuration: config)
             guard let destination = CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil)
+            else { return .failure("cannot write \(url.path)") }
+            CGImageDestinationAddImage(destination, image, nil)
+            guard CGImageDestinationFinalize(destination) else { return .failure("cannot write \(url.path)") }
+        } catch {
+            return .failure("screenshot failed: \(error.localizedDescription)")
+        }
+        var response = ControlResponse()
+        response.output = url.path
+        return response
+    }
+
+    /// Capture the windows on `screen`, each on its own, and lay them out
+    /// back to front on a canvas the screen's size in pixels. Unlike a
+    /// display capture, this cannot pick up another display's picture: with
+    /// two instances' screens alive, a display capture showed another
+    /// screen of the same size. Windows of this app (the agent cursor) are
+    /// left out; anything not covered by a window is light gray.
+    func windowsScreenshot(of screen: ScreenInfo, to output: String) async -> ControlResponse {
+        guard CGPreflightScreenCaptureAccess() else {
+            return .failure("2ndscreen needs the Screen Recording permission to take screenshots")
+        }
+        let url = URL(fileURLWithPath: (output as NSString).expandingTildeInPath)
+        let bounds = CGRect(x: screen.frame.x, y: screen.frame.y, width: screen.frame.width, height: screen.frame.height)
+        let scale = CGFloat(screen.hiDPI ? 2 : 1)
+        do {
+            let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
+            let byID = Dictionary(content.windows.map { ($0.windowID, $0) }, uniquingKeysWith: { first, _ in first })
+            // Stacking order comes from the window list, front to back.
+            let ownPID = ProcessInfo.processInfo.processIdentifier
+            let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+                as? [[String: Any]] ?? []
+            var stack: [(SCWindow, CGRect)] = []
+            for entry in list {
+                guard let id = entry[kCGWindowNumber as String] as? CGWindowID, let window = byID[id],
+                      (entry[kCGWindowOwnerPID as String] as? pid_t) != ownPID,
+                      (entry[kCGWindowLayer as String] as? Int ?? -1) >= 0,
+                      let rect = entry[kCGWindowBounds as String] as? NSDictionary,
+                      let frame = CGRect(dictionaryRepresentation: rect),
+                      bounds.contains(CGPoint(x: frame.midX, y: frame.midY)) || frame.intersection(bounds).width > 0
+                        && (entry[kCGWindowLayer as String] as? Int ?? 0) > 0
+                else { continue }
+                stack.append((window, frame))
+            }
+
+            let width = Int(bounds.width * scale), height = Int(bounds.height * scale)
+            guard let canvas = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                                         space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                         bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+            else { return .failure("cannot make the canvas") }
+            canvas.setFillColor(gray: 0.92, alpha: 1)
+            canvas.fill(CGRect(x: 0, y: 0, width: width, height: height))
+            for (window, frame) in stack.reversed() {  // back to front
+                let config = SCStreamConfiguration()
+                config.width = max(Int(frame.width * scale), 1)
+                config.height = max(Int(frame.height * scale), 1)
+                config.showsCursor = false
+                guard let image = try? await SCScreenshotManager.captureImage(
+                    contentFilter: SCContentFilter(desktopIndependentWindow: window), configuration: config)
+                else { continue }
+                // CGContext's origin is bottom-left.
+                let x = (frame.minX - bounds.minX) * scale
+                let y = CGFloat(height) - (frame.maxY - bounds.minY) * scale
+                canvas.draw(image, in: CGRect(x: x, y: y, width: frame.width * scale, height: frame.height * scale))
+            }
+            guard let image = canvas.makeImage(),
+                  let destination = CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil)
             else { return .failure("cannot write \(url.path)") }
             CGImageDestinationAddImage(destination, image, nil)
             guard CGImageDestinationFinalize(destination) else { return .failure("cannot write \(url.path)") }

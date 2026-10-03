@@ -78,6 +78,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var cursorOverlays: [CGDirectDisplayID: AgentCursorOverlay] = [:]
     private var moveHotKey: HotKey?
     private let agentScreens = AgentScreens()
+    private let input = InputEngine()
     /// Live previews of agent screens, keyed by screen name.
     private var agentPreviews: [String: DisplayPreview] = [:]
     private var controlServer: ControlServer?
@@ -95,8 +96,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             name: AgentCursorEvent.notificationName, object: nil,
             suspensionBehavior: .deliverImmediately)
 
-        moveHotKey = HotKey(keyCode: kVK_ANSI_M, modifiers: controlKey | optionKey | cmdKey) { [weak self] in
-            self?.moveFrontWindowToOtherScreen()
+        if !ControlProtocol.isSideInstance {
+            moveHotKey = HotKey(keyCode: kVK_ANSI_M, modifiers: controlKey | optionKey | cmdKey) { [weak self] in
+                self?.moveFrontWindowToOtherScreen()
+            }
         }
 
         // Default to the main display's size and scale: the full-screen
@@ -107,7 +110,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             preferences.hiDPI = main.hiDPI
         }
 
-        if preferences.enabled {
+        if preferences.enabled, !ControlProtocol.isSideInstance {
             enableDisplay()
         }
 
@@ -264,7 +267,28 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .screenshot:
             guard let screen = target() else { return missingScreen }
             guard let output = request.output else { return .failure("give a PNG path with --output") }
+            if request.windowsOnly == true {
+                return await agentScreens.windowsScreenshot(of: screen, to: output)
+            }
             return await agentScreens.screenshot(displayID: screen.displayID, to: output)
+        case .windowState, .input:
+            guard let screen = target() else { return missingScreen }
+            guard let pid = request.pid else { return .failure("give the app with --pid PID") }
+            // Input sleeps between events; keep the main actor, which draws
+            // the agent cursor, free while it runs.
+            let input = input
+            return await Task.detached {
+                do {
+                    let window = try InputEngine.window(pid: pid, windowID: request.windowID, on: screen)
+                    if request.command == .windowState {
+                        return try input.state(window, query: request.query)
+                    }
+                    guard let action = request.input else { return .failure("input needs an action") }
+                    return try input.perform(action, in: window, on: screen)
+                } catch {
+                    return .failure(error.localizedDescription)
+                }
+            }.value
         }
     }
 

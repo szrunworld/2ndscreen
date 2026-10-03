@@ -2,7 +2,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "2ndscreen",
+    name: "SecondScreen",
     platforms: [.macOS(.v14)],
     products: [
         .executable(name: "2ndscreen", targets: ["ScreenCLI"]),
@@ -17,6 +17,12 @@ let package = Package(
             name: "SecondScreenCore",
             dependencies: ["CGVirtualDisplayPrivate"]
         ),
+        // The UI-TARS agent loop: prompt, model client, reply parser, and the
+        // mapping from model actions to 2ndscreen input.
+        .target(
+            name: "TarsAgent",
+            dependencies: ["SecondScreenCore"]
+        ),
         .executableTarget(
             name: "vdisplay",
             dependencies: ["SecondScreenCore"]
@@ -24,12 +30,16 @@ let package = Package(
         // Agent-facing CLI; talks to the running app over a Unix socket.
         .executableTarget(
             name: "ScreenCLI",
-            dependencies: ["SecondScreenCore"]
+            dependencies: ["SecondScreenCore", "TarsAgent"]
         ),
         // Menu bar app; scripts/bundle-app.sh wraps it in 2ndscreen.app.
         .executableTarget(
             name: "SecondScreen",
             dependencies: ["SecondScreenCore"]
+        ),
+        .testTarget(
+            name: "TarsAgentTests",
+            dependencies: ["TarsAgent"]
         ),
     ]
 )
