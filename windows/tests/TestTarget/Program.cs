@@ -27,4 +27,13 @@ pad.MouseUp += (_, e) =>
 pad.MouseDoubleClick += (_, e) => { if (e.Button == MouseButtons.Left) events.Text += " double"; };
 
 form.Controls.AddRange(new Control[] { input, button, label, list, top, pad, events });
+// With --second-window, a second window, so the e2e test can move one and check the other stays.
+if (args.Contains("--second-window"))
+{
+    form.Shown += (_, _) => new Form
+    {
+        Text = "2ndscreen test target, second window", Width = 300, Height = 200,
+        StartPosition = FormStartPosition.Manual, Location = new Point(form.Left + 40, form.Top + 40),
+    }.Show();
+}
 Application.Run(form);
