@@ -175,8 +175,12 @@ if ($SkipDriver -or -not $launched.ok) {
     Check "scroll a list in the background" ([bool]($scrolled.ok -and $state.tree -match "Top [1-9]")) "$($scrolled.effect) $($scrolled.error)"
     Check "foreground left alone after scroll" ([Fg]::Pid() -ne $targetPid)
 
-    $frame = ($state.elements | Where-Object label -eq "Pad" | Select-Object -First 1).frame
-    $cx = $frame.x + [int]($frame.width / 2); $cy = $frame.y + [int]($frame.height / 2)
+    # Place the pad from the list, which UI Automation names: in TestTarget the list is
+    # 200 wide at (20, 130) and the pad's center is at (360, 270), scaled for DPI.
+    $rows = ($state.elements | Where-Object label -eq "Rows" | Select-Object -First 1).frame
+    if (-not $rows) { Write-Host "elements: $(($state.elements | ForEach-Object { "$($_.role)/$($_.label)" }) -join ', ')" }
+    $scale = $rows.width / 200
+    $cx = $rows.x + [int]((360 - 20) * $scale); $cy = $rows.y + [int]((270 - 130) * $scale)
     $double = Invoke-2ndscreen (@("click") + $target + @("--x", "$cx", "--y", "$cy", "--double"))
     $right = Invoke-2ndscreen (@("click") + $target + @("--x", "$cx", "--y", "$cy", "--right"))
     $drag = Invoke-2ndscreen (@("drag") + $target + @("--from-x", "$($cx - 80)", "--from-y", "$cy", "--to-x", "$($cx + 80)", "--to-y", "$cy"))
