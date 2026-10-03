@@ -1,13 +1,11 @@
 import AppKit
 import SecondScreenCore
 
-// One instance only, unless this is a side instance for testing: a second
-// copy would try to create the same virtual display (macOS refuses a
-// duplicate) and add a second preview.
-let bundleID = Bundle.main.bundleIdentifier ?? "io.github.szrunworld.2ndscreen"
-let ownPID = ProcessInfo.processInfo.processIdentifier
-if !ControlProtocol.isSideInstance, NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
-    .contains(where: { $0.processIdentifier != ownPID }) {
+// One usual instance only: a second would try to create the same virtual
+// display (macOS refuses a duplicate) and add a second preview. Side
+// instances, which agents run to test a build, do not count: they keep to
+// the background, and the usual app starts beside them.
+if !ControlProtocol.isSideInstance, ControlProtocol.isListening(ControlProtocol.primarySocketURL) {
     exit(0)
 }
 

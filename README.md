@@ -30,6 +30,11 @@ open -n --env SECONDSCREEN_SOCKET=$SECONDSCREEN_SOCKET build/2ndscreen.app
 ```
 
 A side instance has agent screens only: no primary screen and no hot key.
+It keeps off the menu bar, so the user sees one 2ndscreen however many
+agents test theirs; the usual app lists side instances under **Test
+Copies**, where each can be quit. A side instance quits by itself after 30
+minutes without requests, unless it has an agent screen or a phone's
+mirror open. The usual app starts whether or not side instances run.
 While two instances ran, the first screen a fresh side instance created
 showed another display's picture; screens it created after that did not.
 Check a side instance's first screenshot.
@@ -361,9 +366,10 @@ $CLI agent --android [--serial S] "打开微信，给文件传输助手写一句
 
 The guards are the desktop's: it stops before Enter, text ending in a
 newline, or a tap the model describes as sending, and the result's
-`pending` holds the `2ndscreen` arguments that would do it. The sparkles
-button in the mirror window's title bar opens the same agent in a panel
-beside the phone, with Confirm and Discard for what it held back.
+`pending` holds the `2ndscreen` arguments that would do it. **Android Phones →
+UI-TARS Panel** in the menu bar opens the same agent in a panel beside
+the phone, run in the app itself, with Confirm and Discard for what it
+held back.
 
 Things to know:
 
