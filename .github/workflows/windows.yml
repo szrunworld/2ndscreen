@@ -24,7 +24,7 @@ jobs:
       - name: Publish single-file executables
         shell: pwsh
         run: |
-          foreach ($project in "src/SecondScreen.App", "src/SecondScreen.Cli", "tests/TestTarget") {
+          foreach ($project in "src/SecondScreen.App", "src/SecondScreen.Cli", "tests/TestTarget", "tests/TestTargetWpf") {
             dotnet publish "windows/$project" -c Release -r win-x64 --self-contained true `
               -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o windows/artifacts/publish
             if ($LASTEXITCODE) { exit $LASTEXITCODE }

@@ -226,6 +226,88 @@ if (-not $launched.ok) {
     Invoke-2ndscreen @("screenshot", "--screen", "e2e", "--output", (Join-Path $Out "e2e-input.png")) | Out-Null
 }
 
+# 6b. The same checks on other kinds of program: WPF, which draws its controls in one
+# window, and a web page in Edge, which is Chromium. Each has a text box named Input, a
+# button "Press me" with a "Pressed N" count, and a list named Rows that reports "Top N".
+function Test-Program([string] $kind, $launched) {
+    $names = "click", "type", "ctrl+a", "scroll an element", "wheel at a point", "foreground left alone"
+    if (-not $launched.ok) {
+        foreach ($name in $names) { Skip "${kind}: $name" "launch failed: $($launched.error)" }
+        return
+    }
+    $on = @("--screen", "e2e", "--pid", "$($launched.pid)")
+    $window = $launched.windows | Select-Object -First 1
+    if ($window) { $on += @("--window-id", "$($window.windowID)") }
+    function Read-State { Start-Sleep -Milliseconds 700; Invoke-2ndscreen (@("state") + $on) }
+    function Value-Of($state, [string] $label) { ($state.elements | Where-Object label -eq $label | Select-Object -First 1).value }
+    function Top-Of($state) { [int]([regex]::Match($state.tree, "Top (\d+)").Groups[1].Value) }
+
+    $state = Read-State
+    if (-not ($state.ok -and $state.tree -match "Press me")) {
+        Write-Host "${kind} tree: $($state.error) $($state.tree)"
+    }
+    $clicked = Invoke-2ndscreen (@("click") + $on + @("--text", "Press me"))
+    $state = Read-State
+    Check "${kind}: click" ([bool]($clicked.ok -and $state.tree -match "Pressed 1")) "$($clicked.route) $($clicked.error)"
+
+    $typed = Invoke-2ndscreen (@("type") + $on + @("--text", "Input", "--value", "你好 2ndscreen"))
+    $state = Read-State
+    Check "${kind}: type" ([bool]($typed.ok -and (Value-Of $state "Input") -eq "你好 2ndscreen")) "value '$(Value-Of $state "Input")' $($typed.route) $($typed.error)"
+
+    # ctrl+a then backspace empties the box only if the shortcut selected everything.
+    $selected = Invoke-2ndscreen (@("key") + $on + @("--text", "Input", "--key", "a", "--modifiers", "ctrl"))
+    $erased = Invoke-2ndscreen (@("key") + $on + @("--text", "Input", "--key", "backspace"))
+    $state = Read-State
+    Check "${kind}: ctrl+a" ([bool]($selected.ok -and $erased.ok -and -not (Value-Of $state "Input"))) "value '$(Value-Of $state "Input")' $($selected.route) $($selected.error) $($erased.error)"
+
+    $scrolled = Invoke-2ndscreen (@("scroll") + $on + @("--text", "Rows", "--direction", "down", "--amount", "5"))
+    $state = Read-State
+    $top = Top-Of $state
+    Check "${kind}: scroll an element" ([bool]($scrolled.ok -and $top -gt 0)) "Top $top $($scrolled.route) $($scrolled.error)"
+
+    $rows = ($state.elements | Where-Object label -eq "Rows" | Select-Object -First 1).frame
+    if ($rows) {
+        $wheel = Invoke-2ndscreen (@("scroll") + $on + @("--x", "$($rows.x + [int]($rows.width / 2))", "--y", "$($rows.y + [int]($rows.height / 2))", "--direction", "up", "--amount", "10"))
+        $state = Read-State
+        $after = Top-Of $state
+        Check "${kind}: wheel at a point" ([bool]($wheel.ok -and $after -lt $top)) "Top $top -> $after $($wheel.route) $($wheel.error)"
+    } else {
+        Check "${kind}: wheel at a point" $false "no element named Rows"
+    }
+    Check "${kind}: foreground left alone" ([Fg]::Pid() -ne $launched.pid) "foreground pid $([Fg]::Pid())"
+    Invoke-2ndscreen @("screenshot", "--screen", "e2e", "--output", (Join-Path $Out "e2e-$($kind -replace '\W', '').png")) | Out-Null
+    Stop-Process -Id $launched.pid -Force -ErrorAction SilentlyContinue
+}
+
+if ($launched.ok) {
+    Stop-Process -Id $targetPid -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 500
+    Test-Program "wpf" (Invoke-2ndscreen @("app", "launch", "--screen", "e2e", "--path", (Join-Path $Bin "TestTargetWpf.exe"), "--fill"))
+
+    $page = Join-Path $Out "e2e-page.html"
+    @"
+<!doctype html><meta charset="utf-8"><title>2ndscreen web test target</title>
+<input aria-label="Input" style="width:400px;font-size:18px">
+<p><button onclick="n.textContent='Pressed '+(++c)" style="font-size:18px">Press me</button> <span id="n">Pressed 0</span></p>
+<div role="list" aria-label="Rows" id="rows" style="height:300px;width:240px;overflow:auto;border:1px solid #888"></div>
+<p id="top">Top 0</p>
+<script>
+let c = 0;
+for (let i = 1; i <= 200; i++) { const d = document.createElement('div'); d.setAttribute('role', 'listitem'); d.textContent = 'Row ' + i; d.style.height = '24px'; rows.appendChild(d); }
+rows.onscroll = () => top.textContent = 'Top ' + Math.round(rows.scrollTop / 24);
+</script>
+"@ | Set-Content -Encoding UTF8 $page
+    $edge = @("${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe", "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if ($edge) {
+        $profile = Join-Path $Out "edge-profile"
+        Test-Program "edge" (Invoke-2ndscreen @("app", "launch", "--screen", "e2e", "--path", $edge, "--new-instance", "--fill",
+            "--arg", "--user-data-dir=$profile", "--arg", "--no-first-run", "--arg", "--no-default-browser-check",
+            "--arg", "--force-renderer-accessibility", "--arg", "--new-window", "--arg", "file:///$($page -replace '\\', '/')"))
+    } else {
+        Skip "edge" "Edge is not installed"
+    }
+}
+
 # 7. MCP.
 $requests = @(
     '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"e2e","version":"0"}}}',

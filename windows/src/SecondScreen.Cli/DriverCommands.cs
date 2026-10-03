@@ -141,6 +141,14 @@ public static class DriverCommands
             Win32.SendMessageTimeout(native, Messages.EM_REPLACESEL, 1, text, Win32.SMTO_ABORTIFHUNG, 2000, out _);
             if (Landed(handle, before, text)) return Report(target, described, "edit.replacesel");
         }
+        // Web pages take neither value writes nor focus reliably from the background: click
+        // into the field, unless it has focus (a click would drop a selection), and type keys
+        // to the page's renderer window.
+        if (Automation.IsWeb(handle))
+        {
+            var route = FocusWeb(window, element, handle);
+            return Report(target, described, route + Input.Type(window, text, native != window ? native : 0));
+        }
         if (Automation.IsEditable(handle))
         {
             Pattern(window, () => { Automation.SetValue(handle, before + text); return "uia.value"; });
@@ -171,7 +179,11 @@ public static class DriverCommands
         {
             described["element"] = JsonSerializer.SerializeToNode(element.ToJson());
             control = Automation.NativeWindow(handle);
-            if (control == window)
+            if (Automation.IsWeb(handle))
+            {
+                described["focus"] = FocusWeb(window, element, handle);
+            }
+            else if (control == window)
             {
                 control = 0;
                 Pattern(window, () => { Automation.Focus(handle); return "uia.focus"; });
@@ -268,6 +280,15 @@ public static class DriverCommands
     }
 
     // MARK: Helpers
+
+    /// <summary>Click into a web element unless it already has keyboard focus. Returns the route prefix.</summary>
+    private static string FocusWeb(nint window, Element element, AutomationElement handle)
+    {
+        if (Automation.HasFocus(handle) || element.Center is not { } center) return "";
+        Input.Click(window, center, right: false, count: 1);
+        Thread.Sleep(100);
+        return "post.click+";
+    }
 
     /// <summary>
     /// Run a UI Automation pattern call in the background. XAML and Chromium programs bring

@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The WPF counterpart of TestTarget: WPF draws its own controls in one window, with no
+       child windows, so it takes a different input path from classic Win32. -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <AssemblyName>TestTargetWpf</AssemblyName>
+  </PropertyGroup>
+</Project>

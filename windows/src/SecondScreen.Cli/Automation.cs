@@ -188,6 +188,22 @@ public sealed class Automation
     public static void SetValue(AutomationElement element, string value) =>
         ((ValuePattern)element.GetCurrentPattern(ValuePattern.Pattern)).SetValue(value);
 
+    /// <summary>Whether the element is web content: inside a document, as browsers expose pages.</summary>
+    public static bool IsWeb(AutomationElement element)
+    {
+        for (var node = TreeWalker.ControlViewWalker.GetParent(element); node is not null; node = TreeWalker.ControlViewWalker.GetParent(node))
+        {
+            if (node.Current.ControlType == ControlType.Document) return true;
+        }
+        return false;
+    }
+
+    public static bool HasFocus(AutomationElement element)
+    {
+        try { return element.Current.HasKeyboardFocus; }
+        catch (ElementNotAvailableException) { return false; }
+    }
+
     /// <summary>Give the element keyboard focus within its program.</summary>
     public static void Focus(AutomationElement element)
     {
