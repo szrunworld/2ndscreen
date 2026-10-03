@@ -25,10 +25,15 @@
 | A3 流程学习 | packages/task-runtime/src/procedures.ts、src/learning.ts、src/recovery.ts、tests/procedures.test.ts、tests/learning.test.ts、tests/recovery.test.ts | 同批次 trial 回放、三次独立成功晋级、参数化、预算、局部修复、版本回滚；模型离线稳定回放 | A0 |
 | A4 BOSS 采集 | agents/boss/src/resumes/**、packages/task-runtime/tests/boss-resumes.test.ts | 页面分类、候选人身份、列表进度、在线/附件分支、文件证据；不发送消息，能力缺失明确返回 | A0、P0 可用证据 |
 | A5 Swift 探索桥接 | Sources/ScreenCLI/AgentBridge.swift、Sources/TarsAgent/Bridge.swift、Tests/TarsAgentTests/BridgeTests.swift、packages/task-runtime/src/adapters/agent-bridge.ts、tests/agent-bridge.test.ts | 复用现有 TarsAgent，结构化事件、已执行轨迹、预算/取消/进程退出；无双重执行 | A0 |
+| A8 本地视觉 | Sources/ScreenCLI/LocalVision.swift、Sources/SecondScreenCore/LocalVision.swift、Tests/SecondScreenCoreTests/LocalVisionTests.swift、packages/task-runtime/src/adapters/local-vision.ts、tests/vision.test.ts | 本机 Vision OCR、图片比较、裁剪拼接；坐标与内存限制、完整性证据，不调用模型、不发送桌面输入 | A0 |
 | A6 调度与恢复 | packages/task-runtime/src/runner.ts、src/daemon.ts、src/telemetry.ts、tests/runner.test.ts、tests/daemon.test.ts | 批次循环、状态机、暂停取消、等待用户、重启续跑、调用计量；20 位稳定夹具零模型调用 | A1–A5 |
 | A7 产品入口与集成 | Sources/ScreenCLI/TaskCommand.swift、Sources/ScreenCLI/main.swift、MCP 接入文件、packages/task-runtime/src/cli.ts、src/index.ts、skills/boss-resumes/**、安装脚本和集成测试 | 一次命令创建任务，status/resume/cancel/artifacts 可用；Skill/MCP 接通，干净环境安装、旧功能回归 | A6 |
 
-A7 是串行集成任务，可在协调者批准后修改依赖清单和公共装配文件。A5 不自行修改 main.swift；交付可调用入口，由 A7 统一注册。A4 复用旧 BOSS 解析器但不改旧聊天助手；共享会话租约的旧入口接入由 A7 统一完成。
+A7 是串行集成任务，可在协调者批准后修改依赖清单和公共装配文件。A5/A8 不自行修改 main.swift；交付可调用入口，由 A7 统一注册。A4 复用旧 BOSS 解析器但不改旧聊天助手；共享会话租约的旧入口接入由 A7 统一完成。A7 启动前另由协调者检查 A8 已完成；运行记录中 A7 的原有依赖是 A6，这一新增条件由协调者执行。
+
+A8 来自 P0 的实测发现：在线简历正文只暴露 AXImage，需要本地 OCR。A8 唯一获准在 contracts.ts 的 LocalVision 部分追加可选拼接接口并补对应测试，变更经协调者审核后通知 A4；不得修改其他契约。这一局部增量不阻塞 A1–A3。
+
+开发期间原主工作区被其他操作切换到 iphone-commands，并新增 4108e74 提交。集成工作区改为 /Users/kevinshi/orca/workspaces/2ndscreen/ss-runtime-integration，分支 szrunworld/ss-runtime-integration，以 4108e74 为基线合并已评审契约。后续成果在这里统一合并，原主工作区保持由用户使用。
 
 ## 执行波次
 
@@ -37,15 +42,15 @@ A7 是串行集成任务，可在协调者批准后修改依赖清单和公共�
          ↓
     A1 桌面会话 ║ A2 账本产物 ║ A3 流程学习
          ↓ 可用并发槽位继续启动
-    A4 BOSS 采集 ║ A5 Swift 桥接
-         ↓ 五个模块均审查通过
+    A4 BOSS 采集 ║ A5 Swift 桥接 ║ A8 本地视觉
+         ↓ 各模块均审查通过
     A6 调度恢复
          ↓
     A7 产品入口与集成
          ↓
     主协调者完整回归与真实验收
 
-A1–A5 在契约上正交；限制并发数量只控制资源，不增加代码依赖。P0 若发现登录、权限或必要后台操作缺口，纯逻辑模块仍可开发，真实 BOSS 交付保持未验收状态。
+A1–A5、A8 在实现文件上正交；A4 的图片能力通过 LocalVision 注入。限制并发数量只控制资源，不增加代码依赖。P0 若发现登录、权限或必要后台操作缺口，纯逻辑模块仍可开发，真实 BOSS 交付保持未验收状态。
 
 ## 每个任务的完成报告
 
