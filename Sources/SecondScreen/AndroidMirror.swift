@@ -97,7 +97,7 @@ final class AndroidMirror: @unchecked Sendable {
         let process = try ADB.makeProcess([
             "-s", serial, "shell", "CLASSPATH=\(Self.devicePath)", "app_process", "/",
             "com.genymobile.scrcpy.Server", Self.serverVersion, "scid=\(scid)", "log_level=info",
-            "tunnel_forward=true", "audio=\(self.audio)", "audio_codec=aac", "video=\(video)", "video_codec=h264", "max_size=\(maxSize)",
+            "tunnel_forward=true", "audio=\(self.audio)", "audio_codec=aac", "video=\(video)", "video_codec=h264", "video_bit_rate=3000000", "max_size=\(maxSize)",
             "clipboard_autosync=false",
         ])
         // Keep the server's output for the error message if it fails.

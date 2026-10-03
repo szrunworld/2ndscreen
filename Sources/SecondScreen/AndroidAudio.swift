@@ -1,5 +1,6 @@
 import AVFoundation
 import CoreMedia
+import os
 
 /// Plays a phone's AAC audio stream on the Mac.
 ///
@@ -19,7 +20,7 @@ import CoreMedia
 final class AndroidAudioPlayer {
     /// How far ahead of now playback restarts after running dry: at first,
     /// at most, and how much more each time.
-    private static let initialLatency = CMTime(value: 100, timescale: 1000)
+    private static let initialLatency = CMTime(value: 200, timescale: 1000)
     private static let maxLatency = CMTime(value: 500, timescale: 1000)
     private static let latencyStep = CMTime(value: 80, timescale: 1000)
     /// Packets due this much later than the latency are dropped. The burst
@@ -31,6 +32,9 @@ final class AndroidAudioPlayer {
     private static let catchUpAbove = CMTime(value: 120, timescale: 1000)
     private static let caughtUp = CMTime(value: 30, timescale: 1000)
     private static let catchUpRate: Float = 1.05
+
+    /// Underruns, drops and catch-ups, for `log stream --predicate 'category == "android-audio"'`.
+    private static let log = Logger(subsystem: "io.github.szrunworld.2ndscreen", category: "android-audio")
 
     private let renderer = AVSampleBufferAudioRenderer()
     private let synchronizer = AVSampleBufferRenderSynchronizer()
@@ -81,12 +85,18 @@ final class AndroidAudioPlayer {
             setRate(1, time: .zero)
             next = latency
         } else if !next.isValid || next < now + CMTime(value: 10, timescale: 1000) {
+            let late = next.isValid ? (now - next).seconds * 1000 : 0
             latency = min(latency + Self.latencyStep, Self.maxLatency)
+            Self.log.info("ran dry, \(Int(late)) ms late; buffer now \(Int(self.latency.seconds * 1000)) ms")
             next = now + latency
         } else if next > now + latency + Self.burstAllowance {
+            Self.log.info("dropped a packet, \(Int((self.next - now).seconds * 1000)) ms queued")
             return
         } else if next > now + latency + Self.catchUpAbove {
-            if rate != Self.catchUpRate { setRate(Self.catchUpRate, time: now) }
+            if rate != Self.catchUpRate {
+                Self.log.info("catching up, \(Int((self.next - now).seconds * 1000)) ms queued")
+                setRate(Self.catchUpRate, time: now)
+            }
         } else if next <= now + latency + Self.caughtUp, rate != 1 {
             setRate(1, time: now)
         }
