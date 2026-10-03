@@ -49,7 +49,7 @@ internal sealed class Screens
     }
 
     public const string PrimaryName = "2ndscreen";
-    public const int AgentLimit = 8;
+    public const int AgentLimit = VirtualDisplayDriver.PoolSize - 1;
     public static readonly TimeSpan DefaultIdleTimeout = TimeSpan.FromHours(1);
 
     private readonly VirtualDisplayDriver driver;

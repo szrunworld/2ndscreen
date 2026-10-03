@@ -15,8 +15,11 @@ namespace SecondScreen.App;
 /// </summary>
 internal sealed class VirtualDisplayDriver
 {
-    /// <summary>The app's own screen plus up to eight agent screens.</summary>
-    public const int PoolSize = 9;
+    /// <summary>
+    /// The app's own screen plus up to two agent screens. Every pool monitor shows up in
+    /// Settings and Device Manager even while detached, so the pool stays small.
+    /// </summary>
+    public const int PoolSize = 3;
 
     private const string PipeName = "MTTVirtualDisplayPipe";
     private readonly string settingsPath;

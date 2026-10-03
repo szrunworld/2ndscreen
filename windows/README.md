@@ -78,7 +78,8 @@ window that is not on the named screen, so your foreground window stays put.
 
 - **Monitors.** The driver builds its monitors from
   `C:\VirtualDisplayDriver\vdd_settings.xml`, and reloading it tears every
-  virtual monitor down. So 2ndscreen reserves a pool of nine once, with
+  virtual monitor down. So 2ndscreen reserves a pool of three once (its own
+  screen and two agent screens; `VirtualDisplayDriver.PoolSize`), with
   common resolutions, then attaches and detaches pool monitors through the
   display topology API (`SetDisplayConfig`), which leaves the others alone.
 - **Refresh rates.** The driver multiplies every resolution by every global
