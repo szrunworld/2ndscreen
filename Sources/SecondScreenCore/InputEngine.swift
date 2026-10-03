@@ -143,7 +143,8 @@ public final class InputEngine {
             if key.count == 1, modifiers.isEmpty, BackgroundInput.keyCode(key) == nil {
                 response.route = try BackgroundInput.type(key, in: window)
             } else {
-                response.route = try BackgroundInput.key(key, modifiers: modifiers, in: window)
+                response.route = try BackgroundInput.key(key, modifiers: modifiers, in: window,
+                                                         holdModifiers: action.holdModifiers ?? false)
             }
 
         case .scroll:

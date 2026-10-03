@@ -44,10 +44,22 @@ usage:
   2ndscreen android key   [--serial SERIAL] --key back|home|recents|enter|delete|KEYCODE
   2ndscreen android adb ARGS...   run the bundled adb with these arguments
 
+  2ndscreen iphone show [--screen NAME]   iPhone Mirroring on an agent screen ("phone")
+  2ndscreen iphone hide
+  2ndscreen iphone screenshot [--screen NAME] --output FILE.png
+  2ndscreen iphone tap  [--screen NAME] --x X --y Y
+  2ndscreen iphone type [--screen NAME] --text TEXT
+  2ndscreen iphone key  [--screen NAME] --key home|switcher|spotlight|return|delete|KEY
+
 Android points are device pixels, as in the screenshot. With the phone's
 mirror open, tap, swipe and key go through it at once; without it, through
 adb. type pastes through the phone's clipboard, so it takes any text and a
 Chinese keyboard on the phone cannot turn it into pinyin.
+
+iPhone points are the screenshot's pixels, two to a window point. tap and
+key reach iPhone Mirroring in the background; type pastes, bringing it to
+the front for about a second once you leave the Mac idle. It cannot swipe or
+scroll. hide quits iPhone Mirroring, handing the phone back.
 
 state, click, type, key, scroll and drag act in the background, through
 accessibility or input events posted to the app, and only on a window that is

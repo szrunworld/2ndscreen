@@ -215,11 +215,18 @@ public enum BackgroundInput {
 
     /// Press a key with modifiers. With cmd, the app is made front for the
     /// instant the event is queued, since menu key equivalents (cmd+a,
-    /// cmd+v) only reach NSMenu by the HID path.
-    public static func key(_ name: String, modifiers: [String], in window: WindowInfo) throws -> String {
+    /// cmd+v) only reach NSMenu by the HID path. With `holdModifiers`, the
+    /// app stays in the background and gets each modifier pressed as a key
+    /// around it instead.
+    public static func key(_ name: String, modifiers: [String], in window: WindowInfo,
+                           holdModifiers: Bool = false) throws -> String {
         try requireTrust()
         guard let code = keyCode(name) else { throw AccessibilityError("unknown key \"\(name)\"") }
         let flags = try flags(modifiers)
+        if holdModifiers, !flags.isEmpty {
+            FocusGuard.shared.protect(target: window.pid) { chord(code, modifiers: modifiers, pid: window.pid) }
+            return "event.key.held"
+        }
         let viaMenu = flags.contains(.maskCommand)
         FocusGuard.shared.protect(target: window.pid, allowing: viaMenu ? window.pid : nil) {
             func press() {
@@ -244,6 +251,39 @@ public enum BackgroundInput {
             }
         }
         return viaMenu ? "event.key.menu" : "event.key"
+    }
+
+    /// Modifier key-downs as flagsChanged events, the key, then the
+    /// key-ups, the way a keyboard sends a chord.
+    private static func chord(_ code: CGKeyCode, modifiers: [String], pid: pid_t) {
+        let keys: [(CGKeyCode, CGEventFlags)] = modifiers.compactMap {
+            switch $0.lowercased() {
+            case "cmd", "command", "meta": (55, .maskCommand)
+            case "shift": (56, .maskShift)
+            case "option", "alt", "opt": (58, .maskAlternate)
+            case "ctrl", "control": (59, .maskControl)
+            default: nil
+            }
+        }
+        func post(_ code: CGKeyCode, down: Bool, flags: CGEventFlags, modifier: Bool) {
+            guard let event = CGEvent(keyboardEventSource: CGEventSource(stateID: .hidSystemState),
+                                      virtualKey: code, keyDown: down) else { return }
+            if modifier { event.type = .flagsChanged }
+            event.flags = flags
+            SkyLight.postKey(event, to: pid)
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        var held = CGEventFlags()
+        for (key, flag) in keys {
+            held.insert(flag)
+            post(key, down: true, flags: held, modifier: true)
+        }
+        post(code, down: true, flags: held, modifier: false)
+        post(code, down: false, flags: held, modifier: false)
+        for (key, flag) in keys.reversed() {
+            held.remove(flag)
+            post(key, down: false, flags: held, modifier: true)
+        }
     }
 
     // MARK: Drag

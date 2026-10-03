@@ -14,10 +14,10 @@ import Vision
 ///   in the background or with the real pointer and the app in front, are
 ///   all ignored. So the model is offered no scroll, drag or long press.
 /// - Typed text reaches the phone's keyboard as key codes, so a Chinese
-///   keyboard turns every character into "a". Text is pasted instead, with
-///   iPhone Mirroring in front for about a second, once the user has left
-///   the keyboard and mouse alone for a few seconds; their clipboard and
-///   frontmost app are put back after.
+///   keyboard turns every character into "a". Text is pasted instead: ⌘V
+///   with ⌘ pressed as a key of its own, in the background (a ⌘V through
+///   the menus, even with Mirroring in front, types "v"). The phone may ask
+///   to "Allow Paste", which is pressed. The user's clipboard is put back.
 /// - Without the phone the window shows a status page ("iPhone in Use",
 ///   "Connection Paused") or a Connect / Try Again / Resume button.
 ///
@@ -26,10 +26,6 @@ public final class IPhoneAgentScreen: AgentScreen {
     public static let bundleID = "com.apple.ScreenContinuity"
 
     public let screen: String
-    /// Seconds without keyboard or mouse input before pasting may take the
-    /// foreground, and how long to wait for that.
-    public var idleNeeded: TimeInterval = 3
-    public var idleWaitMax: TimeInterval = 120
 
     private var screenFrame: CGRect = .zero
     private var windowFrame: CGRect = .zero
@@ -40,7 +36,7 @@ public final class IPhoneAgentScreen: AgentScreen {
 
     public static func pid() throws -> pid_t {
         guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first else {
-            throw AgentError("iPhone Mirroring is not running; run `2ndscreen iphone setup`")
+            throw AgentError("iPhone Mirroring is not running; run `2ndscreen iphone show`")
         }
         return app.processIdentifier
     }
@@ -50,7 +46,7 @@ public final class IPhoneAgentScreen: AgentScreen {
         request.screen = screen
         let response = try sendControlRequest(request)
         guard let info = response.screens?.first(where: { $0.name == screen }) else {
-            throw AgentError("no screen named \"\(screen)\"; run `2ndscreen iphone setup`")
+            throw AgentError("no screen named \"\(screen)\"; run `2ndscreen iphone show`")
         }
         screenFrame = CGRect(info.frame)
         let pid = try Self.pid()
@@ -58,7 +54,7 @@ public final class IPhoneAgentScreen: AgentScreen {
             .filter({ screenFrame.contains(CGPoint(x: $0.frame.midX, y: $0.frame.midY)) })
             .max(by: { $0.frame.width * $0.frame.height < $1.frame.width * $1.frame.height })
         else {
-            throw AgentError("iPhone Mirroring has no window on screen \"\(screen)\"; run `2ndscreen iphone setup`")
+            throw AgentError("iPhone Mirroring has no window on screen \"\(screen)\"; run `2ndscreen iphone show`")
         }
         try Self.reconnectIfAsked(pid: pid)
         windowFrame = window.frame
@@ -66,6 +62,15 @@ public final class IPhoneAgentScreen: AgentScreen {
     }
 
     public func screenshot(size: CGSize) throws -> Data {
+        let image = try windowImage()
+        if let status = Self.statusPage(in: image) {
+            throw AgentError("iPhone Mirroring shows \"\(status)\": lock the phone and leave it near the Mac")
+        }
+        return try Images.png(Images.scaled(image, to: size))
+    }
+
+    /// The mirroring window alone, at the screen's pixels.
+    private func windowImage() throws -> CGImage {
         let scratch = NSTemporaryDirectory() + "2ndscreen-iphone-agent-\(getpid()).png"
         let cropped = scratch + ".window.png"
         defer {
@@ -79,11 +84,7 @@ public final class IPhoneAgentScreen: AgentScreen {
         let response = try sendControlRequest(request)
         guard response.ok else { throw AgentError(response.error ?? "screenshot failed") }
         try Images.crop(scratch, to: cropped, frame: Frame(windowFrame), screenFrame: Frame(screenFrame))
-        let image = try Images.load(cropped)
-        if let status = Self.statusPage(in: image) {
-            throw AgentError("iPhone Mirroring shows \"\(status)\": lock the phone and leave it near the Mac")
-        }
-        return try Images.png(Images.scaled(image, to: size))
+        return try Images.load(cropped)
     }
 
     public func perform(_ action: InputAction) throws -> ControlResponse {
@@ -103,7 +104,7 @@ public final class IPhoneAgentScreen: AgentScreen {
             let submit = text.hasSuffix("\n")
             if submit { text.removeLast() }
             if !text.isEmpty {
-                if let failure = paste(text, pid: pid) { return .failure(failure) }
+                if let failure = try paste(text, pid: pid) { return .failure(failure) }
             }
             if submit { return try send(key("return", []), pid: pid) }
             Thread.sleep(forTimeInterval: 0.4)
@@ -138,69 +139,71 @@ public final class IPhoneAgentScreen: AgentScreen {
     }
 
     /// Paste `text` into the phone's focused field. Returns why not, if not.
-    private func paste(_ text: String, pid: pid_t) -> String? {
-        let deadline = Date().addingTimeInterval(idleWaitMax)
-        while Self.idleSeconds() < idleNeeded {
-            if Date() > deadline { return "the user kept using the Mac; nothing pasted" }
-            Thread.sleep(forTimeInterval: 0.3)
-        }
+    private func paste(_ text: String, pid: pid_t) throws -> String? {
         let pasteboard = NSPasteboard.general
         let backup = pasteboard.string(forType: .string)
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
         let ours = pasteboard.changeCount
-        let previous = NSWorkspace.shared.frontmostApplication
         defer {
-            if let previous, previous.processIdentifier != pid { Self.bringForward(previous) }
-            // The phone fetches the clipboard after the paste; then put the
-            // user's back, unless they copied something meanwhile.
-            Thread.sleep(forTimeInterval: 2.5)
+            // Put the user's clipboard back, unless they copied something
+            // meanwhile.
             if pasteboard.changeCount == ours {
                 pasteboard.clearContents()
                 if let backup { pasteboard.setString(backup, forType: .string) }
             }
         }
-        guard let mirroring = NSRunningApplication(processIdentifier: pid) else { return "iPhone Mirroring quit" }
-        Self.bringForward(mirroring)
-        for _ in 0..<20 where NSWorkspace.shared.frontmostApplication?.processIdentifier != pid {
-            Thread.sleep(forTimeInterval: 0.1)
+        var paste = key("v", ["cmd"])
+        paste.holdModifiers = true
+        let response = try send(paste, pid: pid)
+        guard response.ok else { return response.error ?? "⌘V failed" }
+        // The phone asks whether to allow the paste, then fetches the
+        // clipboard over the air, which can take seconds; it stays ours
+        // until the phone stops saying it is pasting.
+        var quiet = 0
+        for _ in 0..<25 where quiet < 2 {
+            Thread.sleep(forTimeInterval: 0.5)
+            switch try pastePrompt() {
+            case .allow(let point):
+                quiet = 0
+                var tap = InputAction(.click)
+                tap.x = point.x
+                tap.y = point.y
+                _ = try send(tap, pid: pid)
+            case .pasting:
+                quiet = 0
+            case .none:
+                quiet += 1
+            }
         }
-        Thread.sleep(forTimeInterval: 0.4)
-        // Only ever into iPhone Mirroring: if it is not in front, nothing.
-        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {
-            return "iPhone Mirroring did not come to the front; nothing pasted"
-        }
-        // ⌘V through the HID path: iPhone Mirroring takes a paste only from
-        // a real-looking key while it is front.
-        let source = CGEventSource(stateID: .hidSystemState)
-        for down in [true, false] {
-            guard let event = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: down) else { continue }
-            event.flags = .maskCommand
-            event.post(tap: .cghidEventTap)
-            Thread.sleep(forTimeInterval: 0.02)
-        }
-        Thread.sleep(forTimeInterval: 0.5)
         return nil
     }
 
-    /// Make `app` frontmost. A process that is not itself active, such as
-    /// the command line, may not activate another app directly since macOS
-    /// 14; an Apple event asking the app to activate itself still works.
-    static func bringForward(_ app: NSRunningApplication) {
-        app.activate()
-        for _ in 0..<5 where NSWorkspace.shared.frontmostApplication?.processIdentifier != app.processIdentifier {
-            Thread.sleep(forTimeInterval: 0.1)
+    private enum PastePrompt { case allow(CGPoint), pasting, none }
+
+    /// What the phone shows of a paste from the Mac: its "Allow Paste"
+    /// button, in global points, or its "Pasting from" progress.
+    private func pastePrompt() throws -> PastePrompt {
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.recognitionLanguages = ["zh-Hans", "en-US"]
+        try VNImageRequestHandler(cgImage: windowImage()).perform([request])
+        var pasting = false
+        for observation in request.results ?? [] {
+            guard let text = observation.topCandidates(1).first?.string.trimmingCharacters(in: .whitespaces)
+            else { continue }
+            if Self.allowPasteLabels.contains(text) {
+                let box = observation.boundingBox  // normalised, bottom-left origin
+                return .allow(CGPoint(x: windowFrame.minX + box.midX * windowFrame.width,
+                                      y: windowFrame.minY + (1 - box.midY) * windowFrame.height))
+            }
+            if Self.pastingLabels.contains(where: text.hasPrefix) { pasting = true }
         }
-        guard NSWorkspace.shared.frontmostApplication?.processIdentifier != app.processIdentifier,
-              let id = app.bundleIdentifier
-        else { return }
-        var error: NSDictionary?
-        NSAppleScript(source: "tell application id \"\(id)\" to activate")?.executeAndReturnError(&error)
+        return pasting ? .pasting : .none
     }
 
-    static func idleSeconds() -> TimeInterval {
-        CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: CGEventType(rawValue: ~0)!)
-    }
+    static let pastingLabels = ["Pasting from", "正在从"]
+    static let allowPasteLabels: Set<String> = ["Allow Paste", "允许粘贴"]
 
     /// Press Connect, Try Again or Resume when the window offers one, and
     /// say so: the phone needs a moment to come back.
