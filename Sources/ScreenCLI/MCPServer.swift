@@ -218,9 +218,13 @@ enum MCPServer {
              description: "Type text into an element (by index or text), or into the focused one.",
              properties: windowTarget.merging(elementTarget) { $1 }.merging([
                 "value": described(string, "Text to type"),
+                "replace": described(boolean, "Replace the field's text instead of adding to it; needs index or text"),
              ]) { $1 },
              required: ["screen", "pid", "value"],
-             words: { a in ["type"] + targetWords(a) + elementWords(a) + ["--value", a["value"] as? String ?? ""] }),
+             words: { a in
+                 ["type"] + targetWords(a) + elementWords(a) + ["--value", a["value"] as? String ?? ""]
+                     + (a["replace"] as? Bool == true ? ["--replace"] : [])
+             }),
         Tool(name: "key",
              description: "Press a key, optionally with modifiers, e.g. key return, or key n with modifiers [cmd].",
              properties: windowTarget.merging([

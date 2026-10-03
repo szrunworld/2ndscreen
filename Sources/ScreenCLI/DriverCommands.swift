@@ -93,6 +93,12 @@ enum DriverCommands {
                 AgentCursorEvent(action: .move, point: center).post()
             }
         }
+        // --replace sets the field's whole text through accessibility,
+        // so it needs the field named.
+        if args.has("--replace") {
+            guard let element else { throw DriverError("--replace needs the field named with --index or --text") }
+            return try setValue(text, of: element, target, driver, described)
+        }
         let result = try driver.act("type_text", arguments)
         // cua-driver will not type into Electron and Chromium windows in the
         // background. Their text fields take a value set through
@@ -102,17 +108,22 @@ enum DriverCommands {
             guard let element else {
                 throw DriverError("this app takes background typing only into a named field; give --index or --text")
             }
-            let combined = element.value + text
-            let setting: [String: Any] = ["pid": target.pid, "window_id": target.window.windowID,
-                                          "element_token": element.token, "value": combined]
-            var fallback = try driver.act("set_value", setting)
-            // set_value reports "unverifiable" even when it lands, so read the field back.
-            let landed = try driver.state(pid: target.pid, windowID: target.window.windowID)
-                .elements.first { $0.index == element.index }?.value == combined
-            fallback["effect"] = landed ? "confirmed" : (fallback["effect"] ?? "unverifiable")
-            fallback["route"] = "accessibility_value"
-            return report(fallback, target, described)
+            return try setValue(element.value + text, of: element, target, driver, described)
         }
+        return report(result, target, described)
+    }
+
+    /// Set a field's text through accessibility, and read it back.
+    private static func setValue(_ value: String, of element: Element, _ target: Target, _ driver: Driver,
+                                 _ described: [String: Any]) throws -> [String: Any] {
+        let setting: [String: Any] = ["pid": target.pid, "window_id": target.window.windowID,
+                                      "element_token": element.token, "value": value]
+        var result = try driver.act("set_value", setting)
+        // set_value reports "unverifiable" even when it lands, so read the field back.
+        let now = try driver.state(pid: target.pid, windowID: target.window.windowID)
+            .elements.first { $0.index == element.index }?.value ?? ""
+        result["effect"] = now == value ? "confirmed" : (result["effect"] ?? "unverifiable")
+        result["route"] = "accessibility_value"
         return report(result, target, described)
     }
 
