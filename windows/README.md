@@ -77,6 +77,8 @@ tools:
 2ndscreen screen destroy test
 ```
 
+Output is JSON, in UTF-8 when piped; in Windows PowerShell set
+`[Console]::OutputEncoding = [Text.Encoding]::UTF8` first.
 `2ndscreen --help` lists everything; `2ndscreen doctor` reports the displays,
 the driver's outputs and topology paths, and cua-driver.
 

@@ -18,6 +18,8 @@ param(
     [string] $Out = ".\e2e-out",
     [switch] $SkipDriver
 )
+# 2ndscreen writes UTF-8 to pipes; Windows PowerShell would read the console code page.
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
 $ErrorActionPreference = "Continue"
 $Bin = (Resolve-Path $Bin).Path
 New-Item -ItemType Directory -Force $Out | Out-Null

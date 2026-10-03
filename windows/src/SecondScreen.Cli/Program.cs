@@ -39,6 +39,11 @@ and type re-read the window, so run state again after the UI changes.
 """;
 
 if (OperatingSystem.IsWindows()) Desktop.BecomeDpiAware();
+// Whatever reads a pipe gets UTF-8, not the console code page (such as GBK on a Chinese Windows).
+if (Console.IsOutputRedirected)
+{
+    Console.SetOut(new StreamWriter(Console.OpenStandardOutput(), new System.Text.UTF8Encoding(false)) { AutoFlush = true });
+}
 
 if (args.Length == 0 || args.Contains("--help") || args.Contains("-h"))
 {

@@ -92,6 +92,9 @@ public sealed class Driver
         var start = new ProcessStartInfo(Executable)
         {
             RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true,
+            // cua-driver writes UTF-8; the default, the console code page (such as GBK on a
+            // Chinese Windows), garbles non-ASCII text and can break the JSON.
+            StandardOutputEncoding = System.Text.Encoding.UTF8, StandardErrorEncoding = System.Text.Encoding.UTF8,
         };
         start.ArgumentList.Add(tool);
         start.ArgumentList.Add(arguments.ToJsonString());

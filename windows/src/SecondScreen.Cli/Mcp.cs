@@ -262,6 +262,7 @@ public static class Mcp
         var start = new ProcessStartInfo(Environment.ProcessPath!)
         {
             RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true,
+            StandardOutputEncoding = System.Text.Encoding.UTF8, StandardErrorEncoding = System.Text.Encoding.UTF8,
         };
         foreach (var word in words) start.ArgumentList.Add(word);
         using var process = Process.Start(start)!;
