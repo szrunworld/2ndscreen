@@ -42,6 +42,9 @@ public final class TarsAgent {
                                                            options: .caseInsensitive)
         /// Show the model the app's controls each step. On by default.
         public var listElements = true
+        /// The actions offered to the model; `TarsAgent.phoneActionSpaces`
+        /// for a phone.
+        public var actionSpaces = TarsAgent.actionSpaces
         public init() {}
     }
 
@@ -55,9 +58,12 @@ public final class TarsAgent {
         public var outcome: Outcome
         public var reason: String
         public var steps: Int
+        /// The action the run stopped before because it would submit, for
+        /// a person to confirm.
+        public var held: InputAction?
     }
 
-    static let actionSpaces = """
+    public static let actionSpaces = """
         click(start_box='[x1, y1, x2, y2]')
         left_double(start_box='[x1, y1, x2, y2]')
         right_single(start_box='[x1, y1, x2, y2]')
@@ -72,9 +78,31 @@ public final class TarsAgent {
         call_user() # Submit the task and call the user when the task is unsolvable, or when you need the user's help.
         """
 
+    /// For a phone: taps and swipes, Home and Back, and no Elements list.
+    public static let phoneActionSpaces = """
+        click(start_box='[x1, y1, x2, y2]')
+        long_press(start_box='[x1, y1, x2, y2]')
+        type(content='') #Tap the text field first. If you want to submit your input, use "\\n" at the end of `content`.
+        scroll(start_box='[x1, y1, x2, y2]', direction='down or up or right or left')
+        drag(start_box='[x1, y1, x2, y2]', end_box='[x3, y3, x4, y4]')
+        press_home()
+        press_back()
+        wait() #Sleep for 5s and take a screenshot to check for any changes.
+        finished(content='') #Use this when the task is done; put any answer in content.
+        call_user() # Submit the task and call the user when the task is unsolvable, or when you need the user's help.
+        """
+
     /// UI-TARS's prompt (`@ui-tars/sdk`, Apache-2.0, ByteDance), with this
-    /// agent's action space.
-    static func prompt(_ instruction: String) -> String {
+    /// agent's action space; the note on elements only when they are listed.
+    static func prompt(_ instruction: String, actionSpaces: String = actionSpaces, elements: Bool = true) -> String {
+        let elementsNote = elements ? """
+
+            - A screenshot may come with an `## Elements` list, read from the app's accessibility tree: \
+            `[N] role "label" value="…" box=[x1, y1, x2, y2]`, boxes on the screenshot's 0-1000 scale. \
+            When your target is listed, act on it with element='N': it is exact. \
+            Use start_box for anything not listed.
+            """ : ""
+        return
         """
         You are a GUI agent. You are given a task and your action history, with screenshots. \
         You need to perform the next action to complete the task.
@@ -89,11 +117,7 @@ public final class TarsAgent {
         \(actionSpaces)
 
         ## Note
-        - Write a small plan and finally summarize your next action (with its target element) in one sentence in `Thought` part.
-        - A screenshot may come with an `## Elements` list, read from the app's accessibility tree: \
-        `[N] role "label" value="…" box=[x1, y1, x2, y2]`, boxes on the screenshot's 0-1000 scale. \
-        When your target is listed, act on it with element='N': it is exact. \
-        Use start_box for anything not listed.
+        - Write a small plan and finally summarize your next action (with its target element) in one sentence in `Thought` part.\(elementsNote)
 
         ## User Instruction
         \(instruction)
@@ -125,7 +149,8 @@ public final class TarsAgent {
     }
 
     public func run(_ instruction: String) -> Result {
-        var messages: [Message] = [.user(Self.prompt(instruction))]
+        var messages: [Message] = [.user(Self.prompt(instruction, actionSpaces: options.actionSpaces,
+                                                     elements: options.listElements))]
         var failedShots = 0
         var replyWithoutAction = false
         for step in 1...max(options.maxSteps, 1) {
@@ -201,7 +226,7 @@ public final class TarsAgent {
                 for planned in Planner.plan(action, context) {
                     if let stop = execute(planned, on: target,
                                           prediction: prediction.thought.isEmpty ? reply : prediction.thought) {
-                        return Result(outcome: stop.0, reason: stop.1, steps: step)
+                        return Result(outcome: stop.0, reason: stop.1, steps: step, held: stop.2)
                     }
                 }
             }
@@ -210,12 +235,15 @@ public final class TarsAgent {
     }
 
     /// Run one step, on `target` if the model named an element; returns why
-    /// the run ends, if it does.
-    private func execute(_ step: Step, on target: AXElementInfo?, prediction: String) -> (Outcome, String)? {
+    /// the run ends, if it does, and the action it held back.
+    private func execute(_ step: Step, on target: AXElementInfo?, prediction: String) -> (Outcome, String, InputAction?)? {
         switch step {
         case .stop(let outcome, let reason):
             onEvent(.step(step))
-            return (outcome, reason)
+            return (outcome, reason, nil)
+        case .hold(let action, let reason):
+            onEvent(.step(step))
+            return (.done, reason, action)
         case .wait(let seconds):
             onEvent(.step(step))
             Thread.sleep(forTimeInterval: seconds)
@@ -230,18 +258,18 @@ public final class TarsAgent {
                 if Self.matches(Self.submitIntent, Self.nextActionSentence(prediction)),
                    action.point.flatMap({ field(at: $0) }) == nil {
                     let reason = "stopped before a click the model describes as sending"
-                    onEvent(.step(.stop(.done, reason)))
-                    return (.done, reason)
+                    onEvent(.step(.hold(action, reason)))
+                    return (.done, reason, action)
                 }
                 if let target, Self.matches(options.submitLabels, (target.label ?? "").trimmingCharacters(in: .whitespaces)) {
                     let reason = "stopped before clicking a control that submits"
-                    onEvent(.step(.stop(.done, reason)))
-                    return (.done, reason)
+                    onEvent(.step(.hold(action, reason)))
+                    return (.done, reason, action)
                 }
                 if let point = action.point, isSubmitControl(at: point) {
                     let reason = "stopped before clicking a control that submits"
-                    onEvent(.step(.stop(.done, reason)))
-                    return (.done, reason)
+                    onEvent(.step(.hold(action, reason)))
+                    return (.done, reason, action)
                 }
             }
             if action.kind == .click { lastClick = action.point }

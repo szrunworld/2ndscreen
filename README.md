@@ -251,6 +251,107 @@ claude mcp add --transport stdio 2ndscreen -- 2ndscreen mcp
 Any MCP client works: point it at `2ndscreen mcp` (use the absolute path
 if `2ndscreen` is not on its PATH).
 
+## Android phones
+
+2ndscreen mirrors and controls Android phones over Wi-Fi, with nothing
+installed on the phone. It uses scrcpy's server: adb copies it to the
+phone and runs it with debugging rights, which let it capture the screen
+with the phone's hardware encoder and inject touches. 2ndscreen decodes
+the video with VideoToolbox and draws it itself, so of scrcpy only the
+0.7 MB server ships, beside adb (`scripts/fetch-android-tools.sh`
+downloads both, pinned and checksummed, when the app is built). The app
+grows from under 1 MB to about 11 MB, 5 MB zipped.
+
+To connect a phone (Android 11 or later), choose **Android Phones →
+Connect Phone…** in the menu bar, then on the phone open **Settings →
+Developer options → Wireless debugging → Pair device with QR code** and
+scan the code. The phone and the Mac must be on the same Wi-Fi. Pairing is
+needed once; afterwards adb finds the phone by itself whenever Wireless
+debugging is on, and it is listed under **Android Phones**.
+
+Choosing a phone under **Android Phones** shows it full screen on a Space
+of its own, as iPhone Mirroring would be: swipe between it and your work
+with four fingers. Leave full screen to keep it in a window instead.
+Agents never move your pointer or take focus: they act on the phone
+through adb, and `android show` opens the mirror behind your windows.
+
+In the mirror window, click and drag to touch, scroll to scroll, and type
+to type; text an Android keyboard cannot inject, such as Chinese, is
+pasted through the phone's clipboard. Right-click or Escape is Back. The
+title bar has Back, Home and Recents, and ⌘V pastes the Mac's clipboard.
+
+The phone's sound plays on the Mac while its mirror is open (Android 11
+and later), and the phone itself goes quiet, as with iPhone Mirroring:
+scrcpy's default source, the only one that captures every app. It comes as
+AAC at about 130 kbit/s. Over Wi-Fi the phone sends it in bursts after
+pauses of up to half a second, so the buffer starts at 100 ms and grows
+each time a pause runs it dry, to at most 500 ms; what a burst leaves
+queued beyond that plays 5% faster, pitch kept, until the delay is back
+down. Voice and video calls cannot be captured.
+
+Agents use the same phone from the command line:
+
+```bash
+$CLI android devices
+$CLI android pair 192.168.1.20:37000 123456     # or scan the QR code from the menu
+$CLI android connect 192.168.1.20:41000
+$CLI android show [--serial S] [--screen test-a] [--max-size 1920]
+$CLI android screenshot --output phone.png
+$CLI android tap   --x 540 --y 1200             # device pixels, as in the screenshot
+$CLI android swipe --x 540 --y 1600 --to-x 540 --to-y 600
+$CLI android type  --text "你好"
+$CLI android key   --key back
+$CLI android adb -s S shell uiautomator dump    # the bundled adb, arguments unchanged
+$CLI android hide [--serial S]
+```
+
+With the mirror open, taps, swipes and keys go through it, in about a
+tenth of a second; without it, through adb, in about half a second. Text
+is always pasted through the phone's clipboard, over a control-only
+connection when the mirror is closed: typed keys would be turned into
+pinyin by a Chinese keyboard on the phone, and adb types only ASCII.
+
+`android show` opens the mirror behind the user's windows without taking
+focus; with `--screen`, it fills that agent screen instead, for the user to
+watch in its preview.
+
+The vision agent works on a phone too, by its screenshots and through
+these commands, with taps, swipes, long presses, Back and Home:
+
+```bash
+$CLI agent --android [--serial S] "打开微信，给文件传输助手写一句早安"
+```
+
+The guards are the desktop's: it stops before Enter, text ending in a
+newline, or a tap the model describes as sending, and the result's
+`pending` holds the `2ndscreen` arguments that would do it. The sparkles
+button in the mirror window's title bar opens the same agent in a panel
+beside the phone, with Confirm and Discard for what it held back.
+
+Things to know:
+
+- macOS asks whether 2ndscreen may find devices on your local network;
+  allow it. It asks again after the app is updated, and until then
+  connecting fails with "No route to host". The adb server makes the connections to phones and
+  answers to the permission of the app that started it, so 2ndscreen
+  starts it, including before `2ndscreen android` commands run adb. If
+  pairing or connecting fails with "No route to host", an adb server
+  started from a terminal may be running; 2ndscreen restarts it and tries
+  again by itself. It also restarts one left by an earlier build when it
+  launches, and reconnects to the addresses phones last had, since adb's
+  own reconnection relies on mDNS, which many Wi-Fi networks block.
+- Agents need the phone unlocked. Developer options → Stay awake keeps it
+  from locking while it charges.
+- adb keeps a server running in the background after 2ndscreen quits, as
+  it always does. Another adb of a different version, such as one from
+  Homebrew, restarts that server whenever it is used, which drops the
+  mirror; use `2ndscreen android adb` or one adb throughout.
+- Video is capped at 1920 pixels on its long side, which Wi-Fi carries
+  smoothly; `--max-size 0` sends the phone's full resolution.
+- Android 10 and earlier have no Wireless debugging: connect once by USB
+  and run `2ndscreen android adb tcpip 5555`, then
+  `2ndscreen android connect PHONE-IP:5555`.
+
 ## Agent cursor
 
 Agents act through accessibility and per-process events, so the real
