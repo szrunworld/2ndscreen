@@ -4,15 +4,16 @@ import SecondScreenCore
 
 /// A window showing an Android device's screen. Clicks and drags become
 /// touches, the scroll wheel scrolls, and typing goes to the focused field.
-/// The title bar has Back, Home and Recents; right-click is also Back. Its
-/// sparkles button opens a UI-TARS panel beside the phone.
+/// The title bar has Back, Home and Recents; right-click is also Back.
+/// Android Phones → UI-TARS Panel in the menu bar opens a panel beside the
+/// phone.
 @MainActor
 final class AndroidMirrorWindow: NSObject, NSWindowDelegate {
     let mirror: AndroidMirror
     private let window: NSWindow
     private let screenView: AndroidScreenView
-    private let panel: AndroidAgentPanel
-    private var panelWidth: CGFloat { panel.isHidden ? 0 : AndroidAgentPanel.width }
+    private let panel: AgentPanel
+    private var panelWidth: CGFloat { panel.isHidden ? 0 : AgentPanel.width }
     /// Where the window was placed with `place(on:)`, so rotation keeps it there.
     private var displayID: CGDirectDisplayID?
 
@@ -24,7 +25,7 @@ final class AndroidMirrorWindow: NSObject, NSWindowDelegate {
     init(mirror: AndroidMirror) {
         self.mirror = mirror
         screenView = AndroidScreenView(mirror: mirror)
-        panel = AndroidAgentPanel(serial: mirror.serial)
+        panel = AgentPanel.android(serial: mirror.serial)
         panel.isHidden = true
         window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 360, height: 780),
@@ -171,18 +172,23 @@ final class AndroidMirrorWindow: NSObject, NSWindowDelegate {
         return NSSize(width: (video.width * scale).rounded() + panelWidth, height: (video.height * scale).rounded())
     }
 
+    var isPanelShown: Bool { !panel.isHidden }
+
     /// Show or hide the UI-TARS panel, widening the window to the right
-    /// instead of shrinking the phone.
-    @objc private func togglePanel() {
+    /// instead of shrinking the phone. The menu bar's Android Phones menu
+    /// offers it; the title bar keeps to the phone's own three keys.
+    func togglePanel() {
         let opening = panel.isHidden
         panel.isHidden = !opening
         if !window.styleMask.contains(.fullScreen) {
             var frame = window.frame
-            frame.size.width += opening ? AndroidAgentPanel.width : -AndroidAgentPanel.width
+            frame.size.width += opening ? AgentPanel.width : -AgentPanel.width
             window.setFrame(frame, display: true, animate: true)
         }
         window.contentView?.needsLayout = true
         if opening {
+            NSApp.activate()
+            window.makeKeyAndOrderFront(nil)
             panel.focus()
         } else {
             window.makeFirstResponder(screenView)
@@ -199,12 +205,11 @@ final class AndroidMirrorWindow: NSObject, NSWindowDelegate {
             return button
         }
         let stack = NSStackView(views: [
-            button("sparkles", "UI-TARS", #selector(togglePanel)),
             button("chevron.backward", "Back", #selector(backPressed)),
             button("circle", "Home", #selector(homePressed)),
             button("square", "Recents", #selector(recentsPressed)),
         ])
-        stack.spacing = 2
+        stack.spacing = 14
         stack.edgeInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 8)
         stack.frame.size = stack.fittingSize
         let controller = NSTitlebarAccessoryViewController()
@@ -235,7 +240,7 @@ private final class MirrorContentView: NSView {
 
     override func layout() {
         super.layout()
-        let width = panel.isHidden ? 0 : AndroidAgentPanel.width
+        let width = panel.isHidden ? 0 : AgentPanel.width
         screen.frame = NSRect(x: 0, y: 0, width: bounds.width - width, height: bounds.height)
         panel.frame = NSRect(x: bounds.width - width, y: 0, width: width, height: bounds.height)
     }

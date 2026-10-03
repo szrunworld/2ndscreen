@@ -67,4 +67,39 @@ public enum AndroidPlan {
             return [["key", "--key", names[key] ?? key]]
         }
     }
+
+    /// The app request for words from `commands`.
+    public static func request(_ words: [String], serial: String?) throws -> ControlRequest {
+        func value(_ flag: String) -> String? {
+            words.firstIndex(of: flag).flatMap { $0 + 1 < words.count ? words[$0 + 1] : nil }
+        }
+        func number(_ flag: String) throws -> Double {
+            guard let number = value(flag).flatMap(Double.init) else { throw Failure("\(words.first ?? "") needs \(flag)") }
+            return number
+        }
+        var request: ControlRequest
+        switch words.first {
+        case "tap":
+            request = ControlRequest(command: .androidTap)
+            request.x = try number("--x")
+            request.y = try number("--y")
+        case "swipe":
+            request = ControlRequest(command: .androidSwipe)
+            request.x = try number("--x")
+            request.y = try number("--y")
+            request.toX = try number("--to-x")
+            request.toY = try number("--to-y")
+            request.duration = value("--duration").flatMap(Double.init)
+        case "type":
+            request = ControlRequest(command: .androidType)
+            request.text = value("--text")
+        case "key":
+            request = ControlRequest(command: .androidKey)
+            request.key = value("--key")
+        default:
+            throw Failure("no android command \(words.first ?? "")")
+        }
+        request.serial = serial
+        return request
+    }
 }

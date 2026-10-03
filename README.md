@@ -30,6 +30,11 @@ open -n --env SECONDSCREEN_SOCKET=$SECONDSCREEN_SOCKET build/2ndscreen.app
 ```
 
 A side instance has agent screens only: no primary screen and no hot key.
+It keeps off the menu bar, so the user sees one 2ndscreen however many
+agents test theirs; the usual app lists side instances under **Test
+Copies**, where each can be quit. A side instance quits by itself after 30
+minutes without requests, unless it has an agent screen or a phone's
+mirror open. The usual app starts whether or not side instances run.
 While two instances ran, the first screen a fresh side instance created
 showed another display's picture; screens it created after that did not.
 Check a side instance's first screenshot.
@@ -301,6 +306,34 @@ claude mcp add --transport stdio 2ndscreen -- 2ndscreen mcp
 Any MCP client works: point it at `2ndscreen mcp` (use the absolute path
 if `2ndscreen` is not on its PATH).
 
+## iPhone
+
+2ndscreen runs iPhone Mirroring on an agent screen and lets the vision
+agent use it, like an Android phone, from the command line or from the
+**UI-TARS Panel** item of the screen's menu, which opens the panel beside
+its preview.
+
+```bash
+$CLI iphone setup                # a "phone" screen with iPhone Mirroring on it, kept sized to its window
+$CLI agent --iphone "打开微信，告诉我第一个聊天的名字"
+```
+
+What iPhone Mirroring allows from a Mac shapes what the agent can do:
+
+- Taps work in the background, and Home (⌘1).
+- Nothing swipes or scrolls: wheel events, trackpad phases and drags are
+  ignored, in the background and in front, so the agent is offered none,
+  and a drag the model asks for anyway is refused, never turned into taps.
+  It uses search instead.
+- Typed text reaches the phone's keyboard as key codes, which a Chinese
+  keyboard turns into pinyin. Text is pasted: once you have not touched the
+  keyboard or mouse for three seconds, iPhone Mirroring comes to the front
+  for about a second for ⌘V, and your clipboard and frontmost app are put
+  back after.
+- Without the phone it shows "iPhone in Use" or "Connection Paused"; the
+  agent presses Connect, Try Again or Resume when offered and stops
+  otherwise. Lock the phone and leave it near the Mac.
+
 ## Android phones
 
 2ndscreen mirrors and controls Android phones over Wi-Fi, with nothing
@@ -384,9 +417,10 @@ $CLI agent --android [--serial S] "打开微信，给文件传输助手写一句
 
 The guards are the desktop's: it stops before Enter, text ending in a
 newline, or a tap the model describes as sending, and the result's
-`pending` holds the `2ndscreen` arguments that would do it. The sparkles
-button in the mirror window's title bar opens the same agent in a panel
-beside the phone, with Confirm and Discard for what it held back.
+`pending` holds the `2ndscreen` arguments that would do it. **Android Phones →
+UI-TARS Panel** in the menu bar opens the same agent in a panel beside
+the phone, run in the app itself, with Confirm and Discard for what it
+held back.
 
 Things to know:
 

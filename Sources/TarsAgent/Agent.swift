@@ -42,6 +42,9 @@ public final class TarsAgent {
                                                            options: .caseInsensitive)
         /// Show the model the app's controls each step. On by default.
         public var listElements = true
+        /// Whether the screen takes swipes and drags; off for iPhone
+        /// Mirroring, which ignores them.
+        public var gestures = true
         /// The actions offered to the model; `TarsAgent.phoneActionSpaces`
         /// for a phone.
         public var actionSpaces = TarsAgent.actionSpaces
@@ -52,7 +55,25 @@ public final class TarsAgent {
         public var app = ""
         /// How long a replay waits for a step's control to show up.
         public var replayPatience: TimeInterval = 6
+        /// Asked before each step; true ends the run, as the user asked.
+        public var isCancelled: () -> Bool = { false }
         public init() {}
+
+        /// For a phone: its action space, no Elements list, and swipes,
+        /// which take nothing of the user's.
+        public mutating func forPhone() {
+            actionSpaces = TarsAgent.phoneActionSpaces
+            listElements = false
+            foreground = true
+        }
+
+        /// For an iPhone through iPhone Mirroring: taps, typing and Home,
+        /// and no Elements list (Mirroring exposes none).
+        public mutating func forIPhone() {
+            actionSpaces = TarsAgent.iPhoneActionSpaces
+            listElements = false
+            gestures = false
+        }
     }
 
     public enum Event {
@@ -247,6 +268,7 @@ public final class TarsAgent {
         var failedShots = 0
         var replyWithoutAction = false
         for step in 1...max(options.maxSteps, 1) {
+            if options.isCancelled() { return Result(outcome: .user, reason: "stopped", steps: step - 1) }
             let frame: CGRect
             do {
                 frame = try screen.frame()
@@ -292,6 +314,7 @@ public final class TarsAgent {
             replyWithoutAction = false
 
             var context = PlanContext(frame: frame, allowSubmit: options.allowSubmit, foreground: options.foreground)
+            context.gestures = options.gestures
             for var action in prediction.actions {
                 context.menuOpen = screen.menuOpen()
                 // An element the model named stands in for any box it gave.

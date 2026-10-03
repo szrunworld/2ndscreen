@@ -104,12 +104,18 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.button?.image = NSImage(
-            systemSymbolName: "display.2", accessibilityDescription: Self.displayName)
-        let menu = NSMenu()
-        menu.delegate = self
-        statusItem.menu = menu
+        if ControlProtocol.isSideInstance {
+            // Kept off the menu bar, where the usual app lists it under
+            // Test Copies; it quits once its agent has left it idle.
+            quitWhenIdle()
+        } else {
+            statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+            statusItem.button?.image = NSImage(
+                systemSymbolName: "display.2", accessibilityDescription: Self.displayName)
+            let menu = NSMenu()
+            menu.delegate = self
+            statusItem.menu = menu
+        }
 
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(agentCursorEvent(_:)),
@@ -260,6 +266,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func handle(_ request: ControlRequest) async -> ControlResponse {
+        lastRequest = Date()
         func target() -> ScreenInfo? {
             guard let name = request.screen else { return nil }
             return allScreens().first { $0.name == name }
@@ -358,6 +365,66 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    // MARK: Test copies
+
+    /// When an agent last sent a request.
+    private var lastRequest = Date()
+    /// A side instance quits after this long without requests, unless it
+    /// still has an agent screen or a phone's mirror open.
+    private static let sideInstanceIdleQuit: TimeInterval = 30 * 60
+
+    private func quitWhenIdle() {
+        Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, Date().timeIntervalSince(self.lastRequest) > Self.sideInstanceIdleQuit,
+                      self.agentScreens.screens.isEmpty, self.androidMirrors.isEmpty else { return }
+                NSApp.terminate(nil)
+            }
+        }
+    }
+
+    /// Side instances agents run to test builds of 2ndscreen, which keep off
+    /// the menu bar; each can be quit from here.
+    private func testCopiesItem() -> NSMenuItem? {
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        let copies = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
+            .filter { $0.processIdentifier != ownPID }
+        guard !copies.isEmpty else { return nil }
+        let parent = NSMenuItem(title: "Test Copies (\(copies.count))", action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+        let note = NSMenuItem(title: "Run by agents to test their builds", action: nil, keyEquivalent: "")
+        note.isEnabled = false
+        submenu.addItem(note)
+        for copy in copies {
+            var title = "Quit " + Self.copyName(copy.bundleURL)
+            if let launched = copy.launchDate {
+                title += " (since \(launched.formatted(date: .omitted, time: .shortened)))"
+            }
+            let entry = item(title, #selector(quitTestCopy(_:)), on: false)
+            entry.representedObject = copy.processIdentifier
+            entry.toolTip = copy.bundleURL?.path
+            submenu.addItem(entry)
+        }
+        parent.submenu = submenu
+        return parent
+    }
+
+    /// "2ndscreen-uitars" for …/2ndscreen-uitars/build/2ndscreen.app, the
+    /// folder it was built in; otherwise its folder and name.
+    static func copyName(_ url: URL?) -> String {
+        guard let url else { return "unknown" }
+        let folder = url.deletingLastPathComponent()
+        if folder.lastPathComponent == "build" {
+            return folder.deletingLastPathComponent().lastPathComponent
+        }
+        return folder.lastPathComponent + "/" + url.deletingPathExtension().lastPathComponent
+    }
+
+    @objc private func quitTestCopy(_ sender: NSMenuItem) {
+        guard let pid = sender.representedObject as? pid_t else { return }
+        NSRunningApplication(processIdentifier: pid)?.terminate()
+    }
+
     // MARK: Android
 
     private func addAndroidItems(to menu: NSMenu) {
@@ -383,7 +450,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 entry.toolTip = device.serial
                 entry.isEnabled = usable
                 menu.addItem(entry)
-                if androidMirrors[device.serial] != nil {
+                if let mirror = androidMirrors[device.serial] {
+                    let panel = item("UI-TARS Panel", #selector(toggleAndroidPanel(_:)), on: mirror.isPanelShown)
+                    panel.representedObject = device.serial
+                    panel.indentationLevel = 1
+                    menu.addItem(panel)
                     let stop = item("Stop Mirroring \(device.label)", #selector(stopAndroidMirror(_:)), on: false)
                     stop.representedObject = device.serial
                     stop.indentationLevel = 1
@@ -430,6 +501,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func setSoundDelay(_ sender: NSMenuItem) {
         guard let seconds = sender.representedObject as? Double else { return }
         AndroidAudioPlayer.extraDelay = seconds
+    }
+
+    @objc private func toggleAndroidPanel(_ sender: NSMenuItem) {
+        guard let serial = sender.representedObject as? String, let mirror = androidMirrors[serial] else { return }
+        mirror.togglePanel()
     }
 
     /// Full screen on its own Space, opened or brought forward.
@@ -715,7 +791,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let preview = DisplayPreview(
             displayID: screen.display.displayID, title: "\(name) preview",
             framesPerSecond: 30, floating: preferences.floatPreview)
-        preview.onClose = { [weak self] in self?.agentPreviews.removeValue(forKey: name) }
+        preview.onClose = { [weak self] in
+            self?.agentPreviews.removeValue(forKey: name)
+            self?.iPhonePanels.removeValue(forKey: name)?.stop()
+        }
         preview.setToolbar(previewButtons(for: name))
         agentPreviews[name] = preview
         Task { @MainActor in
@@ -749,6 +828,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             fit.toolTip = "Keep the screen sized to its app's window, such as iPhone Mirroring turning landscape"
             if !agentScreens.hasPlacedApps(screen.name) { fit.action = nil }
             submenu.addItem(fit)
+            if showsIPhoneMirroring(screen.name) {
+                let panel = item("UI-TARS Panel", #selector(toggleIPhonePanel(_:)),
+                                 on: agentPreviews[screen.name]?.isSidePanelShown ?? false)
+                panel.representedObject = screen.name
+                submenu.addItem(panel)
+            }
             let sizes = NSMenuItem(title: "Size", action: nil, keyEquivalent: "")
             let sizeMenu = NSMenu()
             // A size that cannot hold the app's window would cut it off:
@@ -850,6 +935,26 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private var volumePopover: NSPopover?
+    /// UI-TARS panels for agent screens showing iPhone Mirroring, by screen.
+    private var iPhonePanels: [String: AgentPanel] = [:]
+
+    private func showsIPhoneMirroring(_ name: String) -> Bool {
+        agentScreens.mainWindow(on: name).flatMap {
+            NSRunningApplication(processIdentifier: $0.pid)?.bundleIdentifier
+        } == "com.apple.ScreenContinuity"
+    }
+
+    @objc private func toggleIPhonePanel(_ sender: NSMenuItem) {
+        guard let name = sender.representedObject as? String else { return }
+        // The panel lives in the screen's preview; open that first.
+        if agentPreviews[name] == nil { toggleAgentPreview(name) }
+        guard let preview = agentPreviews[name] else { return }
+        let panel = iPhonePanels[name] ?? AgentPanel.iPhone(screen: name)
+        iPhonePanels[name] = panel
+        if preview.isSidePanelShown { panel.stop() }
+        preview.toggleSidePanel(panel, width: AgentPanel.width)
+        if preview.isSidePanelShown { panel.focus() }
+    }
 
     /// A slider for the Mac's output volume, under the preview's button.
     /// iPhone Mirroring plays through it and has no volume of its own.
@@ -1031,6 +1136,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         android.submenu = androidMenu
         menu.addItem(android)
         menu.addItem(.separator())
+
+        if let copies = testCopiesItem() {
+            menu.addItem(copies)
+            menu.addItem(.separator())
+        }
 
         menu.addItem(item("Open Displays Settings…", #selector(openDisplaySettings), on: false))
         menu.addItem(NSMenuItem(
