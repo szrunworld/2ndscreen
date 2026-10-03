@@ -187,25 +187,32 @@ extension TarsAgent {
         // can be read off that control next time.
         var finish = Procedure.Finish.steps
         var answerFrom: ElementRef?
+        var answerPattern: String?
         if let content = finishedContent, !content.isEmpty {
-            let said = Self.plain(content)
+            // A control the run changed whose text holds the answer, or part of
+            // it: Windows Calculator shows "显示为 1651" where the model said
+            // "结果为 1651". Text the instruction already holds, such as the sum
+            // it gave (37×48-125), is not what the run found out.
             let asked = Self.plain(instruction)
-            let shown = elements.compactMap { element -> (ElementRef, String)? in
+            let shown = elements.compactMap { element -> (reference: ElementRef, text: String, core: String)? in
                 guard let reference = ElementRef(element, in: frame) else { return nil }
                 let text = Self.text(of: element)
-                let bare = Self.plain(text)
-                // Text the instruction already holds, such as the sum it gave
-                // (37×48-125), is not what the run found out.
-                guard !bare.isEmpty, said.contains(bare), !asked.contains(bare),
-                      startTexts[Self.key(reference)] != text else { return nil }
-                return (reference, bare)
+                guard startTexts[Self.key(reference)] != text else { return nil }
+                let core = Self.answerCore(Self.longestCommon(text, content))
+                let bare = Self.plain(core)
+                guard !bare.isEmpty, !asked.contains(bare), bare.count >= 2 || bare.contains(where: \.isNumber) else { return nil }
+                return (reference, text, core)
             }
-            if let best = shown.max(by: { $0.1.count < $1.1.count }) {
+            if let best = shown.min(by: { a, b in
+                let (la, lb) = (Self.plain(a.core).count, Self.plain(b.core).count)
+                return la != lb ? la > lb : a.text.count < b.text.count
+            }) {
                 finish = .element
-                answerFrom = best.0
-                // Found by place: its label is the answer, which changes.
-                if Self.plain(answerFrom!.label) == best.1 { answerFrom!.label = "" }
-            } else if reportsBack(instruction, content) {
+                answerFrom = best.reference
+                // Found by place: its label holds the answer, which changes.
+                if answerFrom!.label.contains(best.core) { answerFrom!.label = "" }
+                if best.text != best.core { answerPattern = best.text.replacingOccurrences(of: best.core, with: "⟦⟧") }
+            } else if Self.matches(Self.asksForInformation, instruction) || reportsBack(instruction, content) {
                 finish = .model
             }
         }
@@ -221,7 +228,7 @@ extension TarsAgent {
         let procedure = Procedure(
             app: options.app, instruction: instruction, template: found.template, slots: found.slots,
             steps: heldStep == nil ? found.steps : Array(found.steps.dropLast()), finish: finish,
-            answerFrom: answerFrom, reason: found.texts[0], held: heldStep == nil ? nil : found.steps.last,
+            answerFrom: answerFrom, answerPattern: answerPattern, reason: found.texts[0], held: heldStep == nil ? nil : found.steps.last,
             endControls: end, allowSubmit: options.allowSubmit, learned: Date(), successes: 1, failures: 0)
         var known = store.load(app: options.app)
         known.removeAll { $0.template == procedure.template && $0.allowSubmit == procedure.allowSubmit }
@@ -231,6 +238,40 @@ extension TarsAgent {
         result.learned = "saved"
         onEvent(.note("learned \(procedure.steps.count) step(s) for next time"))
         return result
+    }
+
+    /// Wording that asks for something to be read and reported, which no
+    /// learned run may answer from memory.
+    static let asksForInformation = try! NSRegularExpression(
+        pattern: #"告诉我|多少|是什么|是谁|是否|几[个点号次]|读出|读取|查看|查一下|结果|what|which|how many|how much|tell me|read|find out"#,
+        options: .caseInsensitive)
+
+    /// The longest text the two share.
+    static func longestCommon(_ a: String, _ b: String) -> String {
+        let a = Array(a), b = Array(b)
+        var row = Array(repeating: 0, count: b.count + 1)
+        var best = 0, end = 0
+        for i in 1...max(a.count, 1) where i <= a.count {
+            var diagonal = 0
+            for j in 1...max(b.count, 1) where j <= b.count {
+                let above = row[j]
+                row[j] = a[i - 1] == b[j - 1] ? diagonal + 1 : 0
+                if row[j] > best { best = row[j]; end = i }
+                diagonal = above
+            }
+        }
+        return String(a[(end - best)..<end])
+    }
+
+    /// Shared text cut to its digits and Latin letters when it has any, so the
+    /// "为 " that "结果为 1651" and "显示为 1651" share stays out of the answer.
+    static func answerCore(_ shared: String) -> String {
+        let characters = Array(shared)
+        func ascii(_ c: Character) -> Bool { c.isASCII && (c.isLetter || c.isNumber) }
+        guard let first = characters.firstIndex(where: ascii), let last = characters.lastIndex(where: ascii) else {
+            return shared.trimmingCharacters(in: .whitespaces)
+        }
+        return String(characters[first...last])
     }
 
     /// Whether the instruction asks for something to be read and reported:
@@ -341,7 +382,16 @@ extension TarsAgent {
             guard let from = procedure.answerFrom, let element = locate(from, bindings, anyLabel: true) else {
                 return .handOver("the control that held the answer is not on screen", failed: true)
             }
-            let answer = Self.text(of: element)
+            var answer = Self.text(of: element)
+            if let pattern = procedure.answerPattern {
+                let parts = pattern.components(separatedBy: "⟦⟧").map(NSRegularExpression.escapedPattern(for:))
+                guard let regex = try? NSRegularExpression(pattern: "^" + parts.joined(separator: "(.+?)") + "$",
+                                                           options: [.dotMatchesLineSeparators]),
+                      let match = regex.firstMatch(in: answer, range: NSRange(answer.startIndex..., in: answer)),
+                      let range = Range(match.range(at: 1), in: answer)
+                else { return .handOver("the control that held the answer reads differently now", failed: true) }
+                answer = answer[range].trimmingCharacters(in: .whitespaces)
+            }
             guard !answer.isEmpty else { return .handOver("the control that held the answer is empty", failed: true) }
             guard !Self.plain(instruction).contains(Self.plain(answer)) else {
                 return .handOver("the control that held the answer shows the instruction's own text", failed: true)

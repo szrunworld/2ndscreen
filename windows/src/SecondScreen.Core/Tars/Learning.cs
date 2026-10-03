@@ -120,22 +120,28 @@ public sealed partial class Agent
 
         var finish = ProcedureFinish.Steps;
         ElementRef? answerFrom = null;
+        string? answerPattern = null;
         if (finishedContent is { Length: > 0 } content)
         {
-            string said = Plain(content), asked = Plain(instruction);
+            // A control the run changed whose text holds the answer, or part of it: Calculator
+            // shows "显示为 1651" where the model said "结果为 1651". Text the instruction already
+            // holds, such as the sum it gave, is not what the run found out.
+            string asked = Plain(instruction);
             var shown = elements.Select(e => (Ref: ElementRef.Of(e, frame), Text: TextOf(e)))
-                .Where(s => s.Ref is not null && Plain(s.Text) is { Length: > 0 } bare && said.Contains(bare, StringComparison.Ordinal)
-                            // Text the instruction already holds, such as the sum it gave, is not what the run found out.
-                            && !asked.Contains(bare, StringComparison.Ordinal)
-                            && (!startTexts.TryGetValue(Key(s.Ref), out var before) || before != s.Text))
-                .OrderByDescending(s => Plain(s.Text).Length).FirstOrDefault();
+                .Where(s => s.Ref is not null && (!startTexts.TryGetValue(Key(s.Ref), out var before) || before != s.Text))
+                .Select(s => (s.Ref, s.Text, Core: AnswerCore(LongestCommon(s.Text, content))))
+                .Where(s => Plain(s.Core) is { Length: > 0 } bare && !asked.Contains(bare, StringComparison.Ordinal)
+                            && (bare.Length >= 2 || bare.Any(char.IsDigit)))
+                .OrderByDescending(s => Plain(s.Core).Length).ThenBy(s => s.Text.Length).FirstOrDefault();
             if (shown.Ref is { } found)
             {
                 finish = ProcedureFinish.Element;
-                // Found by place: its label is the answer, which changes.
-                answerFrom = Plain(found.Label) == Plain(shown.Text) ? found with { Label = "" } : found;
+                // Found by place: its label holds the answer, which changes.
+                answerFrom = found.Label.Contains(shown.Core.Trim(), StringComparison.Ordinal) ? found with { Label = "" } : found;
+                var core = shown.Core.Trim();
+                if (shown.Text != core) answerPattern = shown.Text.Replace(core, "⟦⟧");
             }
-            else if (ReportsBack(instruction, content))
+            else if (AsksForInformation.IsMatch(instruction) || ReportsBack(instruction, content))
             {
                 finish = ProcedureFinish.Model;
             }
@@ -149,7 +155,7 @@ public sealed partial class Agent
         var procedure = new Procedure
         {
             App = options.App, Instruction = instruction, Template = found2.Template, Slots = found2.Slots,
-            Steps = found2.Steps, Finish = finish, AnswerFrom = answerFrom, Reason = found2.Texts[0],
+            Steps = found2.Steps, Finish = finish, AnswerFrom = answerFrom, AnswerPattern = answerPattern, Reason = found2.Texts[0],
             EndControls = end, AllowSubmit = options.AllowSubmit, Learned = DateTime.UtcNow, Successes = 1,
         };
         var known = store.Load(options.App);
@@ -158,6 +164,41 @@ public sealed partial class Agent
         store.Save(known, options.App);
         log($"~ learned {procedure.Steps.Count} step(s) for next time");
         return result with { ModelCalls = modelCalls, Learned = "saved" };
+    }
+
+    /// <summary>Wording that asks for something to be read and reported, which no learned run may answer from memory.</summary>
+    private static readonly System.Text.RegularExpressions.Regex AsksForInformation = new(
+        @"告诉我|多少|是什么|是谁|是否|几[个点号次]|读出|读取|查看|查一下|结果|what|which|how many|how much|tell me|read|find out",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+    /// <summary>
+    /// Shared text cut to its digits and Latin letters when it has any, so the "为 " that
+    /// "结果为 1651" and "显示为 1651" share stays out of the answer.
+    /// </summary>
+    private static string AnswerCore(string shared)
+    {
+        static bool Ascii(char c) => c < 128 && char.IsLetterOrDigit(c);
+        int first = shared.ToList().FindIndex(Ascii), last = shared.ToList().FindLastIndex(Ascii);
+        return first < 0 ? shared.Trim() : shared[first..(last + 1)];
+    }
+
+    /// <summary>The longest text the two share.</summary>
+    private static string LongestCommon(string a, string b)
+    {
+        int best = 0, end = 0;
+        var row = new int[b.Length + 1];
+        for (int i = 1; i <= a.Length; i++)
+        {
+            int diagonal = 0;
+            for (int j = 1; j <= b.Length; j++)
+            {
+                int above = row[j];
+                row[j] = a[i - 1] == b[j - 1] ? diagonal + 1 : 0;
+                if (row[j] > best) { best = row[j]; end = i; }
+                diagonal = above;
+            }
+        }
+        return a.Substring(end - best, best);
     }
 
     /// <summary>Whether the instruction asks for something to be read and reported: one short question to the model.</summary>
@@ -263,6 +304,14 @@ public sealed partial class Agent
                 if (procedure.AnswerFrom is not { } from || Eventually(es => from.Find(es, currentFrame, bindings, anyLabel: true)) is not { } shown)
                     return Broke("the control that held the answer is not on screen");
                 var answer = TextOf(shown);
+                if (procedure.AnswerPattern is { } pattern)
+                {
+                    var parts = pattern.Split("⟦⟧");
+                    var match = System.Text.RegularExpressions.Regex.Match(answer,
+                        "^" + string.Join("(.+?)", parts.Select(System.Text.RegularExpressions.Regex.Escape)) + "$");
+                    if (!match.Success) return Broke("the control that held the answer reads differently now");
+                    answer = match.Groups[1].Value.Trim();
+                }
                 if (answer.Length == 0) return Broke("the control that held the answer is empty");
                 if (Plain(instruction).Contains(Plain(answer), StringComparison.Ordinal))
                     return Broke("the control that held the answer shows the instruction's own text");

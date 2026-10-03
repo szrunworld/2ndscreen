@@ -588,6 +588,35 @@ func button(_ index: Int, _ label: String, x: Double, y: Double = 100, value: St
         #expect(again.reason == "Pressed 12" && again.modelCalls == 0)
     }
 
+    @Test func anAnswerInsideALongerTextIsReadOutOfIt() {
+        // Windows Calculator's display reads "显示为 1651"; the model says "结果为 1651".
+        let store = MemoryStore()
+        func display(_ result: String) -> FakeScreen {
+            let screen = FakeScreen()
+            screen.fields = [button(1, "等于", x: 2400), button(2, "清除", x: 2600), button(3, "七", x: 2000),
+                             button(4, "显示为 0", x: 2000, y: 300, role: "AXStaticText")]
+            screen.afterAction = { $0.fields[3] = button(4, "显示为 \(result)", x: 2000, y: 300, role: "AXStaticText") }
+            return screen
+        }
+        _ = TarsAgent(screen: display("1651"), model: ScriptedModel(["Action: click(element='1')", "Action: finished(content='37×48−125 的结果为 1651')"]),
+                      options: options(store)).run("计算 37×48−125，告诉我结果")
+        #expect(store.procedures.first?.finish == .element && store.procedures.first?.answerPattern == "显示为 ⟦⟧")
+        let again = TarsAgent(screen: display("1652"), model: ScriptedModel([]), options: options(store)).run("计算 37×48−125，告诉我结果")
+        #expect(again.reason == "1652" && again.modelCalls == 0)
+    }
+
+    @Test func aQuestionIsNeverAnsweredFromMemory() {
+        // Nothing on screen shows the answer: the replay asks the model rather than repeat the old reply.
+        let store = MemoryStore()
+        let screen = FakeScreen()
+        screen.fields = [button(1, "打开", x: 2000), button(2, "设置", x: 2200), button(3, "帮助", x: 2400)]
+        let model = ScriptedModel(["Action: click(element='1')", "Action: finished(content='版本号是 3.2')"])
+        _ = TarsAgent(screen: screen, model: model, options: options(store)).run("打开看看版本号是多少")
+        #expect(store.procedures.first?.finish == .model)
+        // The wording asked for information, so no extra question went to the model.
+        #expect(model.seen.count == 2)
+    }
+
     @Test func controlsAreFoundAgainWhereverTheyMoved() {
         let store = MemoryStore()
         _ = TarsAgent(screen: calculator(), model: ScriptedModel(script), options: options(store)).run("算 7 加 8")

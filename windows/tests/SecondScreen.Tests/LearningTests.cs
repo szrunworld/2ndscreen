@@ -305,3 +305,91 @@ public class LearningTests
         }
     }
 }
+
+public class AnswerPatternTests
+{
+    private static readonly Rect ScreenFrame = new(1920, 0, 1280, 800);
+
+    private sealed class Store : IProcedureStore
+    {
+        public List<Procedure> Procedures { get; private set; } = new();
+        public List<Procedure> Load(string app) => Procedures.ToList();
+        public void Save(List<Procedure> procedures, string app) => Procedures = procedures.ToList();
+    }
+
+    private sealed class Screen : IAgentScreen
+    {
+        public List<Element> Fields { get; set; } = new();
+        public Action<Screen>? AfterRun { get; set; }
+        public Rect Frame() => ScreenFrame;
+        public byte[] Screenshot() => new byte[] { 0x89 };
+        public System.Text.Json.Nodes.JsonObject Run(IReadOnlyList<string> words) { AfterRun?.Invoke(this); return new() { ["ok"] = true }; }
+        public IReadOnlyList<Element> Elements() => Fields;
+    }
+
+    private sealed class Model : IVisionModel
+    {
+        private readonly Queue<string> replies;
+        public int Calls;
+        public Model(params string[] replies) => this.replies = new Queue<string>(replies);
+        public string Complete(IReadOnlyList<Message> messages) { Calls++; return replies.Count > 0 ? replies.Dequeue() : "Action: finished(content='x')"; }
+    }
+
+    [Fact]
+    public void AnAnswerInsideALongerTextIsReadOutOfIt()
+    {
+        // Windows Calculator's display reads "显示为 1651"; the model says "结果为 1651".
+        var store = new Store();
+        Screen Calculator(string result)
+        {
+            var screen = new Screen
+            {
+                Fields = new()
+                {
+                    new(1, "Button", "等于", "", Array.Empty<string>(), new Rect(2400, 300, 100, 40)),
+                    new(2, "Text", "显示为 0", "显示为 0", Array.Empty<string>(), new Rect(2000, 100, 400, 40)),
+                    new(3, "Button", "清除", "", Array.Empty<string>(), new Rect(2600, 300, 100, 40)),
+                    new(4, "Button", "七", "", Array.Empty<string>(), new Rect(2000, 300, 100, 40)),
+                },
+            };
+            screen.AfterRun = s => s.Fields[1] = s.Fields[1] with { Label = $"显示为 {result}", Value = $"显示为 {result}" };
+            return screen;
+        }
+        var options = new AgentOptions(Procedures: store, App: "test", ReplayPatienceMs: 0);
+        var target = new PlanContext("s", 7, null, ScreenFrame);
+        new Agent(Calculator("1651"), new Model("Action: click(start_box='[383, 400, 383, 400]')", "Action: finished(content='37×48−125 的结果为 1651')"),
+            target, options).Run("计算 37×48−125，告诉我结果");
+        var learned = Assert.Single(store.Procedures);
+        Assert.Equal(ProcedureFinish.Element, learned.Finish);
+        Assert.Equal("显示为 ⟦⟧", learned.AnswerPattern);
+
+        // Another day the display shows something else, and the replay reads it.
+        var model = new Model();
+        var again = new Agent(Calculator("1652"), model, target, options).Run("计算 37×48−125，告诉我结果");
+        Assert.Equal("1652", again.Reason);
+        Assert.Equal(0, model.Calls);
+    }
+
+    [Fact]
+    public void AQuestionIsNeverAnsweredFromMemory()
+    {
+        // Nothing on screen shows the answer: the replay must ask the model, not repeat the old reply.
+        var store = new Store();
+        var screen = new Screen
+        {
+            Fields = new()
+            {
+                new(1, "Button", "打开", "", Array.Empty<string>(), new Rect(2000, 300, 100, 40)),
+                new(2, "Button", "设置", "", Array.Empty<string>(), new Rect(2200, 300, 100, 40)),
+                new(3, "Button", "帮助", "", Array.Empty<string>(), new Rect(2400, 300, 100, 40)),
+            },
+        };
+        var options = new AgentOptions(Procedures: store, App: "test", ReplayPatienceMs: 0);
+        var target = new PlanContext("s", 7, null, ScreenFrame);
+        var model = new Model("Action: click(start_box='[63, 400, 63, 400]')", "Action: finished(content='版本号是 3.2')");
+        new Agent(screen, model, target, options).Run("打开看看版本号是多少");
+        Assert.Equal(ProcedureFinish.Model, Assert.Single(store.Procedures).Finish);
+        // The wording asked for information, so no extra question went to the model.
+        Assert.Equal(2, model.Calls);
+    }
+}

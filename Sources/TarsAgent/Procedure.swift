@@ -81,6 +81,10 @@ public struct Procedure: Codable {
     public var steps: [LearnedStep]
     public var finish: Finish
     public var answerFrom: ElementRef?
+    /// The answer control's text with the answer marked ⟦⟧, such as
+    /// "显示为 ⟦⟧", when the control holds more than the answer; a replay
+    /// takes what stands in the mark.
+    public var answerPattern: String? = nil
     /// What the run reported; may hold slots.
     public var reason: String
     /// The action the learned run stopped before for a person to confirm,

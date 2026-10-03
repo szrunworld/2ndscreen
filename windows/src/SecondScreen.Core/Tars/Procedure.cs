@@ -108,6 +108,11 @@ public sealed record Procedure
     public List<LearnedStep> Steps { get; init; } = new();
     public ProcedureFinish Finish { get; init; }
     public ElementRef? AnswerFrom { get; init; }
+    /// <summary>
+    /// The answer control's text with the answer marked ⟦⟧, such as "显示为 ⟦⟧", when the
+    /// control holds more than the answer; a replay takes what stands in the mark.
+    /// </summary>
+    public string? AnswerPattern { get; init; }
     public string Reason { get; init; } = "";
     /// <summary>The named controls on screen when the run ended, as "role|label".</summary>
     public List<string> EndControls { get; init; } = new();
