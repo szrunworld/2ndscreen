@@ -28,9 +28,16 @@ final class AndroidAudioPlayer {
     /// The rate last set. The synchronizer's own reads back 0 for a while
     /// after a change to anything but 1.
     private var rate: Float = 0
+    /// The clock's last reading, and when on the host clock it changed.
+    private var lastClock = -1.0
+    private var lastClockChange = CACurrentMediaTime()
 
     init() {
         renderer.audioTimePitchAlgorithm = .timeDomain
+        // By default the clock waits for enough audio before it moves; with
+        // the buffer judging by the clock, a wait that drops what arrives
+        // never ends.
+        synchronizer.delaysRateChangeUntilHasSufficientMediaData = false
         synchronizer.addRenderer(renderer)
     }
 
@@ -64,7 +71,21 @@ final class AndroidAudioPlayer {
         guard let format, !packet.isEmpty else { return }
         if renderer.status == .failed { renderer.flush() }
         if rate == 0 { setRate(1, time: .zero) }
-        let now = synchronizer.currentTime()
+        var now = synchronizer.currentTime()
+        let host = CACurrentMediaTime()
+        if now.seconds != lastClock {
+            lastClock = now.seconds
+            lastClockChange = host
+        } else if host - lastClockChange > 1 {
+            // The clock stopped anyway; start a new one.
+            Self.log.info("clock stopped; starting again")
+            renderer.flush()
+            setRate(1, time: .zero)
+            jitter.restart()
+            now = .zero
+            lastClock = 0
+            lastClockChange = host
+        }
         let decision = jitter.schedule(now: now.seconds, duration: packetDuration.seconds)
         switch decision.event {
         case .grew(let late, let latency):

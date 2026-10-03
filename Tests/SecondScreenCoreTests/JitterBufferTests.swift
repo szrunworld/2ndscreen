@@ -80,4 +80,14 @@ struct Stream {
         #expect(stream.underruns == 0)
         #expect(stream.drops == 0)
     }
+
+    @Test func startingOverKeepsTheBuffer() {
+        var stream = Stream()
+        stream.run(seconds: 20, stalls: [(5, 1.0)])
+        let grown = stream.buffer.latency
+        stream.buffer.restart()
+        let first = stream.buffer.schedule(now: 0, duration: Stream.duration)
+        #expect(first.at == grown)
+        #expect(first.event == nil)
+    }
 }

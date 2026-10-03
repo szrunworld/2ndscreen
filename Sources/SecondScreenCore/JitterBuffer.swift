@@ -60,6 +60,11 @@ public struct JitterBuffer {
         self.latency = latency
     }
 
+    /// Start over on a new clock, keeping the buffer's length.
+    public mutating func restart() {
+        next = nil
+    }
+
     /// Schedule a packet lasting `duration` that arrived at `now`.
     public mutating func schedule(now: Double, duration: Double) -> Decision {
         var event: Event?
