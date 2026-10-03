@@ -71,8 +71,16 @@ export class Boss {
   async draft(text: string): Promise<void> {
     const open = await this.chat();
     if (!open?.input) throw new BossError('no conversation is open');
-    const result = await this.run(['type', '--index', String(open.input.index), '--value', text, '--replace']);
-    if (result.effect !== 'confirmed') throw new BossError('the draft did not land in the message box');
+    await this.run(['type', '--index', String(open.input.index), '--value', text, '--replace']);
+    // BOSS直聘 takes the text at once but its accessibility tree can lag by
+    // seconds, so read the box again until it shows the draft. Never write
+    // it a second time: the first write may simply not show yet.
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const box = (await this.chat())?.input;
+      if ((box?.value ?? box?.label ?? '').trim() === text.trim()) return;
+      await sleep(500);
+    }
+    throw new BossError('the draft was written but the message box does not show it yet; check BOSS直聘 before writing again');
   }
 
   /**

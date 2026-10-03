@@ -91,11 +91,14 @@ public final class InputEngine {
             guard let text = action.value, !text.isEmpty || replace else { throw AccessibilityError("type needs --value TEXT") }
             if replace {
                 guard let element else { throw AccessibilityError("--replace needs the field named with --index or --text") }
-                guard AXActions.replace(with: text, in: element.snapshot, index: element.info.index) else {
-                    throw AccessibilityError("the field did not take its text through accessibility")
+                let write = AXActions.replace(with: text, in: element.snapshot, index: element.info.index)
+                guard write != .refused else {
+                    throw AccessibilityError("the field does not take its text through accessibility")
                 }
                 if let center = element.info.center { cursor(.move, center) }
-                response.route = "ax.value"
+                // Unconfirmed: the app took the text but its tree lags; read
+                // the field again with state before writing it again.
+                response.route = write == .landed ? "ax.value" : "ax.value.unconfirmed"
             } else if let element, element.snapshot.isWeb(element.info.index), let center = element.info.center {
                 // Web fields mostly take neither accessibility writes nor focus
                 // from the background: type keys, clicking into the field first
@@ -114,14 +117,20 @@ public final class InputEngine {
                 // input. Only when the field's text reads back unchanged by the
                 // keys, so the text never lands twice.
                 Thread.sleep(forTimeInterval: 0.2)
-                if let before, AXActions.value(element.snapshot, index: element.info.index) == before,
-                   AXActions.insert(text, into: element.snapshot, index: element.info.index) {
-                    response.route = "ax.insert"
+                if let before, AXActions.value(element.snapshot, index: element.info.index) == before {
+                    switch AXActions.insert(text, into: element.snapshot, index: element.info.index) {
+                    case .landed: response.route = "ax.insert"
+                    case .unconfirmed: response.route = "ax.insert.unconfirmed"
+                    case .refused: break
+                    }
                 }
             } else if let element, AXActions.isText(element.info),
-                      AXActions.insert(text, into: element.snapshot, index: element.info.index) {
+                      case let write = AXActions.insert(text, into: element.snapshot, index: element.info.index),
+                      write != .refused {
                 if let center = element.info.center { cursor(.move, center) }
-                response.route = "ax.insert"
+                // Unconfirmed counts as typed: typing the keys as well could
+                // put the text in twice.
+                response.route = write == .landed ? "ax.insert" : "ax.insert.unconfirmed"
             } else {
                 response.route = try BackgroundInput.type(text, in: window)
             }
