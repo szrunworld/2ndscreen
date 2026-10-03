@@ -52,6 +52,10 @@ and asks:
   [s] 发送  [e] 修改  [k] 保留草稿跳过  [q] 退出 >
 ```
 
+A conversation whose message box already holds text, such as a reply you
+started, is left alone: the assistant says so and moves on, since a draft
+would replace that text.
+
 `s` clicks Send, after checking the box still holds the draft you saw.
 `k` leaves the draft in the box for you to send or change in BOSS直聘
 yourself. Without a terminal to ask, every draft stays unsent.
