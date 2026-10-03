@@ -320,9 +320,20 @@ final class AgentScreens {
         return "agent-\(index)"
     }
 
+    /// A serial no agent screen has used lately. macOS treats a display
+    /// whose serial it has seen before as that display reconnecting, and
+    /// moves back the windows that were last on it, so reusing a serial put
+    /// the user's windows, last left on an earlier agent screen, onto a new
+    /// one. The next serial is kept across launches and wraps after a
+    /// hundred thousand screens.
     private func nextSerial() -> UInt32 {
-        var serial = Self.firstSerial
-        while screens.contains(where: { $0.serialNumber == serial }) { serial += 1 }
+        let key = "nextAgentSerial"
+        let span: UInt32 = 100_000
+        var serial = max(UInt32(clamping: UserDefaults.standard.integer(forKey: key)), Self.firstSerial)
+        while screens.contains(where: { $0.serialNumber == serial }) {
+            serial = serial + 1 >= Self.firstSerial + span ? Self.firstSerial : serial + 1
+        }
+        UserDefaults.standard.set(Int(serial + 1 >= Self.firstSerial + span ? Self.firstSerial : serial + 1), forKey: key)
         return serial
     }
 
