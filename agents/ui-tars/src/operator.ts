@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Operator, StatusEnum, type ExecuteParams, type ExecuteOutput, type ScreenshotOutput } from '@ui-tars/sdk/core';
 import { Jimp } from 'jimp';
-import { plan, type Frame, type PlanContext, type Step } from './plan.ts';
+import { boxPoint, plan, recoverBox, type Frame, type PlanContext, type Step } from './plan.ts';
 import { SecondScreen } from './screen.ts';
 
 export interface SecondScreenOperatorOptions {
@@ -22,10 +22,10 @@ export interface SecondScreenOperatorOptions {
    * allowSubmit off, a click on one ends the run instead. */
   submitLabels?: RegExp;
   cli?: SecondScreen;
-  /** Called for each command, before it runs. */
+  /** Called for each command just before it runs, and when the run stops. */
   onStep?: (step: Step) => void;
   /** Called when a command fails; the run carries on. */
-  onError?: (error: Error, step: Step) => void;
+  onError?: (error: Error, step?: Step) => void;
 }
 
 export interface Stop {
@@ -90,16 +90,30 @@ export class SecondScreenOperator extends Operator {
       foreground: this.options.foreground ?? false,
     };
     const parsed = params.parsedPrediction;
-    for (const step of plan({ action_type: parsed.action_type, action_inputs: parsed.action_inputs as Record<string, unknown> }, context)) {
-      this.options.onStep?.(step);
-      if (step.kind === 'stop') return this.end(step.outcome, step.reason);
+    const inputs = { ...(parsed.action_inputs as Record<string, unknown>) };
+    for (const name of ['start_box', 'end_box'] as const) {
+      if (inputs[name] !== undefined && !boxPoint(inputs[name], frame)) {
+        const recovered = recoverBox(params.prediction, name);
+        this.options.onError?.(new Error(`could not read ${name} ${inputs[name]}; ${recovered ? `read ${recovered} from` : 'raw'}: ${params.prediction.trim()}`));
+        if (recovered) inputs[name] = recovered;
+      }
+    }
+    for (const step of plan({ action_type: parsed.action_type, action_inputs: inputs }, context)) {
+      if (step.kind === 'stop') {
+        this.options.onStep?.(step);
+        return this.end(step.outcome, step.reason);
+      }
       if (step.kind === 'wait') {
+        this.options.onStep?.(step);
         await new Promise((resolve) => setTimeout(resolve, step.ms));
         continue;
       }
       if (step.words[0] === 'click' && step.point && !context.allowSubmit && (await this.isSubmitControl(step.point))) {
-        return this.end('done', 'stopped before clicking a control that submits');
+        const reason = 'stopped before clicking a control that submits';
+        this.options.onStep?.({ kind: 'stop', outcome: 'done', reason });
+        return this.end('done', reason);
       }
+      this.options.onStep?.(step);
       if (step.words[0] === 'click') this.lastPoint = step.point;
       // Keystrokes to the focused element miss backgrounded web views, and
       // nothing reports it; typing into a named field goes through

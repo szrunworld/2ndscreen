@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { boxPoint, parseKeys, plan, type PlanContext } from './plan.ts';
+import { boxPoint, parseKeys, plan, recoverBox, type PlanContext } from './plan.ts';
 
 const frame = { x: 1920, y: 0, width: 1280, height: 800 };
 const mac: PlanContext = { screen: 's', pid: 7, frame, platform: 'darwin', allowSubmit: false, foreground: false };
@@ -73,4 +73,17 @@ test('finished and call_user end the run', () => {
     { kind: 'stop', outcome: 'done', reason: '最新消息是：你好' },
   ]);
   assert.equal((plan({ action_type: 'call_user', action_inputs: {} }, mac)[0] as any).outcome, 'user');
+});
+
+test('boxes the parser misread are recovered from the raw text', () => {
+  assert.equal(recoverBox("Action: click(start_box='[383 117]')", 'start_box'), JSON.stringify([0.383, 0.117, 0.383, 0.117]));
+  assert.equal(recoverBox("click(start_box='<point>383 117</point>')", 'start_box'), JSON.stringify([0.383, 0.117, 0.383, 0.117]));
+  assert.equal(
+    recoverBox("drag(start_box='(100,200)', end_box='(300,400)')", 'end_box'),
+    JSON.stringify([0.3, 0.4, 0.3, 0.4]),
+  );
+  assert.equal(recoverBox("drag(start_box='(100,200)', end_box='(300,400)')", 'start_box'), JSON.stringify([0.1, 0.2, 0.1, 0.2]));
+  assert.equal(recoverBox("scroll(start_box='[500, 500]', direction='down')", 'start_box'), JSON.stringify([0.5, 0.5, 0.5, 0.5]));
+  assert.equal(recoverBox("click(start_box='[383]')", 'start_box'), undefined);
+  assert.equal(recoverBox('finished()', 'start_box'), undefined);
 });
