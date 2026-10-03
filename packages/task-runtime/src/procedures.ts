@@ -84,6 +84,15 @@ export function procedureOutsideUnit(procedure: Pick<ProcedureV2, 'key' | 'steps
   return undefined;
 }
 
+/** Whether a condition, at any depth, needs a screenshot: OCR and template locators read pixels. */
+export function needsScreenshot(conditions: readonly Condition[]): boolean {
+  return conditions.some((c) =>
+    c.kind === 'all' || c.kind === 'any'
+      ? needsScreenshot(c.conditions)
+      : c.kind === 'element' && (c.locator.kind === 'ocr' || c.locator.kind === 'template'),
+  );
+}
+
 const sameKey = (a: ProcedureKey, b: ProcedureKey): boolean => procedureKeyString(a) === procedureKeyString(b);
 
 /** A failed delivery may try the next locator; an unknown outcome never is resent. */
@@ -143,7 +152,7 @@ export function createProcedureEngine(deps: {
     try {
       if (pre.length > 0) {
         throwIfAborted(signal);
-        lastObservation = await session.observe({ elements: true }, signal);
+        lastObservation = await session.observe({ elements: true, screenshot: needsScreenshot(pre) }, signal);
         const preChecks = await checkAll(session, pre, lastObservation, signal);
         checks.push(...preChecks);
         if (preChecks.some((c) => !c.ok)) return done('precondition_failed');
@@ -170,7 +179,7 @@ export function createProcedureEngine(deps: {
       }
 
       throwIfAborted(signal);
-      lastObservation = await session.observe({ elements: true }, signal);
+      lastObservation = await session.observe({ elements: true, screenshot: needsScreenshot(post) }, signal);
       const postChecks = await checkAll(session, post, lastObservation, signal);
       checks.push(...postChecks);
       return done(postChecks.some((c) => !c.ok) ? 'postcondition_failed' : 'succeeded');
@@ -205,17 +214,19 @@ export function createProcedureEngine(deps: {
       const versions = await repository.listProcedures(key);
       const target = versions.find((p) => p.version === toVersion && sameKey(p.key, key));
       if (!target) throw new RuntimeError('not_found', `no version ${toVersion} under ${procedureKeyString(key)}`);
-      // Only a definition that earned stable can be made current again. A
-      // stable version that later failed is degraded, but kept its successes.
-      const earned = target.status === 'stable' || (target.status === 'degraded' && target.counters.successes >= rule.promoteAfterSuccesses);
-      if (!earned) throw new RuntimeError('conflict', `version ${toVersion} is ${target.status} and was never proven stable`);
+      // A version still marked stable earned it. A degraded one may never
+      // have: its cumulative successes need not have been consecutive or
+      // distinct, so it comes back as trial and must earn stable again.
+      if (target.status !== 'stable' && target.status !== 'degraded')
+        throw new RuntimeError('conflict', `version ${toVersion} is ${target.status} and was never proven stable`);
+      if (target.counters.successes === 0) throw new RuntimeError('conflict', `version ${toVersion} has no verified success`);
       const now = clock.now().toISOString();
       const restored: ProcedureV2 = {
         ...structuredClone(target),
         id: newId(),
         version: Math.max(...versions.map((p) => p.version)) + 1,
         parentVersion: toVersion,
-        status: 'stable',
+        status: target.status === 'stable' ? 'stable' : 'trial',
         counters: { successes: target.counters.successes, failures: 0, consecutiveFailures: 0, successItemIds: [] },
         createdAt: now,
         updatedAt: now,
@@ -256,14 +267,14 @@ function v1Step(raw: unknown, index: number): ProcedureStep | 'skip' | undefined
   if (!isObj(raw)) return undefined;
   const kind = str(raw.kind);
   if (kind === 'wait') return 'skip';
-  // A step the model aimed by sight inside a control is not a named-control step.
+  // Every imported step acts on a named control: a key press or a typed or
+  // scrolled text with no control, or a point aimed by sight inside one, is not.
   if (raw.offsetX !== undefined || raw.offsetY !== undefined) return undefined;
+  const target = v1Locator(raw.target);
+  if (!target) return undefined;
   const id = `v1-${index + 1}`;
-  const target = raw.target === undefined || raw.target === null ? undefined : v1Locator(raw.target);
-  if (raw.target !== undefined && raw.target !== null && !target) return undefined;
   switch (kind) {
     case 'click': {
-      if (!target) return undefined;
       const count = raw.count === 2 ? 2 : undefined;
       const button = raw.button === 'right' ? 'right' : undefined;
       return { id, action: { kind: 'click', target, ...(count ? { count } : {}), ...(button ? { button } : {}), effect: 'navigation' } };
@@ -271,13 +282,7 @@ function v1Step(raw: unknown, index: number): ProcedureStep | 'skip' | undefined
     case 'type': {
       const value = str(raw.value);
       if (value === undefined) return undefined;
-      return { id, action: { kind: 'type', ...(target ? { target } : {}), value: v1Slots(value), effect: 'navigation' } };
-    }
-    case 'key': {
-      const key = str(raw.key);
-      if (!key) return undefined;
-      const modifiers = Array.isArray(raw.modifiers) ? (raw.modifiers as unknown[]) : undefined;
-      return { id, action: { kind: 'key', key, ...(modifiers ? { modifiers: modifiers as Array<'cmd'> } : {}), effect: 'navigation' } };
+      return { id, action: { kind: 'type', target, value: v1Slots(value), effect: 'navigation' } };
     }
     case 'scroll': {
       const direction = str(raw.direction);
@@ -285,7 +290,7 @@ function v1Step(raw: unknown, index: number): ProcedureStep | 'skip' | undefined
         id,
         action: {
           kind: 'scroll',
-          ...(target ? { target } : {}),
+          target,
           direction: direction as 'down',
           ...(typeof raw.amount === 'number' ? { amount: raw.amount } : {}),
           ...(raw.by === 'line' || raw.by === 'page' ? { by: raw.by } : {}),
@@ -300,9 +305,10 @@ function v1Step(raw: unknown, index: number): ProcedureStep | 'skip' | undefined
 
 /**
  * Turn a TarsAgent V1 procedure (one entry of ~/.config/2ndscreen/procedures/<app>.json)
- * into a seeded V2 version. Only procedures whose every step names a control
- * are imported; procedures learned with sending allowed, or with a step aimed
- * by sight, return undefined. V1 has no pre/postconditions, so the result is
+ * into a seeded V2 version. Only procedures whose every step (waits aside)
+ * clicks, types into or scrolls a control named by role and label are
+ * imported; a key press, a step with no control, a point aimed by sight, or a
+ * procedure learned with sending allowed returns undefined. V1 has no pre/postconditions, so the result is
  * always seeded and must earn trial and stable here. V1 slots ⟦n⟧ become
  * {{slotN}} parameters. The result is version 1; a caller inserting it under
  * a key that already has versions renumbers it. Nothing is written back.

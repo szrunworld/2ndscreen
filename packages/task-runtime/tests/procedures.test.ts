@@ -187,8 +187,8 @@ test('recordOutcome: three distinct consecutive items promote a trial; repeats d
   await assert.rejects(engine.recordOutcome(trial.id, { itemId: '', ok: true }), (e) => isRuntimeError(e, 'invalid_input'));
 });
 
-test('rollback inserts a proven version again as the newest stable; old definitions never change', async () => {
-  const v1 = procedure({ version: 1, status: 'degraded', source: 'learned', counters: { successes: 5, failures: 1, consecutiveFailures: 1, successItemIds: [] } });
+test('rollback re-inserts a still-stable version as stable; old definitions never change', async () => {
+  const v1 = procedure({ version: 1, status: 'stable', source: 'learned', counters: { successes: 5, failures: 0, consecutiveFailures: 0, successItemIds: ['a', 'b', 'c'] } });
   const v2 = procedure({ version: 2, parentVersion: 1, status: 'trial', source: 'repair', counters: { successes: 1, failures: 0, consecutiveFailures: 0, successItemIds: ['z'] } });
   const { engine, repository } = setup(v1, v2);
   const defs = [repository.definition(v1.id), repository.definition(v2.id)];
@@ -204,6 +204,50 @@ test('rollback inserts a proven version again as the newest stable; old definiti
   await assert.rejects(engine.rollback(KEY, 9), (e) => isRuntimeError(e, 'not_found'));
 });
 
+test('a degraded version comes back as trial: interleaved successes and failures never proved it stable', async () => {
+  // Five cumulative successes, but every streak was broken by a failure.
+  const v1 = procedure({ version: 1, status: 'trial', source: 'learned', counters: { successes: 0, failures: 0, consecutiveFailures: 0, successItemIds: [] } });
+  const { engine, repository } = setup(v1);
+  const lenient = createProcedureEngine({ repository, rule: { promoteAfterSuccesses: 3, degradeAfterFailures: 3 } });
+  for (const [item, ok] of [['a', true], ['b', true], ['x', false], ['c', true], ['d', true], ['y', false], ['e', true]] as const)
+    assert.notEqual((await lenient.recordOutcome(v1.id, { itemId: item, ok })).status, 'stable');
+  for (const item of ['f', 'g', 'k']) await lenient.recordOutcome(v1.id, { itemId: item, ok: false });
+  const degraded = (await repository.getProcedure(v1.id))!;
+  assert.equal(degraded.status, 'degraded');
+  assert.equal(degraded.counters.successes, 5);
+
+  const back = await engine.rollback(KEY, 1);
+  assert.equal(back.status, 'trial', 'never promoted, so it must earn stable again');
+  assert.deepEqual(back.counters.successItemIds, []);
+  let p = await engine.recordOutcome(back.id, { itemId: 'h', ok: true });
+  p = await engine.recordOutcome(back.id, { itemId: 'i', ok: true });
+  assert.equal(p.status, 'trial');
+  p = await engine.recordOutcome(back.id, { itemId: 'j', ok: true });
+  assert.equal(p.status, 'stable');
+
+  const never = procedure({ version: 1, status: 'degraded', key: { ...KEY, branch: 'x' }, counters: { successes: 0, failures: 1, consecutiveFailures: 1, successItemIds: [] } });
+  repository.rows.set(never.id, never);
+  await assert.rejects(engine.rollback(never.key, 1), (e) => isRuntimeError(e, 'conflict'));
+});
+
+test('pre/postconditions that read pixels (OCR or template, at any depth) get a screenshot', async () => {
+  const visual = procedure({
+    preconditions: [{ kind: 'page', pageClass: 'candidate_detail' }],
+    postconditions: [{ kind: 'any', conditions: [{ kind: 'all', conditions: [{ kind: 'element', locator: { kind: 'ocr', text: '工作经历' }, present: false }] }] }],
+  });
+  const { engine, app, session } = setup(visual);
+  app.show('张三');
+  await engine.replay(visual, session, { 'candidate.name': '张三' });
+  const [pre, ...rest] = session.observeOptions;
+  assert.equal(pre!.screenshot, false);
+  assert.equal(rest.at(-1)!.screenshot, true);
+  const template = procedure({ preconditions: [{ kind: 'element', locator: { kind: 'template', templateId: 'resume-button' }, present: true }] });
+  session.observeOptions = [];
+  app.show('张三');
+  await engine.replay(template, session, { 'candidate.name': '张三' });
+  assert.equal(session.observeOptions[0]!.screenshot, true);
+});
+
 test('V1 import keeps named-control procedures as seeded with slots, and rejects the rest', () => {
   const now = new Date('2026-10-04T08:00:00Z');
   const v1 = {
@@ -215,7 +259,7 @@ test('V1 import keeps named-control procedures as seeded with slots, and rejects
       { kind: 'click', target: { role: 'AXStaticText', label: '⟦0⟧…', x: 0.1, y: 0.2 } },
       { kind: 'wait', seconds: 1 },
       { kind: 'click', target: { role: 'AXButton', label: '在线简历', x: 0.5, y: 0.5 } },
-      { kind: 'type', value: '⟦0⟧' },
+      { kind: 'type', target: { role: 'AXTextField', label: '备注', x: 0.5, y: 0.9 }, value: '⟦0⟧' },
     ],
     finish: 'steps',
     reason: 'done',
@@ -239,4 +283,8 @@ test('V1 import keeps named-control procedures as seeded with slots, and rejects
   assert.equal(importV1Procedure({ ...v1, steps: [{ kind: 'click', target: { role: 'AXButton', label: '', x: 0.5, y: 0.5 } }] }, KEY, now), undefined);
   assert.equal(importV1Procedure({ ...v1, steps: [{ kind: 'click', target: { role: 'AXButton', label: 'OK', x: 0, y: 0 }, offsetX: 0.3, offsetY: 0.4 }] }, KEY, now), undefined);
   assert.equal(importV1Procedure({ nonsense: true }, KEY, now), undefined);
+  // Named controls only: a key press or a targetless type/scroll is not one.
+  assert.equal(importV1Procedure({ ...v1, steps: [...v1.steps, { kind: 'key', key: 'return' }] }, KEY, now), undefined);
+  assert.equal(importV1Procedure({ ...v1, steps: [...v1.steps, { kind: 'type', value: 'hi' }] }, KEY, now), undefined);
+  assert.equal(importV1Procedure({ ...v1, steps: [...v1.steps, { kind: 'scroll', direction: 'down' }] }, KEY, now), undefined);
 });

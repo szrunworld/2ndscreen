@@ -38,7 +38,7 @@ import {
   type TokenCount,
   type Usage,
 } from './contracts.ts';
-import { bindDeep, procedureOutsideUnit } from './procedures.ts';
+import { bindDeep, needsScreenshot, procedureOutsideUnit } from './procedures.ts';
 import { assertTraceWithinUnit } from './learning.ts';
 
 /** Longest a local "wait for the page to settle" may take. */
@@ -57,6 +57,17 @@ function modelReason(failure: RecoveryContext['failure']): ModelCallReason {
 /** The last action of a failed step, if its outcome cannot be told. */
 function failedStepUnknown(failure: ReplayResult): boolean {
   return failure.status === 'step_failed' && failure.actions.at(-1)?.status === 'unknown';
+}
+
+/**
+ * Whether the failed step may be sent again: only when its last delivery
+ * provably did nothing (refused, stale, or no effect on a read/navigation).
+ * An unknown outcome, or no effect on an artifact step, is never repeated.
+ */
+function failedStepRepeatable(failure: ReplayResult, effect: string): boolean {
+  const last = failure.actions.at(-1)?.status;
+  if (last === 'failed' || last === 'stale_snapshot') return true;
+  return last === 'no_effect' && (effect === 'read' || effect === 'navigation');
 }
 
 export function createRecovery(deps: {
@@ -85,9 +96,13 @@ export function createRecovery(deps: {
       elapsedMs: context.usage.elapsedMs + (clock.now().getTime() - started),
     });
 
+    /** Wall-clock time left for the task, fencing local work as well as the model. */
+    const wallClockLeft = (): number => budget.wallClockMs - usageNow().elapsedMs;
+    const wallClockOut = (): RecoveryOutcome => ({ status: 'exhausted', budget: { ok: false, exhausted: 'wall_clock' } });
+
     async function observeAndVerify(): Promise<{ observation: Observation; check: CheckResult }> {
       throwIfAborted(signal);
-      const observation = await session.observe({ elements: true }, signal);
+      const observation = await session.observe({ elements: true, screenshot: needsScreenshot(unit.postconditions) }, signal);
       throwIfAborted(signal);
       return { observation, check: await context.verify(observation) };
     }
@@ -104,7 +119,7 @@ export function createRecovery(deps: {
         case 'wait': {
           const conditions = bindDeep(unit.postconditions, bindings);
           if (conditions.length > 0) {
-            const timeoutMs = Math.max(1, Math.min(unit.timeoutMs, WAIT_LIMITS.maxTimeoutMs, LOCAL_WAIT_CAP_MS));
+            const timeoutMs = Math.max(1, Math.min(unit.timeoutMs, WAIT_LIMITS.maxTimeoutMs, LOCAL_WAIT_CAP_MS, wallClockLeft()));
             const condition = conditions.length === 1 ? conditions[0]! : { kind: 'all' as const, conditions };
             const waited = await session.waitFor({ condition, timeoutMs }, signal);
             if (!waited.ok) return undefined;
@@ -117,8 +132,9 @@ export function createRecovery(deps: {
           // steps before it already ran and are not sent again.
           if (!failedProcedure || !isReplay(failure) || !failure.failedStepId) return undefined;
           const from = failedProcedure.steps.findIndex((s) => s.id === failure.failedStepId);
-          if (from < 0) return undefined;
+          if (from < 0 || !failedStepRepeatable(failure, failedProcedure.steps[from]!.action.effect)) return undefined;
           const rest: ProcedureV2 = { ...failedProcedure, preconditions: [], steps: failedProcedure.steps.slice(from) };
+          if (procedureOutsideUnit(rest, unit)) return undefined;
           const result = await engine.replay(rest, session, bindings, signal);
           if (result.status === 'cancelled') throw new RuntimeError('cancelled', 'the operation was cancelled');
           if (result.status !== 'succeeded') return undefined;
@@ -153,11 +169,13 @@ export function createRecovery(deps: {
       for (const route of localRoutes()) {
         if (attempts >= budget.localRecoveriesPerStep) break;
         if (route === 'relocate' && !failedProcedure) continue;
+        if (wallClockLeft() <= 0) return wallClockOut();
         attempts += 1;
         const observation = await tryRoute(route);
         telemetry.record({ type: 'local_recovery', unit: unit.name, ok: observation !== undefined });
         if (observation) return { status: 'recovered', route, observation };
       }
+      if (wallClockLeft() <= 0) return wallClockOut();
 
       // A step whose effect cannot be told must not be redone blindly by a
       // model either when it wrote an artifact or submitted something.
@@ -282,7 +300,13 @@ export function createRecovery(deps: {
         }
         if (signal?.aborted) return { status: 'cancelled' };
 
-        if (outcome.status === 'finished') {
+        // A bridge that spent past the task budget is not a repair, even if the
+        // screen now looks right; one that ran over its rounds is a failed attempt.
+        if (stopped === 'model_calls' || stopped === 'tokens') {
+          telemetry.record({ type: 'unit', unit: unit.name, route, ok: false, elapsedMs: clock.now().getTime() - attemptStarted });
+          return { status: 'exhausted', budget: { ok: false, exhausted: stopped } };
+        }
+        if (outcome.status === 'finished' && stopped !== 'rounds') {
           // Verify independently; the bridge saying finished is not evidence.
           const { check } = await observeAndVerify();
           telemetry.record({ type: 'unit', unit: unit.name, route, ok: check.ok, elapsedMs: clock.now().getTime() - attemptStarted });
@@ -304,9 +328,9 @@ export function createRecovery(deps: {
           continue;
         }
 
-        telemetry.record({ type: 'unit', unit: unit.name, route, ok: false, elapsedMs: clock.now().getTime() - attemptStarted });
+        if (outcome.status !== 'finished' || stopped === 'rounds')
+          telemetry.record({ type: 'unit', unit: unit.name, route, ok: false, elapsedMs: clock.now().getTime() - attemptStarted });
         if (outcome.failure === 'model_unavailable') return { status: 'model_unavailable' };
-        if (stopped === 'model_calls' || stopped === 'tokens') return { status: 'exhausted', budget: { ok: false, exhausted: stopped } };
         if (outcome.failure === 'cancelled' && !stopped) return { status: 'cancelled' };
         // Failed for another reason (timeout, error, refused action): the
         // next attempt starts from the screen as it is now.

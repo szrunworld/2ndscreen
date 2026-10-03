@@ -22,6 +22,7 @@ import {
   type ExplorationRequest,
   type ExplorerBridge,
   type Locator,
+  type ObserveOptions,
   type Observation,
   type ProcedureKey,
   type ProcedureRepository,
@@ -202,6 +203,7 @@ export class FakeSession implements Session {
   readonly profile = { id: 'boss-macos-1440x900', version: 1, logicalWidth: 1440, logicalHeight: 900, bundleId: 'com.zhipin.www' };
   readonly lease = { leaseId: 'lease-1', scopeKey: 'com.zhipin.www:*', holder: 'runtime' as const, ownerPid: 1, expiresAt: '2026-10-04T09:00:00Z' };
   acts: ActionRequest[] = [];
+  observeOptions: ObserveOptions[] = [];
   busy = false;
 
   readonly app: FakeApp;
@@ -227,8 +229,9 @@ export class FakeSession implements Session {
     };
   }
 
-  async observe(_options?: unknown, signal?: AbortSignal): Promise<Observation> {
+  async observe(options: ObserveOptions = {}, signal?: AbortSignal): Promise<Observation> {
     throwIfAborted(signal);
+    this.observeOptions.push(options);
     this.app.tick();
     this.app.snapshots += 1;
     return {
@@ -348,6 +351,8 @@ export interface BridgeScript {
   hang?: boolean;
   /** Report more calls in the outcome than it emitted events for. */
   silentCalls?: number;
+  /** Keep calling and acting after the grant is aborted, as a misbehaving bridge would. */
+  ignoreAbort?: boolean;
 }
 
 /** A bridge that acts on the fake app directly, as the Swift agent would, never through the session. */
@@ -368,8 +373,9 @@ export class FakeBridge implements ExplorerBridge {
     const tokens = script.inputTokens ?? 100;
     let input: number | 'unknown' = 0;
     let emitted = 0;
+    const aborted = () => grant.signal.aborted && !script.ignoreAbort;
     for (let i = 0; i < calls; i++) {
-      if (grant.signal.aborted) break;
+      if (aborted()) break;
       emitted += 1;
       onEvent?.({ ...base, type: 'model_usage', purpose: 'ui', reason: 'missing_procedure', inputTokens: tokens, outputTokens: 10 });
       input = input === 'unknown' || tokens === 'unknown' ? 'unknown' : input + tokens;
@@ -389,7 +395,7 @@ export class FakeBridge implements ExplorerBridge {
       });
       return outcome({ failure: 'cancelled' });
     }
-    if (grant.signal.aborted) return outcome({ failure: 'cancelled' });
+    if (aborted()) return outcome({ failure: 'cancelled' });
     if (script.fail) return outcome({ failure: script.fail });
     const action = script.action ?? { kind: 'click', target: { kind: 'relative', point: { x: 0.5, y: 0.5 } }, effect: 'navigation' };
     onEvent?.({ ...base, type: 'action_started', stepId: 'b1', action });

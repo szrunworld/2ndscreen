@@ -166,6 +166,7 @@ test('a UI change exhausts local recovery, then one bridge repair proposes a new
   // The UI changes back: the old stable definition can be made current again.
   const v3 = await w.engine.rollback(KEY, 1);
   assert.equal(v3.version, 3);
+  assert.equal(v3.status, 'trial', 'degraded, so it returns conservatively as trial');
   assert.equal((await w.engine.select(KEY))?.id, v3.id);
 });
 
@@ -266,4 +267,77 @@ test('a failed step with an unknown outcome is not handed to the model when it m
   const outcome = await w.recovery.recover(w.context('张三', failure, { unit: { ...unit, allowedEffects: [...unit.allowedEffects] }, key: p.key }));
   assert.deepEqual(outcome, { status: 'exhausted', budget: 'local' });
   assert.equal(w.explorerCalls(), 0);
+});
+
+test('the wall clock fences local recovery too: no wait or action once time is up, and waits are cut to what is left', async () => {
+  const p = procedure({ preconditions: [] });
+  const w = world({ procedures: [p], explorer: noModel });
+  w.app.show('张三');
+  w.app.clickStatus = 'failed';
+  const failure = await w.engine.replay(p, w.session, { 'candidate.name': '张三' });
+  w.app.clickStatus = undefined;
+  w.session.acts = [];
+  const snapshots = w.app.snapshots;
+  const out = await w.recovery.recover(w.context('张三', failure, { usage: { ...emptyUsage(), elapsedMs: DEFAULT_BUDGET.wallClockMs } }));
+  assert.deepEqual(out, { status: 'exhausted', budget: { ok: false, exhausted: 'wall_clock' } });
+  assert.equal(w.session.acts.length, 0);
+  assert.equal(w.app.snapshots, snapshots, 'not even an observation');
+
+  // 60 ms left: the wait is cut short, then relocate does not start.
+  const started = Date.now();
+  const late = await w.recovery.recover(
+    w.context('张三', failure, { unit: { ...UNIT, timeoutMs: 5_000 }, usage: { ...emptyUsage(), elapsedMs: DEFAULT_BUDGET.wallClockMs - 60 } }),
+  );
+  assert.deepEqual(late, { status: 'exhausted', budget: { ok: false, exhausted: 'wall_clock' } });
+  assert.ok(Date.now() - started < 1_000);
+  assert.equal(w.session.acts.length, 0);
+});
+
+test('a bridge that overruns the task budget is not a repair even when it finished and the page verifies', async () => {
+  const w = world({ scripts: [{ calls: 5, ignoreAbort: true }] });
+  w.app.show('张三');
+  const outcome = await w.recovery.recover(w.context('张三', { status: 'no_procedure' }, { budget: { ...DEFAULT_BUDGET, taskModelCalls: 3 } }));
+  assert.deepEqual(outcome, { status: 'exhausted', budget: { ok: false, exhausted: 'model_calls' } });
+  assert.equal(w.app.page, 'online_resume', 'the misbehaving bridge did reach the page');
+  assert.equal(w.telemetry.modelCalls(), 5, 'every call is still counted');
+});
+
+test('a bridge that runs over its rounds is a failed attempt, not a repair', async () => {
+  const w = world({ scripts: [{ calls: 4, ignoreAbort: true }] });
+  w.app.show('张三');
+  const budget = { ...DEFAULT_BUDGET, modelRoundsPerRepair: 2, modelRepairsPerItem: 1 };
+  assert.deepEqual(await w.recovery.recover(w.context('张三', { status: 'no_procedure' }, { budget })), { status: 'exhausted', budget: 'item_repairs' });
+});
+
+test('relocate never resends a step outside the current unit', async () => {
+  const p = procedure({
+    preconditions: [],
+    steps: [
+      { id: 's0', action: { kind: 'scroll', direction: 'down', effect: 'read' } },
+      { id: 's1', action: { kind: 'click', target: { kind: 'element', role: 'AXButton', label: '在线简历' }, effect: 'artifact' } },
+    ],
+  });
+  const w = world({ procedures: [p], explorer: noModel });
+  w.app.show('张三');
+  w.app.clickStatus = 'failed';
+  const failure = await w.engine.replay(p, w.session, { 'candidate.name': '张三' });
+  w.app.clickStatus = undefined;
+  w.session.acts = [];
+  const outcome = await w.recovery.recover(w.context('张三', failure, { unit: { ...UNIT, timeoutMs: 40 } }));
+  assert.equal(outcome.status, 'model_unavailable');
+  assert.equal(w.session.acts.length, 0, 'open_resume does not allow artifact');
+});
+
+test('relocate never repeats a navigation step whose outcome is unknown', async () => {
+  const p = procedure({ preconditions: [] });
+  const w = world({ procedures: [p], explorer: noModel });
+  w.app.show('张三');
+  w.app.clickStatus = 'unknown';
+  const failure = await w.engine.replay(p, w.session, { 'candidate.name': '张三' });
+  assert.equal(failure.status, 'step_failed');
+  w.app.clickStatus = undefined;
+  w.session.acts = [];
+  const outcome = await w.recovery.recover(w.context('张三', failure, { unit: { ...UNIT, timeoutMs: 40 } }));
+  assert.equal(outcome.status, 'model_unavailable', 'the model may look; nothing is resent locally');
+  assert.equal(w.session.acts.length, 0);
 });
