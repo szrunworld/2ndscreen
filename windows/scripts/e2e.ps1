@@ -172,8 +172,8 @@ if ($SkipDriver -or -not $launched.ok) {
 
     # Scrolling, double- and right-clicks, and drags. TestTarget reports the list's top
     # row as "Top N" and what reached its pad as "Pad idle double right drag".
-    $target = @("--screen", "e2e", "--pid", "$targetPid")
-    $scrolled = Invoke-2ndscreen (@("scroll") + $target + @("--text", "Rows", "--direction", "down", "--amount", "10"))
+    $onTarget = @("--screen", "e2e", "--pid", "$targetPid")
+    $scrolled = Invoke-2ndscreen (@("scroll") + $onTarget + @("--text", "Rows", "--direction", "down", "--amount", "10"))
     Start-Sleep -Milliseconds 500
     $state = Invoke-2ndscreen @("state", "--screen", "e2e", "--pid", "$targetPid")
     Check "scroll a list in the background" ([bool]($scrolled.ok -and $state.tree -match "Top [1-9]")) "$($scrolled.effect) $($scrolled.error)"
@@ -185,9 +185,9 @@ if ($SkipDriver -or -not $launched.ok) {
     if (-not $rows) { Write-Host "elements: $(($state.elements | ForEach-Object { "$($_.role)/$($_.label)" }) -join ', ')" }
     $scale = $rows.width / 200
     $cx = $rows.x + [int]((360 - 20) * $scale); $cy = $rows.y + [int]((270 - 130) * $scale)
-    $double = Invoke-2ndscreen (@("click") + $target + @("--x", "$cx", "--y", "$cy", "--double"))
-    $right = Invoke-2ndscreen (@("click") + $target + @("--x", "$cx", "--y", "$cy", "--right"))
-    $drag = Invoke-2ndscreen (@("drag") + $target + @("--from-x", "$($cx - 80)", "--from-y", "$cy", "--to-x", "$($cx + 80)", "--to-y", "$cy"))
+    $double = Invoke-2ndscreen (@("click") + $onTarget + @("--x", "$cx", "--y", "$cy", "--double"))
+    $right = Invoke-2ndscreen (@("click") + $onTarget + @("--x", "$cx", "--y", "$cy", "--right"))
+    $drag = Invoke-2ndscreen (@("drag") + $onTarget + @("--from-x", "$($cx - 80)", "--from-y", "$cy", "--to-x", "$($cx + 80)", "--to-y", "$cy"))
     Start-Sleep -Milliseconds 500
     $state = Invoke-2ndscreen @("state", "--screen", "e2e", "--pid", "$targetPid")
     Check "double-click" ([bool]($double.ok -and $state.tree -match "Pad idle.* double")) "$($double.effect) $($double.error)"
@@ -199,13 +199,13 @@ if ($SkipDriver -or -not $launched.ok) {
     # pointer goes back afterwards.
     $listFrame = ($state.elements | Where-Object label -eq "Rows" | Select-Object -First 1).frame
     $lx = $listFrame.x + [int]($listFrame.width / 2); $ly = $listFrame.y + [int]($listFrame.height / 2)
-    $refused = Invoke-2ndscreen (@("scroll") + $target + @("--x", "$lx", "--y", "$ly", "--direction", "down"))
+    $refused = Invoke-2ndscreen (@("scroll") + $onTarget + @("--x", "$lx", "--y", "$ly", "--direction", "down"))
     Check "wheel at a point needs --foreground" ([bool](-not $refused.ok -and $refused.error -match "--foreground")) "$($refused.error)"
     Add-Type -AssemblyName System.Windows.Forms
     $before = [System.Windows.Forms.Cursor]::Position
     $topBefore = [int]([regex]::Match($state.tree, "Top (\d+)").Groups[1].Value)
     # The background scroll above left the list at or near its end, so scroll back up.
-    $wheel = Invoke-2ndscreen (@("scroll") + $target + @("--x", "$lx", "--y", "$ly", "--direction", "up", "--amount", "5", "--foreground"))
+    $wheel = Invoke-2ndscreen (@("scroll") + $onTarget + @("--x", "$lx", "--y", "$ly", "--direction", "up", "--amount", "5", "--foreground"))
     $after = [System.Windows.Forms.Cursor]::Position
     Start-Sleep -Milliseconds 500
     $state = Invoke-2ndscreen @("state", "--screen", "e2e", "--pid", "$targetPid")
@@ -226,6 +226,32 @@ $mcp = $requests | & $cli mcp | ForEach-Object { $_ | ConvertFrom-Json }
 $tools = ($mcp | Where-Object id -eq 2).result.tools.name
 Check "mcp lists tools" ($tools.Count -eq 12) ($tools -join ",")
 Check "mcp screen_list" (-not ($mcp | Where-Object id -eq 3).result.isError)
+
+# 7b. Moving one window of a program the user is running leaves its other windows alone,
+# now and after: the screen keeps only the moved window and the program's later windows.
+# Last before cleanup: closing this program hands the foreground to the next window, which
+# would fail the foreground checks above.
+Add-Type @"
+using System; using System.Runtime.InteropServices;
+public static class Win {
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+  public static int CenterX(long h) { RECT r; GetWindowRect(new IntPtr(h), out r); return (r.Left + r.Right) / 2; }
+}
+"@
+$user = Start-Process $target -ArgumentList "--second-window" -PassThru
+Start-Sleep -Seconds 2
+$user.Refresh()
+$taken = Invoke-2ndscreen @("window", "move", "--screen", "e2e", "--pid", "$($user.Id)", "--window-id", "$([long]$user.MainWindowHandle)")
+$other = $taken.windows | Where-Object { $_.windowID -ne [long]$user.MainWindowHandle } | Select-Object -First 1
+if ($taken.ok -and $other) {
+    Start-Sleep -Milliseconds 1500
+    $cx = [Win]::CenterX([long]$other.windowID)
+    Check "moving one window leaves the program's others alone" (-not ($cx -ge $frame.x -and $cx -lt ($frame.x + $frame.width))) "other window center x $cx; screen $($frame.x)..$($frame.x + $frame.width)"
+} else {
+    Check "moving one window leaves the program's others alone" $false "move: $($taken.ok) $($taken.error); other window found: $([bool]$other)"
+}
+$user | Stop-Process -Force -ErrorAction SilentlyContinue
 
 # 8. Cleanup: destroying the screen moves the test window back to a real display.
 if ($created.ok) {

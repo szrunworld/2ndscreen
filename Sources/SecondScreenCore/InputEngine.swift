@@ -69,7 +69,9 @@ public final class InputEngine {
             let right = action.button == "right"
             let count = max(1, min(action.count ?? 1, 2))
             guard let point = action.point ?? element?.info.center else {
-                throw AccessibilityError("give --index N, --text TEXT, or --x X --y Y")
+                // Menu bar items have no frame until their menu opens.
+                throw AccessibilityError(element == nil ? "give --index N, --text TEXT, or --x X --y Y"
+                    : "the element has no frame to click; for a menu item, press its keyboard shortcut with key")
             }
             cursor(.click, point)
             // A single left click on a pressable native element needs no event.
@@ -107,7 +109,14 @@ public final class InputEngine {
 
         case .key:
             guard let key = action.key, !key.isEmpty else { throw AccessibilityError("key needs --key NAME, such as return") }
-            response.route = try BackgroundInput.key(key, modifiers: action.modifiers ?? [], in: window)
+            let modifiers = action.modifiers ?? []
+            // Key names cover unshifted keys; a symbol such as "*" arrives
+            // when typed as text.
+            if key.count == 1, modifiers.isEmpty, BackgroundInput.keyCode(key) == nil {
+                response.route = try BackgroundInput.type(key, in: window)
+            } else {
+                response.route = try BackgroundInput.key(key, modifiers: modifiers, in: window)
+            }
 
         case .scroll:
             let directions = ["up", "down", "left", "right"]

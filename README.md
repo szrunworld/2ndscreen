@@ -73,10 +73,12 @@ work in the background while you keep your own screen.
 CLI=.build/release/2ndscreen
 
 $CLI screen create --name test-a --size 1280x800      # HiDPI follows the main display;
-                                                      # add --hidpi or --no-hidpi to choose
+                                                      # add --hidpi or --no-hidpi to choose;
+                                                      # under 800x525 (either way up) it is 1x
 $CLI app launch --screen test-a --path build/MyApp.app --fill
 $CLI app launch --screen test-a --bundle com.apple.Chess
 $CLI window move --screen test-a --pid 1234 [--window-id 5678] [--fill]
+$CLI window release --screen test-a --pid 1234        # give its windows back to the main display
 $CLI screenshot --screen test-a --output shot.png
 $CLI screen list
 $CLI screen destroy test-a
@@ -139,7 +141,8 @@ user's own windows. Each result names the `route` it took:
   the process. Text goes as Unicode, so any script works whatever the
   input method. A shortcut with cmd makes the app front for the instant
   its event is queued, since menu key equivalents such as cmd+a and cmd+v
-  only reach the menu that way.
+  only reach the menu that way. They act on the window's app only once the
+  window has been clicked: a window just launched ignores them.
 
 Web content (Chrome, Electron, web views) always takes events: Chromium
 answers accessibility presses and writes there with success while a
@@ -157,6 +160,8 @@ that follows the user's own mouse or modifier input is the user switching
 apps, and stands. Apps placed with `app launch` or `window move` stay bound
 to their screen: windows they open later are moved onto it as they appear,
 instead of popping up in front of you.
+`window release` ends that and moves the windows to the main display, for
+when you need to use one yourself, such as to type a password.
 
 `drag` is the exception to working in the background. macOS has no
 background drag, so `drag` brings the app to the front, moves the real
@@ -191,9 +196,9 @@ The model sits behind an OpenAI-compatible API. By default that is Doubao
 Seed 2.1 lite on Volcengine Ark: activate it in the Ark console and set
 `ARK_API_KEY`, or put `ARK_API_KEY=...` in `~/.config/2ndscreen/ark.env`.
 `ARK_MODEL` takes another model or endpoint ID, and `ARK_BASE_URL` another
-server, such as a self-hosted UI-TARS-1.5 under vLLM. On a test page the
-model found a text field and a button, typed and clicked, and answered in
-4 steps and 15 seconds.
+server, such as a self-hosted UI-TARS-1.5 under vLLM. In tests it filled
+in a web order form (scroll to an item, pick it, set a select, tick a box,
+write a note) in 16 steps and 86 s, and worked Calculator in 12 steps.
 
 Guards:
 
@@ -201,8 +206,9 @@ Guards:
   the text typed but not sent, when the model presses Enter, types text
   ending in a newline, clicks a control labelled 发送 or Send, or clicks
   while its reply mentions sending (发送, send, 提交, submit).
-- **Nothing takes the user's pointer unless you pass `--foreground`**: a
-  drag stops the run instead.
+- **Nothing takes the user's pointer unless you pass `--foreground`**.
+  Without it, a drag becomes a double click where it starts and ends in one
+  spot, else a click and a shift-click, which select text as a drag would.
 - Shortcuts that act beyond the window, such as cmd+q, cmd+tab and
   cmd+option+esc, stop the run: models reach for them when stuck.
 - The run stops when the app no longer has a window on the screen.

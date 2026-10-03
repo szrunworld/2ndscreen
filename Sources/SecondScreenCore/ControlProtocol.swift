@@ -33,6 +33,9 @@ public struct ControlRequest: Codable {
         case screenDestroy = "screen.destroy"
         case appLaunch = "app.launch"
         case windowMove = "window.move"
+        /// Hand an app's windows back to the user's main display and stop
+        /// keeping them on the agent screen.
+        case windowRelease = "window.release"
         case screenshot
         /// Read a window's accessibility tree.
         case windowState = "window.state"

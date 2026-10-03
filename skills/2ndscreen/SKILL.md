@@ -28,6 +28,8 @@ CLI=2ndscreen   # or <repo>/.build/release/2ndscreen
 
    Without `--size`, the screen matches the main display's full-screen
    area. HiDPI follows the main display; pass `--hidpi` or `--no-hidpi`.
+   macOS runs a screen at HiDPI only from 800 points on the long side and
+   525 on the short side, so smaller screens are 1x.
    Add `--ttl 30m` as a safety net. A screen no command names for an hour
    is destroyed anyway (`--idle-timeout` changes that).
 
@@ -120,6 +122,8 @@ CLI=2ndscreen   # or <repo>/.build/release/2ndscreen
 - Frames are global, top-left-origin points. macOS rearranges displays
   whenever a screen is added or removed; call `screen list` before using
   a screen's frame.
+- Shortcuts with cmd (cmd+a, cmd+v) do nothing in a window that has never
+  been clicked, such as one just launched: click into it first.
 - Keys without a target go to the app's key window. When an app has
   several windows, pass `--window-id`, and click into the field or name it
   with `--index` or `--text` first.
@@ -137,3 +141,4 @@ CLI=2ndscreen   # or <repo>/.build/release/2ndscreen
 | `no window on screen` | `app launch` or `window move` the app there first |
 | `set ARK_API_KEY` | `agent` needs a model; ask the user to set one up |
 | `... already running` | Add `--new-instance`, or `window move` a window you own |
+| The user must type into a window (a password) | `window release` it to their main display, then `window move` it back |

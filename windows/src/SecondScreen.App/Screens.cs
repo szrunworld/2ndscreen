@@ -54,8 +54,11 @@ internal sealed class Screens
 
     private readonly VirtualDisplayDriver driver;
     private readonly List<Screen> screens = new();
-    /// <summary>Apps an agent placed on a screen; their later windows follow them there.</summary>
-    private readonly Dictionary<int, string> bindings = new();
+    /// <summary>
+    /// Apps an agent placed on a screen; their later windows follow them there. Leaving holds
+    /// the windows the app already had elsewhere, which are the user's and stay put.
+    /// </summary>
+    private readonly Dictionary<int, (string Screen, HashSet<long> Leaving)> bindings = new();
 
     public event Action? Changed;
 
@@ -169,7 +172,7 @@ internal sealed class Screens
     private void Remove(Screen screen)
     {
         screens.Remove(screen);
-        foreach (var pid in bindings.Where(b => b.Value == screen.Name).Select(b => b.Key).ToList()) bindings.Remove(pid);
+        foreach (var pid in bindings.Where(b => b.Value.Screen == screen.Name).Select(b => b.Key).ToList()) bindings.Remove(pid);
         // Detaching moves the screen's windows onto the remaining displays.
         if (!screen.TestStandIn) driver.Release(screen.Device);
         Changed?.Invoke();
@@ -230,7 +233,13 @@ internal sealed class Screens
         int owner = found.Pid;
         bool moved = Desktop.Move(found, screen.WorkArea, fill);
         // The frame host holds every packaged app's windows; following it would pull them all over.
-        if (screen.Kind == ScreenInfo.Agent && !AppLauncher.IsFrameHost(owner)) bindings[owner] = screen.Name;
+        if (screen.Kind == ScreenInfo.Agent && !AppLauncher.IsFrameHost(owner))
+        {
+            // A new process: every window it opens is the agent's. A process the launch handed
+            // off to may have had windows of the user's already, which stay where they are.
+            if (owner == pid) bindings[owner] = (screen.Name, new HashSet<long>());
+            else Bind(owner, screen, new HashSet<long> { found.Id });
+        }
         return new ControlResponse
         {
             Ok = moved, Error = moved ? null : "the program refused to move its window",
@@ -243,7 +252,7 @@ internal sealed class Screens
         var windows = Desktop.WindowsOf(pid).Where(w => windowId is null || w.Id == windowId).ToList();
         if (windows.Count == 0) return ControlResponse.Failure($"pid {pid} has no matching on-screen window");
         int failed = windows.Count(w => !Desktop.Move(w, screen.WorkArea, fill));
-        if (screen.Kind == ScreenInfo.Agent) bindings[pid] = screen.Name;
+        Bind(pid, screen, windows.Select(w => w.Id).ToHashSet());
         return new ControlResponse
         {
             Ok = failed == 0, Error = failed == 0 ? null : $"{failed} window(s) refused to move",
@@ -251,10 +260,32 @@ internal sealed class Screens
         };
     }
 
+    /// <summary>
+    /// Bind a running program whose <paramref name="moved"/> windows an agent took: its other
+    /// windows are the user's, so only windows it opens from now on follow. Moving more windows
+    /// of a program already bound there keeps the windows it left before, less the ones moved now.
+    /// </summary>
+    private void Bind(int pid, Screen screen, HashSet<long> moved)
+    {
+        if (screen.Kind != ScreenInfo.Agent)
+        {
+            bindings.Remove(pid);
+            return;
+        }
+        if (bindings.TryGetValue(pid, out var existing) && existing.Screen == screen.Name)
+        {
+            existing.Leaving.ExceptWith(moved);
+            return;
+        }
+        var leaving = Desktop.AllWindowIds(pid);
+        leaving.ExceptWith(moved);
+        bindings[pid] = (screen.Name, leaving);
+    }
+
     /// <summary>Move windows that bound programs opened elsewhere back onto their screens. Call often.</summary>
     public void FollowBindings()
     {
-        foreach (var (pid, name) in bindings.ToList())
+        foreach (var (pid, (name, leaving)) in bindings.ToList())
         {
             if (!IsRunning(pid) || Named(name) is not { } screen)
             {
@@ -262,7 +293,7 @@ internal sealed class Screens
                 continue;
             }
             var bounds = screen.Bounds;
-            foreach (var window in Desktop.WindowsOf(pid).Where(w => !bounds.ContainsCenterOf(w.Frame)))
+            foreach (var window in Desktop.WindowsOf(pid).Where(w => !leaving.Contains(w.Id) && !bounds.ContainsCenterOf(w.Frame)))
             {
                 Desktop.Move(window, screen.WorkArea, fill: false);
             }

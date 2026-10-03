@@ -43,6 +43,19 @@ public enum WindowMover {
         normalWindows().filter { $0.pid == pid }
     }
 
+    /// IDs of every layer-0 window `pid` has, on screen or not: minimized,
+    /// hidden, or on another Space.
+    public static func allWindowIDs(ofPID pid: pid_t) -> Set<CGWindowID> {
+        let list = CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID)
+            as? [[String: Any]] ?? []
+        return Set(list.compactMap { entry -> CGWindowID? in
+            guard (entry[kCGWindowLayer as String] as? Int) == 0,
+                  (entry[kCGWindowOwnerPID as String] as? pid_t) == pid
+            else { return nil }
+            return entry[kCGWindowNumber as String] as? CGWindowID
+        })
+    }
+
     /// On-screen, layer-0 windows of other apps, ignoring slivers such as
     /// menu bar extras.
     private static func normalWindows() -> [WindowInfo] {
