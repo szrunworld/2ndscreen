@@ -235,8 +235,8 @@ internal sealed class Screens
         // The frame host holds every packaged app's windows; following it would pull them all over.
         if (screen.Kind == ScreenInfo.Agent && !AppLauncher.IsFrameHost(owner))
         {
-            // A new process: every window it opens is the agent's. A copy that was already
-            // running keeps its other windows where the user has them.
+            // A new process: every window it opens is the agent's. A process the launch handed
+            // off to may have had windows of the user's already, which stay where they are.
             if (owner == pid) bindings[owner] = (screen.Name, new HashSet<long>());
             else Bind(owner, screen, new HashSet<long> { found.Id });
         }
