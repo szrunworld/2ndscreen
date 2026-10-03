@@ -130,7 +130,10 @@ enum DriverCommands {
             described["by"] = by
         }
 
+        // Where a wheel goes if 2ndscreen has to turn it itself.
+        var wheelPoint: CGPoint?
         if let global = try globalPoint(args, "--x", "--y") {
+            wheelPoint = global
             let local = try windowPixels([global], target, driver)[0]
             arguments["x"] = local.x
             arguments["y"] = local.y
@@ -147,10 +150,24 @@ enum DriverCommands {
                 arguments["element_token"] = element.token
                 described["element"] = element.json
                 described["snapshot"] = snapshot.id
+                wheelPoint = element.center
                 if let center = element.center { AgentCursorEvent(action: .move, point: center).post() }
             }
         }
         let result = try driver.act("scroll", arguments)
+        // cua-driver will not scroll Electron and Chromium windows in the
+        // background; a wheel posted to the app does, so send one, at the
+        // point or element, else mid-window.
+        if Driver.describe(result, fallback: "").contains("background_unavailable") {
+            let frame = target.window.frame
+            let point = wheelPoint ?? CGPoint(x: frame.midX, y: frame.midY)
+            let notches = (arguments["amount"] as? Int ?? 3) * (arguments["by"] as? String == "page" ? 10 : 1)
+            AgentCursorEvent(action: .move, point: point).post()
+            try BackgroundWheel.scroll(pid: target.pid, window: target.window, at: point, direction: direction, notches: notches)
+            return report(["effect": "unverifiable", "route": "2ndscreen_wheel",
+                           "summary": "posted \(notches) wheel line(s) \(direction) to the app at (\(Int(point.x)), \(Int(point.y)))"],
+                          target, described)
+        }
         return report(result, target, described)
     }
 
