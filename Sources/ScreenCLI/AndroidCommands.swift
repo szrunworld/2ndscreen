@@ -52,6 +52,8 @@ enum AndroidCommands {
                 request.maxSize = pixels
             }
             send(request)
+        case "screenshot", "tap", "swipe", "type", "key":
+            send(action(subcommand, args))
         case "hide":
             var request = ControlRequest(command: .androidHide)
             request.serial = args.value("--serial")
@@ -69,6 +71,41 @@ enum AndroidCommands {
     /// app's. Ask the app to start it before running adb here.
     private static func startServerInApp() {
         _ = try? sendControlRequest(ControlRequest(command: .androidList), timeout: 15)
+    }
+
+    private static func action(_ verb: String, _ args: Arguments) -> ControlRequest {
+        func number(_ flag: String) -> Double {
+            guard let value = args.value(flag).flatMap(Double.init) else { fail("android \(verb) needs \(flag)") }
+            return value
+        }
+        var request: ControlRequest
+        switch verb {
+        case "screenshot":
+            request = ControlRequest(command: .androidScreenshot)
+            guard let output = args.value("--output") else { fail("android screenshot needs --output FILE.png") }
+            request.output = URL(fileURLWithPath: output).path  // the app runs elsewhere
+        case "tap":
+            request = ControlRequest(command: .androidTap)
+            request.x = number("--x")
+            request.y = number("--y")
+        case "swipe":
+            request = ControlRequest(command: .androidSwipe)
+            request.x = number("--x")
+            request.y = number("--y")
+            request.toX = number("--to-x")
+            request.toY = number("--to-y")
+            request.duration = args.value("--duration").flatMap(Double.init)
+        case "type":
+            request = ControlRequest(command: .androidType)
+            guard let text = args.value("--text") else { fail("android type needs --text") }
+            request.text = text
+        default:
+            request = ControlRequest(command: .androidKey)
+            guard let key = args.value("--key") else { fail("android key needs --key") }
+            request.key = key
+        }
+        request.serial = args.value("--serial")
+        return request
     }
 
     private static func output(_ result: ADB.Result) -> ControlResponse {

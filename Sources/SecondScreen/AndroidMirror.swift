@@ -9,7 +9,10 @@ import SecondScreenCore
 /// inject input without any app or prompt on the phone. Two sockets come
 /// back through an adb forward: H.264 video, and control messages the other
 /// way. See doc/develop.md in scrcpy's repository.
-final class AndroidMirror {
+/// Thread use: the reader threads own the sockets' read sides, writes go
+/// through `controlQueue`, `lock` guards the rest that they share, and the
+/// sizes and callbacks belong to the main queue.
+final class AndroidMirror: @unchecked Sendable {
     /// Must match the bundled scrcpy-server (scripts/fetch-android-tools.sh).
     static let serverVersion = "4.1"
     private static let devicePath = "/data/local/tmp/scrcpy-server.jar"
@@ -26,6 +29,9 @@ final class AndroidMirror {
 
     let serial: String
     private(set) var deviceName = ""
+    /// The display's size in pixels in its natural orientation, as
+    /// `adb shell input` and `screencap` use it. The video may be smaller.
+    private(set) var deviceSize = CGSize.zero
     /// The video size in pixels; touches are sent in this space. Main queue only.
     private(set) var videoSize = CGSize.zero
 
@@ -46,6 +52,7 @@ final class AndroidMirror {
     private let controlQueue = DispatchQueue(label: "2ndscreen.android.control")
     private let lock = NSLock()
     private var stopped = false
+    private var video = true
 
     init(serial: String) {
         self.serial = serial
@@ -53,13 +60,24 @@ final class AndroidMirror {
 
     /// Start the server and open both sockets. Blocks for a few seconds;
     /// call off the main thread, then `startStreaming()`.
-    func start(maxSize: Int) throws {
+    /// - Parameter video: false for a control-only session, which streams
+    ///   nothing and only types and presses keys for agents.
+    func start(maxSize: Int, video: Bool = true) throws {
+        self.video = video
         guard let server = Bundle.main.url(forResource: "scrcpy-server", withExtension: nil,
                                            subdirectory: "android") else {
             throw Failure.setup("scrcpy-server is missing from the app; rebuild it with scripts/bundle-app.sh")
         }
         let push = try ADB.run(["-s", serial, "push", server.path, Self.devicePath], timeout: 60)
         guard push.ok else { throw Failure.setup("Could not copy the mirroring server to the phone: \(push.message)") }
+
+        // "Override size" wins over "Physical size" when both are listed.
+        let size = try ADB.run(["-s", serial, "shell", "wm", "size"], timeout: 15).output
+        if let line = size.split(separator: "\n").last(where: { $0.contains("size:") }),
+           let dimensions = line.split(separator: ":").last?.trimmingCharacters(in: .whitespaces) {
+            let parts = dimensions.split(separator: "x").compactMap { Double($0) }
+            if parts.count == 2 { deviceSize = CGSize(width: parts[0], height: parts[1]) }
+        }
 
         let scid = String(format: "%08x", UInt32.random(in: 0..<0x8000_0000))
         let forward = try ADB.run(["-s", serial, "forward", "tcp:0", "localabstract:scrcpy_\(scid)"])
@@ -71,7 +89,7 @@ final class AndroidMirror {
         let process = try ADB.makeProcess([
             "-s", serial, "shell", "CLASSPATH=\(Self.devicePath)", "app_process", "/",
             "com.genymobile.scrcpy.Server", Self.serverVersion, "scid=\(scid)", "log_level=info",
-            "tunnel_forward=true", "audio=false", "video_codec=h264", "max_size=\(maxSize)",
+            "tunnel_forward=true", "audio=false", "video=\(video)", "video_codec=h264", "max_size=\(maxSize)",
             "clipboard_autosync=false",
         ])
         // Keep the server's output for the error message if it fails.
@@ -97,11 +115,17 @@ final class AndroidMirror {
         do {
             // The forward accepts at once but closes the connection until the
             // server listens; the dummy byte shows the server is there.
-            videoFD = try connectWhenReady(process: process)
-            controlFD = try openSocket()
-            var name = try readExactly(videoFD, 64)
+            // The device name comes on whichever socket is first.
+            let first = try connectWhenReady(process: process)
+            var name = try readExactly(first, 64)
             name = name.prefix { $0 != 0 }
             deviceName = String(decoding: name, as: UTF8.self)
+            guard video else {
+                controlFD = first
+                return
+            }
+            videoFD = first
+            controlFD = try openSocket()
             let codec = try readExactly(videoFD, 4).bigEndianUInt32(at: 0)
             guard codec == 0x6832_3634 else {  // "h264"
                 throw Failure.setup(codec <= 1
@@ -118,7 +142,9 @@ final class AndroidMirror {
     /// Start reading video once the callbacks are set: the first key frame
     /// comes right away, and without it nothing shows until the next one.
     func startStreaming() {
-        Thread.detachNewThread { [weak self] in self?.readVideo() }
+        if video {
+            Thread.detachNewThread { [weak self] in self?.readVideo() }
+        }
         Thread.detachNewThread { [weak self] in self?.drainControl() }
     }
 
@@ -240,6 +266,8 @@ final class AndroidMirror {
     private func drainControl() {
         var buffer = [UInt8](repeating: 0, count: 4096)
         while read(controlFD, &buffer, buffer.count) > 0 {}
+        // Without video, nothing else notices the phone going away.
+        if !video { end("The connection to the phone was lost.") }
     }
 
     // MARK: Control
@@ -248,16 +276,61 @@ final class AndroidMirror {
         case down = 0, up = 1, move = 2
     }
 
+    /// A point in device pixels, as agents and `adb shell input` give them,
+    /// in video pixels. Comparing long sides works in either orientation.
+    func videoPoint(fromDevice point: CGPoint) -> CGPoint? {
+        let device = max(deviceSize.width, deviceSize.height)
+        let video = max(videoSize.width, videoSize.height)
+        guard device > 0, video > 0 else { return nil }
+        return CGPoint(x: point.x * video / device, y: point.y * video / device)
+    }
+
     /// A finger touch at a point in video pixels.
     func touch(_ action: TouchAction, at point: CGPoint) {
-        guard videoSize.width > 0 else { return }
+        guard let message = touchMessage(action, at: point) else { return }
+        send(message)
+    }
+
+    /// Press, slide to `end` in even steps over `duration`, and lift, all
+    /// in video pixels. Returns once the last step is sent.
+    func swipe(from start: CGPoint, to end: CGPoint, duration: TimeInterval) async {
+        let steps = max(2, Int(duration * 60))
+        var messages = [touchMessage(.down, at: start)]
+        for step in 1...steps {
+            let t = CGFloat(step) / CGFloat(steps)
+            messages.append(touchMessage(.move, at: CGPoint(x: start.x + (end.x - start.x) * t,
+                                                           y: start.y + (end.y - start.y) * t)))
+        }
+        messages.append(touchMessage(.up, at: end))
+        let interval = useconds_t(duration / Double(steps) * 1_000_000)
+        let ready = messages.compactMap { $0 }
+        await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+            controlQueue.async { [weak self] in
+                for message in ready {
+                    self?.write(message)
+                    usleep(interval)
+                }
+                done.resume()
+            }
+        }
+    }
+
+    /// Wait until every message so far has been written.
+    func flush() async {
+        await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+            controlQueue.async { done.resume() }
+        }
+    }
+
+    private func touchMessage(_ action: TouchAction, at point: CGPoint) -> Data? {
+        guard videoSize.width > 0 else { return nil }
         var message = Data([2, action.rawValue])
         message.appendBigEndian(UInt64.max - 1)  // a generic finger, not the mouse
         appendPosition(point, to: &message)
         message.appendBigEndian(UInt16(action == .up ? 0 : 0xFFFF))  // pressure
         message.appendBigEndian(UInt32(0))  // action button
         message.appendBigEndian(UInt32(0))  // buttons
-        send(message)
+        return message
     }
 
     /// Scroll amounts are in wheel notches, clamped to ±16.
@@ -327,10 +400,13 @@ final class AndroidMirror {
     }
 
     private func send(_ message: Data) {
-        controlQueue.async { [weak self] in
-            guard let self, !self.isStopped, self.controlFD >= 0 else { return }
-            try? writeAll(self.controlFD, message)
-        }
+        controlQueue.async { [weak self] in self?.write(message) }
+    }
+
+    /// On the control queue only.
+    private func write(_ message: Data) {
+        guard !isStopped, controlFD >= 0 else { return }
+        try? writeAll(controlFD, message)
     }
 
     deinit {
@@ -341,8 +417,24 @@ final class AndroidMirror {
     }
 }
 
-/// Android keycodes used by the mirror window.
+/// Android keycodes used by the mirror window and agents.
 enum AndroidKey {
+    /// A keycode from a name such as "home", "KEYCODE_HOME" or "3".
+    static func code(named name: String) -> UInt32? {
+        let key = name.lowercased().replacingOccurrences(of: "keycode_", with: "")
+        if let number = UInt32(key) { return number }
+        let names: [String: UInt32] = [
+            "home": home, "back": back, "up": up, "down": down, "left": left, "right": right,
+            "volume_up": volumeUp, "volume_down": volumeDown, "power": power, "tab": tab,
+            "enter": enter, "return": enter, "del": delete, "delete": delete, "backspace": delete,
+            "forward_del": forwardDelete, "page_up": pageUp, "page_down": pageDown,
+            "move_home": moveHome, "move_end": moveEnd, "app_switch": appSwitch, "recents": appSwitch,
+            "escape": 111, "menu": 82, "search": 84, "space": 62, "wakeup": 224, "sleep": 223,
+        ]
+        return names[key]
+    }
+
+
     static let home: UInt32 = 3
     static let back: UInt32 = 4
     static let up: UInt32 = 19

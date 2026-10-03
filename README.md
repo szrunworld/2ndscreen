@@ -179,9 +179,20 @@ $CLI android devices
 $CLI android pair 192.168.1.20:37000 123456     # or scan the QR code from the menu
 $CLI android connect 192.168.1.20:41000
 $CLI android show [--serial S] [--screen test-a] [--max-size 1920]
-$CLI android adb -s S shell input tap 540 1200  # the bundled adb, arguments unchanged
+$CLI android screenshot --output phone.png
+$CLI android tap   --x 540 --y 1200             # device pixels, as in the screenshot
+$CLI android swipe --x 540 --y 1600 --to-x 540 --to-y 600
+$CLI android type  --text "你好"
+$CLI android key   --key back
+$CLI android adb -s S shell uiautomator dump    # the bundled adb, arguments unchanged
 $CLI android hide [--serial S]
 ```
+
+With the mirror open, taps, swipes and keys go through it, in about a
+tenth of a second; without it, through adb, in about half a second. Text
+is always pasted through the phone's clipboard, over a control-only
+connection when the mirror is closed: typed keys would be turned into
+pinyin by a Chinese keyboard on the phone, and adb types only ASCII.
 
 `android show` opens the mirror behind the user's windows without taking
 focus; with `--screen`, it fills that agent screen instead, for the user to
@@ -189,13 +200,18 @@ watch in its preview.
 
 Things to know:
 
-- macOS asks once whether 2ndscreen may find devices on your local
-  network; allow it. The adb server makes the connections to phones and
+- macOS asks whether 2ndscreen may find devices on your local network;
+  allow it. It asks again after the app is updated, and until then
+  connecting fails with "No route to host". The adb server makes the connections to phones and
   answers to the permission of the app that started it, so 2ndscreen
   starts it, including before `2ndscreen android` commands run adb. If
   pairing or connecting fails with "No route to host", an adb server
-  started from a terminal is running: `2ndscreen android adb kill-server`
-  and try again.
+  started from a terminal may be running; 2ndscreen restarts it and tries
+  again by itself. It also restarts one left by an earlier build when it
+  launches, and reconnects to the addresses phones last had, since adb's
+  own reconnection relies on mDNS, which many Wi-Fi networks block.
+- Agents need the phone unlocked. Developer options → Stay awake keeps it
+  from locking while it charges.
 - adb keeps a server running in the background after 2ndscreen quits, as
   it always does. Another adb of a different version, such as one from
   Homebrew, restarts that server whenever it is used, which drops the

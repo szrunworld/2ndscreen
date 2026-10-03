@@ -25,6 +25,11 @@ public struct ControlRequest: Codable {
         case androidList = "android.list"
         case androidShow = "android.show"
         case androidHide = "android.hide"
+        case androidScreenshot = "android.screenshot"
+        case androidTap = "android.tap"
+        case androidSwipe = "android.swipe"
+        case androidType = "android.type"
+        case androidKey = "android.key"
     }
 
     public var command: Command
@@ -55,6 +60,18 @@ public struct ControlRequest: Codable {
     public var serial: String?
     /// `android.show`: the longest side of the video in pixels; 0 for full size.
     public var maxSize: Int?
+    /// `android.tap` and `android.swipe`: a point in device pixels, as in
+    /// `android.screenshot`; a swipe goes on to `toX`, `toY`.
+    public var x: Double?
+    public var y: Double?
+    public var toX: Double?
+    public var toY: Double?
+    /// `android.swipe`: how long the finger takes, in seconds.
+    public var duration: Double?
+    /// `android.type`: the text to type.
+    public var text: String?
+    /// `android.key`: a name such as "back", "home" or "enter", or a keycode.
+    public var key: String?
 
     public init(command: Command) {
         self.command = command

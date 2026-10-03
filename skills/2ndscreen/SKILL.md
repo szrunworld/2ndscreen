@@ -87,24 +87,26 @@ installed on the phone.
 
 ```bash
 $CLI android devices                                    # serial, state, model
-$CLI android show --serial SERIAL --screen login-test   # optional: mirror it on your screen
-A="$CLI android adb -s SERIAL"
-$A exec-out screencap -p > /tmp/phone.png               # look
-$A shell uiautomator dump /sdcard/ui.xml && $A exec-out cat /sdcard/ui.xml   # element tree with bounds
-$A shell input tap 540 1200                             # act, in device pixels
-$A shell input swipe 540 1600 540 600 300
-$A shell input text 'hello'                             # ASCII only; spaces as %s
-$A shell input keyevent KEYCODE_BACK                    # also KEYCODE_HOME, KEYCODE_ENTER
-$A shell monkey -p com.example.app 1                    # launch an app
-$CLI android hide --serial SERIAL
+$CLI android screenshot --output /tmp/phone.png         # look (full resolution)
+$CLI android tap   --x 540 --y 1200                     # act, in screenshot pixels
+$CLI android swipe --x 540 --y 1600 --to-x 540 --to-y 600 [--duration 0.3]
+$CLI android type  --text "你好 hello"                  # pasted: any text, any keyboard
+$CLI android key   --key back                           # home, recents, enter, delete, ...
+$CLI android adb shell uiautomator dump /sdcard/ui.xml && $CLI android adb exec-out cat /sdcard/ui.xml
+$CLI android adb shell monkey -p com.example.app 1      # launch an app
+$CLI android show [--screen login-test]                 # optional: a mirror for the user to watch
 ```
 
-`android adb` runs the adb bundled in 2ndscreen.app with your arguments
-unchanged. Coordinates are device pixels (`$A shell wm size`); take them
-from `uiautomator` bounds or the screenshot, not from the mirror window.
-The mirror is for the user to watch; you do not need it to act. The phone
-is the user's: leave it as you found it, and never unlock, pay, send or
-delete anything they did not ask for.
+Add `--serial SERIAL` when more than one phone is connected. Points are
+the screenshot's pixels; take them from the screenshot or from
+`uiautomator` bounds. Tap a text field before `type`; the text is pasted
+through the phone's clipboard, which it replaces. `android adb` runs the
+bundled adb with your arguments unchanged.
+
+None of this moves the user's pointer or takes focus. The phone is the
+user's: if it is locked, ask them to unlock it (and to turn on Developer
+options → Stay awake while you work); never unlock, pay, send or delete
+anything they did not ask for.
 
 ## Rules
 

@@ -28,8 +28,17 @@ usage:
   2ndscreen android disconnect [HOST:PORT]
   2ndscreen android show [--serial SERIAL] [--screen NAME] [--max-size PIXELS]
   2ndscreen android hide [--serial SERIAL]
-  2ndscreen android adb ARGS...   run the bundled adb, such as
-                                  adb -s SERIAL shell input tap 500 1200
+  2ndscreen android screenshot [--serial SERIAL] --output FILE.png
+  2ndscreen android tap   [--serial SERIAL] --x X --y Y
+  2ndscreen android swipe [--serial SERIAL] --x X --y Y --to-x X --to-y Y [--duration SECONDS]
+  2ndscreen android type  [--serial SERIAL] --text TEXT
+  2ndscreen android key   [--serial SERIAL] --key back|home|recents|enter|delete|KEYCODE
+  2ndscreen android adb ARGS...   run the bundled adb with these arguments
+
+Android points are device pixels, as in the screenshot. With the phone's
+mirror open, tap, swipe and key go through it at once; without it, through
+adb. type pastes through the phone's clipboard, so it takes any text and a
+Chinese keyboard on the phone cannot turn it into pinyin.
 
 state, click, type and key act through cua-driver's background routes and
 only on a window that is on the named screen. Indexes come from state; click
@@ -60,7 +69,7 @@ struct Arguments {
                                       "--pid", "--window-id", "--output", "--query", "--screenshot",
                                       "--index", "--text", "--x", "--y", "--value", "--key",
                                       "--modifiers", "--ttl", "--idle-timeout", "--owner-pid",
-                                      "--serial", "--max-size"]
+                                      "--serial", "--max-size", "--to-x", "--to-y", "--duration"]
 
     init(_ words: [String]) {
         var iterator = words.makeIterator()

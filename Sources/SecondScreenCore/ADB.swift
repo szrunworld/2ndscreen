@@ -111,16 +111,47 @@ public enum ADB {
         return process
     }
 
-    /// `adb devices -l`, parsed.
+    /// `adb devices -l`, parsed. A phone connected both by address and by
+    /// the mDNS name adb found it under is listed once, by that name.
     public static func devices() throws -> [Device] {
         let result = try run(["devices", "-l"], timeout: 10)
         guard result.ok else { throw ControlClientError.io(result.message) }
-        return result.output.split(separator: "\n").dropFirst().compactMap { line in
+        let devices: [Device] = result.output.split(separator: "\n").dropFirst().compactMap { line in
             let fields = line.split(whereSeparator: \.isWhitespace).map(String.init)
             guard fields.count >= 2, !line.hasPrefix("*") else { return nil }
             let model = fields.first { $0.hasPrefix("model:") }.map { String($0.dropFirst(6)) }
             return Device(serial: fields[0], state: fields[1], model: model)
         }
+        let mdnsSuffix = "._adb-tls-connect._tcp"
+        let named = devices.filter { $0.serial.hasSuffix(mdnsSuffix) }.map { $0.serial.dropLast(mdnsSuffix.count) }
+        guard !named.isEmpty, devices.count > named.count else { return devices }
+        let duplicates = Set(((try? services()) ?? []).filter { service in
+            service.type.contains("connect") && named.contains { $0 == service.name }
+        }.map(\.address))
+        return devices.filter { !duplicates.contains($0.serial) }
+    }
+
+    /// Save a PNG of the device's screen at its full resolution.
+    public static func screenshot(serial: String, to path: String) throws -> Result {
+        guard FileManager.default.createFile(atPath: path, contents: nil),
+              let file = FileHandle(forWritingAtPath: path) else {
+            throw ControlClientError.io("cannot write \(path)")
+        }
+        defer { try? file.close() }
+        let process = try makeProcess(["-s", serial, "exec-out", "screencap", "-p"])
+        let error = Pipe()
+        process.standardOutput = file
+        process.standardError = error
+        process.standardInput = FileHandle.nullDevice
+        try process.run()
+        let deadline = Date().addingTimeInterval(30)
+        while process.isRunning, Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
+        if process.isRunning { process.terminate() }
+        process.waitUntilExit()
+        let message = String(decoding: error.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        let size = (try? FileManager.default.attributesOfItem(atPath: path)[.size] as? Int) ?? 0
+        return Result(status: size > 0 ? process.terminationStatus : 1, output: "",
+                      error: size > 0 ? message : (message.isEmpty ? "the screenshot was empty" : message))
     }
 
     /// `adb mdns services`, parsed. Lines are "name  type  address".
@@ -151,6 +182,30 @@ public enum ADB {
         _ = try? run(["kill-server"], timeout: 10)
         startServer()
         return try attempt()
+    }
+
+    /// An adb server started by an earlier build of 2ndscreen keeps running
+    /// after the app is replaced, but macOS no longer counts it as the app's
+    /// and blocks its local network: phones drop and mDNS finds nothing.
+    /// Restart a server running from this adb's path that is older than the
+    /// file. Call from the app at launch, off the main thread.
+    public static func restartStaleServer() {
+        guard let adb = executable(),
+              let built = (try? FileManager.default.attributesOfItem(atPath: adb.path))?[.modificationDate] as? Date
+        else { return }
+        var pids = [pid_t](repeating: 0, count: 8192)
+        let count = Int(proc_listallpids(&pids, Int32(pids.count * MemoryLayout<pid_t>.size)))
+        let stale = pids.prefix(max(0, count)).contains { pid in
+            var path = [CChar](repeating: 0, count: Int(MAXPATHLEN) * 4)
+            guard proc_pidpath(pid, &path, UInt32(path.count)) > 0, String(cString: path) == adb.path else { return false }
+            var info = proc_bsdinfo()
+            let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+            guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return false }
+            return Date(timeIntervalSince1970: TimeInterval(info.pbi_start_tvsec)) < built
+        }
+        guard stale else { return }
+        _ = try? run(["kill-server"], timeout: 10)
+        startServer()
     }
 
     /// `adb pair ADDRESS CODE`.

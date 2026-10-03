@@ -34,6 +34,12 @@ struct Preferences {
         nonmutating set { defaults.set(newValue, forKey: "showPreview") }
     }
 
+    /// Where Android phones were last connected, most recent first.
+    var androidAddresses: [String] {
+        get { defaults.stringArray(forKey: "androidAddresses") ?? [] }
+        nonmutating set { defaults.set(newValue, forKey: "androidAddresses") }
+    }
+
     var floatPreview: Bool {
         get { defaults.object(forKey: "floatPreview") as? Bool ?? true }
         nonmutating set { defaults.set(newValue, forKey: "floatPreview") }
@@ -83,6 +89,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var controlServer: ControlServer?
     /// Open Android mirror windows, keyed by adb serial.
     private var androidMirrors: [String: AndroidMirrorWindow] = [:]
+    /// Control-only sessions, for agents typing on phones whose mirror is
+    /// not open, keyed by serial.
+    private var androidControls: [String: AndroidMirror] = [:]
     /// Serials whose mirror is starting, so a second request waits its turn.
     private var androidStarting: Set<String> = []
     private var androidPairing: AndroidPairingWindow?
@@ -122,6 +131,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             enableDisplay()
         }
 
+        let known = preferences.androidAddresses
+        DispatchQueue.global().async {
+            ADB.restartStaleServer()
+            Self.reconnect(known)
+        }
+
         agentScreens.onChange = { [weak self] in self?.agentScreensChanged() }
         let server = ControlServer { [weak self] request in
             await self?.handle(request) ?? .failure("2ndscreen is shutting down")
@@ -139,6 +154,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Stops each mirror's server on its phone.
         for window in androidMirrors.values {
             window.close()
+        }
+        for control in androidControls.values {
+            control.stop()
         }
     }
 
@@ -293,6 +311,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 androidMirrors[serial]?.close()
             }
             return await androidList()
+        case .androidScreenshot, .androidTap, .androidSwipe, .androidType, .androidKey:
+            return await androidAction(request)
         }
     }
 
@@ -301,6 +321,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func addAndroidItems(to menu: NSMenu) {
         do {
             let devices = try ADB.devices()
+            remember(devices)
+            // Bring back remembered phones for the next look at the menu.
+            let known = preferences.androidAddresses
+            if known.contains(where: { address in !devices.contains { $0.serial == address } }) {
+                DispatchQueue.global().async { Self.reconnect(known) }
+            }
             if devices.isEmpty {
                 let none = NSMenuItem(title: "No Phone Connected", action: nil, keyEquivalent: "")
                 none.isEnabled = false
@@ -368,6 +394,168 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// more than Wi-Fi carries smoothly and more than a window shows.
     private static let androidMaxSize = 1920
 
+    struct AndroidFailure: Error {
+        let response: ControlResponse
+        init(_ message: String) { response = .failure(message) }
+    }
+
+    /// The requested device, or the only usable one when none is named.
+    private static func choose(serial: String?, from devices: [ADB.Device]) -> Result<String, AndroidFailure> {
+        let usable = devices.filter { $0.state == "device" }
+        guard !usable.isEmpty else {
+            return .failure(AndroidFailure(
+                "no Android device is connected; pair one with `2ndscreen android pair` or from the menu"))
+        }
+        guard let serial = serial ?? (usable.count == 1 ? usable[0].serial : nil) else {
+            return .failure(AndroidFailure("several Android devices are connected; choose one with --serial"))
+        }
+        guard usable.contains(where: { $0.serial == serial }) else {
+            return .failure(AndroidFailure("no connected device \"\(serial)\"; see `2ndscreen android devices`"))
+        }
+        return .success(serial)
+    }
+
+    /// Look at or act on a phone. With its mirror open, input goes through
+    /// the mirror: at once, and with any text. Without it, through adb.
+    /// Points are device pixels, as in the screenshot.
+    private func androidAction(_ request: ControlRequest) async -> ControlResponse {
+        let devices: [ADB.Device]
+        do {
+            devices = try await Task.detached { try ADB.devices() }.value
+        } catch {
+            return .failure(error.localizedDescription)
+        }
+        let serial: String
+        switch Self.choose(serial: request.serial, from: devices) {
+        case .success(let chosen): serial = chosen
+        case .failure(let failure): return failure.response
+        }
+        let mirror = androidMirrors[serial]?.mirror
+        func adb(_ arguments: [String]) async -> ControlResponse {
+            do {
+                let result = try await Task.detached { try ADB.run(["-s", serial] + arguments) }.value
+                return result.ok ? ControlResponse() : .failure(result.message)
+            } catch {
+                return .failure(error.localizedDescription)
+            }
+        }
+        func point(_ x: Double?, _ y: Double?) -> CGPoint? {
+            guard let x, let y else { return nil }
+            return CGPoint(x: x, y: y)
+        }
+
+        switch request.command {
+        case .androidScreenshot:
+            guard let output = request.output else { return .failure("give a PNG path with --output") }
+            do {
+                let result = try await Task.detached { try ADB.screenshot(serial: serial, to: output) }.value
+                guard result.ok else { return .failure("screenshot failed: \(result.message)") }
+            } catch {
+                return .failure(error.localizedDescription)
+            }
+            var response = ControlResponse()
+            response.output = output
+            return response
+        case .androidTap:
+            guard let target = point(request.x, request.y) else { return .failure("give the point with --x and --y") }
+            if let mirror, let video = mirror.videoPoint(fromDevice: target) {
+                mirror.touch(.down, at: video)
+                mirror.touch(.up, at: video)
+                await mirror.flush()
+                return ControlResponse()
+            }
+            return await adb(["shell", "input", "tap", "\(Int(target.x))", "\(Int(target.y))"])
+        case .androidSwipe:
+            guard let start = point(request.x, request.y), let end = point(request.toX, request.toY) else {
+                return .failure("give --x --y and --to-x --to-y")
+            }
+            let duration = request.duration ?? 0.3
+            if let mirror, let from = mirror.videoPoint(fromDevice: start), let to = mirror.videoPoint(fromDevice: end) {
+                await mirror.swipe(from: from, to: to, duration: duration)
+                return ControlResponse()
+            }
+            return await adb(["shell", "input", "swipe", "\(Int(start.x))", "\(Int(start.y))",
+                              "\(Int(end.x))", "\(Int(end.y))", "\(Int(duration * 1000))"])
+        case .androidType:
+            guard let text = request.text, !text.isEmpty else { return .failure("give the text with --text") }
+            // Pasted, not keyed in: a Chinese keyboard on the phone would
+            // take typed letters as pinyin, and adb types only ASCII.
+            let session: AndroidMirror
+            do {
+                session = try await controlSession(serial: serial)
+            } catch {
+                return .failure(error.localizedDescription)
+            }
+            session.paste(text)
+            await session.flush()
+            return ControlResponse()
+        case .androidKey:
+            guard let name = request.key, let code = AndroidKey.code(named: name) else {
+                return .failure("give a key such as back, home, recents, enter or delete, or a keycode")
+            }
+            if let mirror {
+                mirror.press(code)
+                await mirror.flush()
+                return ControlResponse()
+            }
+            return await adb(["shell", "input", "keyevent", "\(code)"])
+        default:
+            return .failure("not an Android action")
+        }
+    }
+
+    /// The open mirror's session, or a control-only one started for agents.
+    private func controlSession(serial: String) async throws -> AndroidMirror {
+        if let mirror = androidMirrors[serial]?.mirror { return mirror }
+        if let control = androidControls[serial] { return control }
+        let control = AndroidMirror(serial: serial)
+        try await Task.detached { try control.start(maxSize: 0, video: false) }.value
+        control.onEnd = { [weak self, weak control] _ in
+            if self?.androidControls[serial] === control { self?.androidControls.removeValue(forKey: serial) }
+        }
+        control.startStreaming()
+        androidControls[serial] = control
+        return control
+    }
+
+    /// Remember where connected phones are, so they come back after adb
+    /// restarts on networks that block the mDNS adb would find them by.
+    private func remember(_ devices: [ADB.Device]) {
+        let named = devices.contains { !$0.serial.contains(":") || $0.serial.hasSuffix("._tcp") }
+        Task.detached { [weak self] in
+            var addresses = devices.map(\.serial).filter { $0.range(of: #"^\d+\.\d+\.\d+\.\d+:\d+$"#, options: .regularExpression) != nil }
+            if named {
+                let services = (try? ADB.services()) ?? []
+                addresses += services.filter { service in
+                    service.type.contains("connect") && devices.contains { $0.serial.hasPrefix(service.name + ".") }
+                }.map(\.address)
+            }
+            guard !addresses.isEmpty else { return }
+            let found = addresses
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                let kept = self.preferences.androidAddresses.filter { old in
+                    // A phone gets a new port when wireless debugging restarts.
+                    !found.contains { $0.split(separator: ":").first == old.split(separator: ":").first }
+                }
+                self.preferences.androidAddresses = Array((found + kept).prefix(8))
+            }
+        }
+    }
+
+    /// Connect to remembered addresses adb is not connected to. Quietly:
+    /// a phone that is away just fails.
+    nonisolated private static func reconnect(_ addresses: [String]) {
+        guard !addresses.isEmpty, let devices = try? ADB.devices() else { return }
+        for address in addresses where !devices.contains(where: { $0.serial == address }) {
+            _ = try? ADB.run(["connect", address], timeout: 5)
+        }
+        // A failed connect leaves an offline entry.
+        for device in (try? ADB.devices()) ?? [] where device.state == "offline" && addresses.contains(device.serial) {
+            _ = try? ADB.run(["disconnect", device.serial], timeout: 5)
+        }
+    }
+
     private func androidList() async -> ControlResponse {
         let devices: [ADB.Device]
         do {
@@ -375,6 +563,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } catch {
             return .failure(error.localizedDescription)
         }
+        remember(devices)
         var response = ControlResponse()
         response.android = devices.map { device in
             var info = AndroidDeviceInfo(serial: device.serial, state: device.state, model: device.model,
@@ -391,22 +580,18 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Open a mirror window for a device, or bring its window forward. With
     /// a display, the window fills it, such as an agent screen.
-    private func showAndroid(serial: String?, on displayID: CGDirectDisplayID?, maxSize: Int,
+    private func showAndroid(serial requested: String?, on displayID: CGDirectDisplayID?, maxSize: Int,
                              presentation: AndroidMirrorWindow.Presentation) async -> ControlResponse {
         let devices: [ADB.Device]
         do {
-            devices = try await Task.detached { try ADB.devices() }.value.filter { $0.state == "device" }
+            devices = try await Task.detached { try ADB.devices() }.value
         } catch {
             return .failure(error.localizedDescription)
         }
-        guard !devices.isEmpty else {
-            return .failure("no Android device is connected; pair one with `2ndscreen android pair` or from the menu")
-        }
-        guard let serial = serial ?? (devices.count == 1 ? devices[0].serial : nil) else {
-            return .failure("several Android devices are connected; choose one with --serial")
-        }
-        guard devices.contains(where: { $0.serial == serial }) else {
-            return .failure("no connected device \"\(serial)\"; see `2ndscreen android devices`")
+        let serial: String
+        switch Self.choose(serial: requested, from: devices) {
+        case .success(let chosen): serial = chosen
+        case .failure(let failure): return failure.response
         }
         if let existing = androidMirrors[serial] {
             if let displayID { existing.place(on: displayID) }
@@ -422,6 +607,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             } catch {
                 return .failure(error.localizedDescription)
             }
+            // The mirror's own session takes over typing from a control-only one.
+            androidControls.removeValue(forKey: serial)?.stop()
             let window = AndroidMirrorWindow(mirror: mirror)
             window.onClose = { [weak self] in self?.androidMirrors.removeValue(forKey: serial) }
             androidMirrors[serial] = window
