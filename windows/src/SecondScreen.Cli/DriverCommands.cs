@@ -238,7 +238,6 @@ public static class DriverCommands
     private static JsonObject Click(Target target, Driver driver, Arguments args)
     {
         var arguments = new JsonObject { ["pid"] = target.Pid, ["window_id"] = target.Window.Id };
-        (double X, double Y) point;
         var described = new JsonObject();
 
         if (double.TryParse(args.Value("--x"), out var x) && double.TryParse(args.Value("--y"), out var y))
@@ -259,7 +258,6 @@ public static class DriverCommands
             {
                 File.Delete(scratch);
             }
-            point = (x, y);
             described["point"] = new JsonObject { ["x"] = x, ["y"] = y };
         }
         else
@@ -267,14 +265,11 @@ public static class DriverCommands
             var (element, snapshot) = Resolve(target, driver, args, required: true);
             if (element is null || snapshot is null || element.Center is not { } center)
                 throw new InvalidOperationException("the element has no frame to click");
-            point = center;
             arguments["element_token"] = element.Token;
             described["element"] = JsonSerializer.SerializeToNode(element.ToJson());
             described["snapshot"] = snapshot.Id;
         }
 
-        Cursor("click", point);
-        Thread.Sleep(400); // let the cursor arrive first
         return Report(driver.Act("click", arguments), target, described);
     }
 
@@ -290,7 +285,6 @@ public static class DriverCommands
             arguments["element_token"] = element.Token;
             described["element"] = JsonSerializer.SerializeToNode(element.ToJson());
             described["snapshot"] = snapshot!.Id;
-            if (element.Center is { } center) Cursor("move", center);
         }
         return Report(driver.Act("type_text", arguments), target, described);
     }
@@ -354,15 +348,5 @@ public static class DriverCommands
             output["error"] = error;
         }
         return output;
-    }
-
-    /// <summary>Show the app's agent cursor; best effort, the action proceeds either way.</summary>
-    private static void Cursor(string action, (double X, double Y) point)
-    {
-        try
-        {
-            ControlPipe.Send(new ControlRequest { Command = ControlRequest.CursorEvent, Action = action, X = point.X, Y = point.Y });
-        }
-        catch (Exception) { }
     }
 }

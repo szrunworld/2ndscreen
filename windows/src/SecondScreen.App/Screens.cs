@@ -251,8 +251,7 @@ internal sealed class Screens
             using var bitmap = new Bitmap(bounds.Width, bounds.Height, PixelFormat.Format32bppRgb);
             using (var graphics = Graphics.FromImage(bitmap))
             {
-                // Including layered windows, so the agent cursor shows.
-                ScreenCapture.Copy(graphics, bounds, layered: true);
+                ScreenCapture.Copy(graphics, bounds);
             }
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             bitmap.Save(path, ImageFormat.Png);

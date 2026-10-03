@@ -16,7 +16,6 @@ public sealed class ControlRequest
     public const string AppLaunch = "app.launch";
     public const string WindowMove = "window.move";
     public const string Screenshot = "screenshot";
-    public const string CursorEvent = "cursor";
 
     [JsonPropertyName("command")] public string Command { get; set; } = "";
     /// <summary>The screen to create, destroy, or act on.</summary>
@@ -38,10 +37,6 @@ public sealed class ControlRequest
     [JsonPropertyName("ttl")] public double? Ttl { get; set; }
     [JsonPropertyName("idleTimeout")] public double? IdleTimeout { get; set; }
     [JsonPropertyName("ownerPID")] public int? OwnerPid { get; set; }
-    /// <summary>For <see cref="CursorEvent"/>: move, click or hide.</summary>
-    [JsonPropertyName("action")] public string? Action { get; set; }
-    [JsonPropertyName("x")] public double? X { get; set; }
-    [JsonPropertyName("y")] public double? Y { get; set; }
 }
 
 public sealed class Frame

@@ -40,7 +40,6 @@ internal sealed class TrayApp : ApplicationContext
     private readonly NotifyIcon tray;
     private readonly HotKeyWindow hotKey;
     private readonly ControlServer server;
-    private readonly Dictionary<string, CursorOverlay> overlays = new();
     private readonly Dictionary<string, PreviewForm> previews = new();
     private readonly System.Windows.Forms.Timer reapTimer = new() { Interval = 5000 };
     private readonly System.Windows.Forms.Timer followTimer = new() { Interval = 300 };
@@ -48,7 +47,7 @@ internal sealed class TrayApp : ApplicationContext
     public TrayApp()
     {
         screens = new Screens(driver);
-        screens.Changed += SyncOverlaysAndPreviews;
+        screens.Changed += ClosePreviewsOfDestroyedScreens;
 
         tray = new NotifyIcon
         {
@@ -137,33 +136,19 @@ internal sealed class TrayApp : ApplicationContext
                 if (Target() is not { } shot) return missing;
                 if (request.Output is null) return ControlResponse.Failure("give a PNG path with --output");
                 return Screens.Screenshot(shot.Bounds, request.Output);
-            case ControlRequest.CursorEvent:
-                foreach (var overlay in overlays.Values) overlay.Show(request.Action ?? "move", request.X ?? 0, request.Y ?? 0);
-                return new ControlResponse();
             default:
                 return ControlResponse.Failure($"unknown command {request.Command}");
         }
     }
 
-    // MARK: Overlays and previews
+    // MARK: Previews
 
-    private void SyncOverlaysAndPreviews()
+    private void ClosePreviewsOfDestroyedScreens()
     {
         var names = screens.All.Select(s => s.Name).ToHashSet();
-        foreach (var name in overlays.Keys.Where(n => !names.Contains(n)).ToList())
-        {
-            overlays[name].Close();
-            overlays.Remove(name);
-        }
         foreach (var name in previews.Keys.Where(n => !names.Contains(n)).ToList())
         {
             previews[name].Close();
-        }
-        foreach (var screen in screens.All.Where(s => !overlays.ContainsKey(s.Name)))
-        {
-            var overlay = new CursorOverlay(screen.Device);
-            overlays[screen.Name] = overlay;
-            overlay.Show();
         }
     }
 
@@ -175,7 +160,7 @@ internal sealed class TrayApp : ApplicationContext
             return;
         }
         if (screens.Named(name) is not { } screen) return;
-        var preview = new PreviewForm(name, screen.Device, overlays.GetValueOrDefault(name), preferences.PreviewOnTop);
+        var preview = new PreviewForm(name, screen.Device, preferences.PreviewOnTop);
         preview.FormClosed += (_, _) =>
         {
             previews.Remove(name);
@@ -319,7 +304,6 @@ internal sealed class TrayApp : ApplicationContext
         server.Stop();
         hotKey.Dispose();
         foreach (var form in previews.Values.ToList()) form.Close();
-        foreach (var overlay in overlays.Values) overlay.Close();
         // Detach every virtual screen; Windows moves their windows to the real displays.
         foreach (var screen in screens.All.ToList()) screens.Destroy(screen.Name);
         tray.Visible = false;

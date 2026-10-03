@@ -8,23 +8,20 @@ namespace SecondScreen.App;
 /// A live view of one virtual screen in a window on a real display. Captures with
 /// BitBlt at up to 30 fps and pauses while the window is minimized or hidden.
 /// Full screen is a borderless window covering a real display. BitBlt leaves out the
-/// mouse pointer and layered windows such as the agent cursor (capturing those makes
-/// the real pointer flicker), so the preview draws both itself.
+/// mouse pointer, so the preview draws it itself.
 /// </summary>
 internal sealed class PreviewForm : Form
 {
     private readonly string device;
-    private readonly CursorOverlay? cursor;
     private readonly System.Windows.Forms.Timer timer = new() { Interval = 33 };
     private Bitmap? frame;
     private Rect source;
     private Rectangle windowedBounds;
     private FormBorderStyle windowedStyle;
 
-    public PreviewForm(string name, string device, CursorOverlay? cursor, bool topMost)
+    public PreviewForm(string name, string device, bool topMost)
     {
         this.device = device;
-        this.cursor = cursor;
         Text = $"{name} preview";
         BackColor = Color.Black;
         DoubleBuffered = true;
@@ -78,7 +75,7 @@ internal sealed class PreviewForm : Form
         }
         using (var g = Graphics.FromImage(frame))
         {
-            ScreenCapture.Copy(g, source, layered: false);
+            ScreenCapture.Copy(g, source);
         }
         Invalidate();
     }
@@ -93,12 +90,6 @@ internal sealed class PreviewForm : Form
         int left = (area.Width - width) / 2, top = (area.Height - height) / 2;
         e.Graphics.DrawImage(frame, left, top, width, height);
         ScreenCapture.DrawPointer(e.Graphics, source, new RectangleF(left, top, width, height));
-        if (cursor is { CursorVisible: true })
-        {
-            var tip = new PointF(left + cursor.Position.X * (float)scale, top + cursor.Position.Y * (float)scale);
-            // Keep it legible in a small preview.
-            CursorOverlay.Draw(e.Graphics, tip, Math.Max(cursor.PointerScale * (float)scale, 0.75f), cursor.Ripple);
-        }
     }
 
     protected override void OnFormClosed(FormClosedEventArgs e)

@@ -4,24 +4,23 @@ using System.Runtime.InteropServices;
 namespace SecondScreen.App;
 
 /// <summary>
-/// Copying the screen with BitBlt. Graphics.CopyFromScreen rejects CAPTUREBLT, which
-/// layered windows such as the agent cursor need; and no BitBlt includes the mouse
-/// pointer, so <see cref="DrawPointer"/> adds it.
+/// Copying the screen with BitBlt, which leaves out the mouse pointer;
+/// <see cref="DrawPointer"/> adds it.
 /// </summary>
 internal static class ScreenCapture
 {
     /// <summary>
     /// Copy <paramref name="source"/> (global physical pixels) to the top left of
-    /// <paramref name="target"/>. <paramref name="layered"/> includes layered windows;
-    /// avoid it at video rates, because it makes the real pointer flicker.
+    /// <paramref name="target"/>. Leaves out layered windows: including them
+    /// (CAPTUREBLT) makes the real pointer flicker.
     /// </summary>
-    public static void Copy(Graphics target, Rect source, bool layered)
+    public static void Copy(Graphics target, Rect source)
     {
         nint screen = GetDC(0);
         nint dc = target.GetHdc();
         try
         {
-            BitBlt(dc, 0, 0, source.Width, source.Height, screen, source.X, source.Y, SRCCOPY | (layered ? CAPTUREBLT : 0));
+            BitBlt(dc, 0, 0, source.Width, source.Height, screen, source.X, source.Y, SRCCOPY);
         }
         finally
         {
@@ -60,7 +59,6 @@ internal static class ScreenCapture
     }
 
     private const int SRCCOPY = 0x00CC0020;
-    private const int CAPTUREBLT = 0x40000000;
     private const int CURSOR_SHOWING = 1;
     private const int DI_NORMAL = 3;
     private const int SM_CXCURSOR = 13;
