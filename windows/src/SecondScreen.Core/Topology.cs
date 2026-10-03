@@ -52,6 +52,37 @@ public static class Topology
         return result == 0 ? null : $"SetDisplayConfig failed with {result} detaching {device}";
     }
 
+    /// <summary>
+    /// Take every monitor of the adapter behind <paramref name="virtualSources"/> off the
+    /// desktop unless its source is in <paramref name="keep"/>. Windows extends (or clones)
+    /// the desktop onto new monitors by itself, which uses up the targets agent screens need.
+    /// </summary>
+    public static string? Park(IEnumerable<string> virtualSources, IEnumerable<string> keep)
+    {
+        if (!Query(QDC_ALL_PATHS, out var all, out _, out var error)) return error;
+        var sources = virtualSources.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var adapters = all.Where(p => sources.Contains(SourceName(p) ?? ""))
+            .Select(p => (p.targetInfo.adapterId.LowPart, p.targetInfo.adapterId.HighPart)).ToHashSet();
+        if (adapters.Count == 0) return null;
+        // A virtual monitor cloned onto another display reports that display's adapter and
+        // a different target id, so match it by its monitor device path too.
+        var monitors = all.Where(p => adapters.Contains((p.targetInfo.adapterId.LowPart, p.targetInfo.adapterId.HighPart)))
+            .Select(TargetPath).OfType<string>().Where(path => path.Length > 0)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        bool IsVirtual(PATH_INFO p) =>
+            adapters.Contains((p.targetInfo.adapterId.LowPart, p.targetInfo.adapterId.HighPart))
+            || monitors.Contains(TargetPath(p) ?? "");
+
+        if (!Query(QDC_ONLY_ACTIVE_PATHS, out var paths, out var modes, out error)) return error;
+        var kept = keep.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var remaining = paths.Where(p => !IsVirtual(p) || kept.Contains(SourceName(p) ?? "")).ToArray();
+        if (remaining.Length == paths.Length) return null;
+        if (remaining.Length == 0) return "refusing to detach every display";
+        int result = SetDisplayConfig((uint)remaining.Length, remaining, (uint)modes.Length, modes,
+            SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES | SDC_SAVE_TO_DATABASE);
+        return result == 0 ? null : $"SetDisplayConfig failed with {result} parking the virtual monitors";
+    }
+
     /// <summary>Every path Windows could use, for diagnostics.</summary>
     public static List<(bool Active, string? Source, bool TargetAvailable, uint TargetId, string? Monitor)> Paths()
     {
@@ -66,7 +97,12 @@ public static class Topology
     }
 
     /// <summary>The friendly name of the path's target monitor, such as "VDD by MTT".</summary>
-    public static string? TargetName(PATH_INFO path)
+    public static string? TargetName(PATH_INFO path) => TargetDevice(path)?.monitorFriendlyDeviceName;
+
+    /// <summary>The device interface path of the path's target monitor.</summary>
+    public static string? TargetPath(PATH_INFO path) => TargetDevice(path)?.monitorDevicePath;
+
+    private static TARGET_DEVICE_NAME? TargetDevice(PATH_INFO path)
     {
         var name = new TARGET_DEVICE_NAME
         {
@@ -78,7 +114,7 @@ public static class Topology
                 id = path.targetInfo.id,
             },
         };
-        return DisplayConfigGetDeviceInfo(ref name) == 0 ? name.monitorFriendlyDeviceName : null;
+        return DisplayConfigGetDeviceInfo(ref name) == 0 ? name : null;
     }
 
     /// <summary>The GDI device name (\\.\DISPLAYn) of the path's source.</summary>

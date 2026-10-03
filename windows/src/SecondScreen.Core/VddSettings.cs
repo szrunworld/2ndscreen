@@ -55,6 +55,16 @@ public static class VddSettings
             changed = true;
         }
 
+        // The driver multiplies every resolution by every global refresh rate and creates
+        // no monitor at all once that passes about a hundred modes (16 resolutions x the
+        // installer's six rates does). Agent screens only need 60 Hz.
+        foreach (var rate in root.Element("global")?.Elements("g_refresh_rate").ToList() ?? new List<XElement>())
+        {
+            if (rate.Value.Trim() == "60") continue;
+            rate.Remove();
+            changed = true;
+        }
+
         var list = root.Element("resolutions") ?? Add(root, new XElement("resolutions"));
         var present = new HashSet<(int, int)>(Resolutions(document).Select(r => (r.Width, r.Height)));
         foreach (var resolution in needed)

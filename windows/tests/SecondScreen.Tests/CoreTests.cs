@@ -180,6 +180,19 @@ public class VddSettingsTests
     }
 
     [Fact]
+    public void EnsureKeepsOnlySixtyHertzGlobally()
+    {
+        var doc = XDocument.Parse("""
+            <vdd_settings>
+                <global><g_refresh_rate>60</g_refresh_rate><g_refresh_rate>90</g_refresh_rate><g_refresh_rate>244</g_refresh_rate></global>
+            </vdd_settings>
+            """);
+        Assert.True(VddSettings.Ensure(doc, 1, Array.Empty<VddSettings.Resolution>()));
+        Assert.Equal(new[] { "60" }, doc.Root!.Element("global")!.Elements("g_refresh_rate").Select(e => e.Value));
+        Assert.False(VddSettings.Ensure(doc, 1, Array.Empty<VddSettings.Resolution>()));
+    }
+
+    [Fact]
     public void EnsureCreatesMissingSections()
     {
         var doc = XDocument.Parse("<vdd_settings/>");

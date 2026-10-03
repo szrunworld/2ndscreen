@@ -53,7 +53,7 @@ internal sealed class VirtualDisplayDriver
 
         var wanted = VddSettings.Common.Concat(needed).ToList();
         bool poolReady = Desktop.VirtualDevices().Count >= PoolSize;
-        if (!VddSettings.Ensure(document, PoolSize, wanted) && poolReady) return null;
+        if (!VddSettings.Ensure(document, PoolSize, wanted) && poolReady) return Park();
         if (!allowReload)
         {
             return "that resolution needs a driver reload, which would detach the other screens; destroy them first";
@@ -73,11 +73,22 @@ internal sealed class VirtualDisplayDriver
         var deadline = DateTime.UtcNow.AddSeconds(15);
         while (DateTime.UtcNow < deadline)
         {
-            if (Desktop.VirtualDevices().Count >= PoolSize) return null;
+            if (Desktop.VirtualDevices().Count >= PoolSize)
+            {
+                // Windows attaches the new monitors a moment after they appear.
+                Thread.Sleep(2000);
+                return Park();
+            }
             Thread.Sleep(250);
         }
         return $"the driver did not provide {PoolSize} outputs after reloading";
     }
+
+    /// <summary>Detach the pool monitors Windows attached on its own, leaving claimed ones alone.</summary>
+    private string? Park() =>
+        Topology.Park(Desktop.VirtualDevices().Select(d => d.Device), reserved) is { } problem
+            ? $"cannot detach the idle virtual monitors: {problem}"
+            : null;
 
     /// <summary>A detached pool output that no screen has claimed, reserved for the caller.</summary>
     public string? Claim()
