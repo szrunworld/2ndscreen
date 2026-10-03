@@ -4,12 +4,15 @@ import SecondScreenCore
 
 /// A window showing an Android device's screen. Clicks and drags become
 /// touches, the scroll wheel scrolls, and typing goes to the focused field.
-/// The title bar has Back, Home and Recents; right-click is also Back.
+/// The title bar has Back, Home and Recents; right-click is also Back. Its
+/// sparkles button opens a UI-TARS panel beside the phone.
 @MainActor
 final class AndroidMirrorWindow: NSObject, NSWindowDelegate {
     let mirror: AndroidMirror
     private let window: NSWindow
     private let screenView: AndroidScreenView
+    private let panel: AndroidAgentPanel
+    private var panelWidth: CGFloat { panel.isHidden ? 0 : AndroidAgentPanel.width }
     /// Where the window was placed with `place(on:)`, so rotation keeps it there.
     private var displayID: CGDirectDisplayID?
 
@@ -21,6 +24,8 @@ final class AndroidMirrorWindow: NSObject, NSWindowDelegate {
     init(mirror: AndroidMirror) {
         self.mirror = mirror
         screenView = AndroidScreenView(mirror: mirror)
+        panel = AndroidAgentPanel(serial: mirror.serial)
+        panel.isHidden = true
         window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 360, height: 780),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -28,7 +33,7 @@ final class AndroidMirrorWindow: NSObject, NSWindowDelegate {
         super.init()
         window.title = mirror.deviceName.isEmpty ? mirror.serial : mirror.deviceName
         window.isReleasedWhenClosed = false
-        window.contentView = screenView
+        window.contentView = MirrorContentView(screen: screenView, panel: panel)
         window.delegate = self
         window.collectionBehavior = [.fullScreenPrimary]
         window.addTitlebarAccessoryViewController(navigationButtons())
@@ -117,7 +122,18 @@ final class AndroidMirrorWindow: NSObject, NSWindowDelegate {
         videoSizeChanged(mirror.videoSize)
     }
 
+    /// Keep the phone's shape, with the panel's fixed width beside it.
+    func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
+        let video = mirror.videoSize
+        guard video.width > 0, video.height > 0, !window.styleMask.contains(.fullScreen) else { return frameSize }
+        let content = window.contentRect(forFrameRect: NSRect(origin: .zero, size: frameSize)).size
+        let width = max(160, content.width - panelWidth)
+        let size = NSSize(width: width + panelWidth, height: (width * video.height / video.width).rounded())
+        return window.frameRect(forContentRect: NSRect(origin: .zero, size: size)).size
+    }
+
     func windowWillClose(_ notification: Notification) {
+        panel.stop()
         mirror.onEnd = nil
         mirror.stop()
         onClose?()
@@ -126,7 +142,6 @@ final class AndroidMirrorWindow: NSObject, NSWindowDelegate {
 
     private func videoSizeChanged(_ size: CGSize) {
         guard size.width > 0, size.height > 0, !window.styleMask.contains(.fullScreen) else { return }
-        window.contentAspectRatio = size
         if let displayID {
             place(on: displayID)
             return
@@ -135,23 +150,43 @@ final class AndroidMirrorWindow: NSObject, NSWindowDelegate {
         let screen = window.screen ?? NSScreen.main
         let visible = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         let current = window.contentLayoutRect.size
-        let longSide = max(current.width, current.height)
+        let longSide = max(current.width - panelWidth, current.height)
         var target = size.width > size.height
             ? NSSize(width: longSide, height: longSide * size.height / size.width)
             : NSSize(width: longSide * size.width / size.height, height: longSide)
-        if target.width > visible.width * 0.9 || target.height > visible.height * 0.9 {
-            target = fittedContentSize(in: visible.insetBy(dx: visible.width * 0.05, dy: visible.height * 0.05))
+        if target.width + panelWidth > visible.width * 0.9 || target.height > visible.height * 0.9 {
+            let fitted = fittedContentSize(in: visible.insetBy(dx: visible.width * 0.05, dy: visible.height * 0.05))
+            target = NSSize(width: fitted.width - panelWidth, height: fitted.height)
         }
         let topLeft = NSPoint(x: window.frame.minX, y: window.frame.maxY)
-        window.setContentSize(NSSize(width: target.width.rounded(), height: target.height.rounded()))
+        window.setContentSize(NSSize(width: target.width.rounded() + panelWidth, height: target.height.rounded()))
         window.setFrameTopLeftPoint(topLeft)
     }
 
+    /// The content size, panel included, that fits the phone in `area`.
     private func fittedContentSize(in area: NSRect) -> NSSize {
         let video = mirror.videoSize.width > 0 ? mirror.videoSize : CGSize(width: 9, height: 19.5)
         let titleBar = window.frame.height - window.contentLayoutRect.height
-        let scale = min(area.width / video.width, (area.height - titleBar) / video.height)
-        return NSSize(width: (video.width * scale).rounded(), height: (video.height * scale).rounded())
+        let scale = min((area.width - panelWidth) / video.width, (area.height - titleBar) / video.height)
+        return NSSize(width: (video.width * scale).rounded() + panelWidth, height: (video.height * scale).rounded())
+    }
+
+    /// Show or hide the UI-TARS panel, widening the window to the right
+    /// instead of shrinking the phone.
+    @objc private func togglePanel() {
+        let opening = panel.isHidden
+        panel.isHidden = !opening
+        if !window.styleMask.contains(.fullScreen) {
+            var frame = window.frame
+            frame.size.width += opening ? AndroidAgentPanel.width : -AndroidAgentPanel.width
+            window.setFrame(frame, display: true, animate: true)
+        }
+        window.contentView?.needsLayout = true
+        if opening {
+            panel.focus()
+        } else {
+            window.makeFirstResponder(screenView)
+        }
     }
 
     private func navigationButtons() -> NSTitlebarAccessoryViewController {
@@ -164,6 +199,7 @@ final class AndroidMirrorWindow: NSObject, NSWindowDelegate {
             return button
         }
         let stack = NSStackView(views: [
+            button("sparkles", "UI-TARS", #selector(togglePanel)),
             button("chevron.backward", "Back", #selector(backPressed)),
             button("circle", "Home", #selector(homePressed)),
             button("square", "Recents", #selector(recentsPressed)),
@@ -180,6 +216,29 @@ final class AndroidMirrorWindow: NSObject, NSWindowDelegate {
     @objc private func backPressed() { mirror.back() }
     @objc private func homePressed() { mirror.press(AndroidKey.home) }
     @objc private func recentsPressed() { mirror.press(AndroidKey.appSwitch) }
+}
+
+/// The phone on the left and, when open, the UI-TARS panel on the right.
+private final class MirrorContentView: NSView {
+    private let screen: NSView
+    private let panel: NSView
+
+    init(screen: NSView, panel: NSView) {
+        self.screen = screen
+        self.panel = panel
+        super.init(frame: NSRect(x: 0, y: 0, width: 360, height: 780))
+        addSubview(screen)
+        addSubview(panel)
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    override func layout() {
+        super.layout()
+        let width = panel.isHidden ? 0 : AndroidAgentPanel.width
+        screen.frame = NSRect(x: 0, y: 0, width: bounds.width - width, height: bounds.height)
+        panel.frame = NSRect(x: bounds.width - width, y: 0, width: width, height: bounds.height)
+    }
 }
 
 /// Draws the video and turns mouse and keyboard input into control messages.

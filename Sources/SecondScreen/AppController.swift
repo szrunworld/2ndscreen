@@ -134,7 +134,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let known = preferences.androidAddresses
         DispatchQueue.global().async {
             ADB.restartStaleServer()
-            Self.reconnect(known)
+            Self.reconnect(known, keeping: [])
         }
 
         agentScreens.onChange = { [weak self] in self?.agentScreensChanged() }
@@ -332,7 +332,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // Bring back remembered phones for the next look at the menu.
             let known = preferences.androidAddresses
             if known.contains(where: { address in !devices.contains { $0.serial == address } }) {
-                DispatchQueue.global().async { Self.reconnect(known) }
+                let inUse = Set(androidMirrors.keys).union(androidControls.keys)
+                DispatchQueue.global().async { Self.reconnect(known, keeping: inUse) }
             }
             if devices.isEmpty {
                 let none = NSMenuItem(title: "No Phone Connected", action: nil, keyEquivalent: "")
@@ -433,11 +434,15 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return .failure(error.localizedDescription)
         }
         let serial: String
-        switch Self.choose(serial: request.serial, from: devices) {
+        let requested = request.serial
+        let resolved = await Task.detached { requested.map(ADB.resolve) }.value
+        switch Self.choose(serial: resolved, from: devices) {
         case .success(let chosen): serial = chosen
         case .failure(let failure): return failure.response
         }
-        let mirror = androidMirrors[serial]?.mirror
+        // The mirror keeps the serial it was opened with.
+        let opened = androidMirrors.first { $0.key == serial || $0.key == requested }
+        let mirror = opened?.value.mirror
         func adb(_ arguments: [String]) async -> ControlResponse {
             do {
                 let result = try await Task.detached { try ADB.run(["-s", serial] + arguments) }.value
@@ -552,7 +557,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Connect to remembered addresses adb is not connected to. Quietly:
     /// a phone that is away just fails.
-    nonisolated private static func reconnect(_ addresses: [String]) {
+    nonisolated private static func reconnect(_ addresses: [String], keeping inUse: Set<String>) {
         guard !addresses.isEmpty, let devices = try? ADB.devices() else { return }
         for address in addresses where !devices.contains(where: { $0.serial == address }) {
             _ = try? ADB.run(["connect", address], timeout: 5)
@@ -561,7 +566,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for device in (try? ADB.devices()) ?? [] where device.state == "offline" && addresses.contains(device.serial) {
             _ = try? ADB.run(["disconnect", device.serial], timeout: 5)
         }
-        ADB.disconnectDuplicates()
+        ADB.disconnectDuplicates(keeping: inUse)
     }
 
     private func androidList() async -> ControlResponse {
@@ -597,7 +602,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return .failure(error.localizedDescription)
         }
         let serial: String
-        switch Self.choose(serial: requested, from: devices) {
+        let resolved = await Task.detached { requested.map(ADB.resolve) }.value
+        switch Self.choose(serial: resolved, from: devices) {
         case .success(let chosen): serial = chosen
         case .failure(let failure): return failure.response
         }

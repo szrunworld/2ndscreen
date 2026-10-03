@@ -121,12 +121,30 @@ public enum ADB {
 
     /// Disconnect addresses of phones also connected by mDNS name, which
     /// would leave plain `adb` commands asking which device is meant.
-    public static func disconnectDuplicates() {
+    /// Addresses in `inUse`, such as an open mirror's, stay: its tunnel
+    /// runs over that connection.
+    public static func disconnectDuplicates(keeping inUse: Set<String> = []) {
         guard let devices = try? allDevices() else { return }
-        for address in duplicateAddresses(devices) {
+        for address in duplicateAddresses(devices) where !inUse.contains(address) {
             _ = try? run(["disconnect", address], timeout: 5)
         }
     }
+
+    /// The serial a phone is listed under now. A phone connected by address
+    /// that adb then also finds by mDNS is listed by its mDNS name, so an
+    /// address resolves to that name, and a name to an address when only
+    /// the address is connected.
+    public static func resolve(_ serial: String) -> String {
+        guard let listed = try? devices().map(\.serial), !listed.contains(serial) else { return serial }
+        let suffix = "._adb-tls-connect._tcp"
+        let connect = ((try? services()) ?? []).filter { $0.type.contains("connect") }
+        if serial.hasSuffix(suffix) {
+            let name = serial.dropLast(suffix.count)
+            return connect.first { $0.name == name && listed.contains($0.address) }?.address ?? serial
+        }
+        return connect.first { $0.address == serial && listed.contains($0.name + suffix) }.map { $0.name + suffix } ?? serial
+    }
+
 
     private static func allDevices() throws -> [Device] {
         let result = try run(["devices", "-l"], timeout: 10)

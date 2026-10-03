@@ -31,6 +31,9 @@ export interface SecondScreenOperatorOptions {
 export interface Stop {
   outcome: 'done' | 'user';
   reason: string;
+  /** The 2ndscreen command that would have sent, held back for a person
+   * to confirm; set when the run stopped short of submitting. */
+  pending?: string[];
 }
 
 /** Words in a prediction that mean the click would send or submit. */

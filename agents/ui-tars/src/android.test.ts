@@ -39,7 +39,16 @@ test('typing that would submit stops instead, unless allowed', () => {
     const allowed = planAndroid({ action_type: 'type', action_inputs: { content } }, { ...phone, allowSubmit: true });
     assert.deepEqual(words(allowed), ['android type --text 好的，明天见 --serial p1', 'android key --key enter --serial p1']);
   }
-  assert.deepEqual(words(planAndroid({ action_type: 'hotkey', action_inputs: { key: 'enter' } }, phone)), ['stop']);
+  const [held] = planAndroid({ action_type: 'hotkey', action_inputs: { key: 'enter' } }, phone);
+  assert.deepEqual(held, {
+    kind: 'stop',
+    outcome: 'done',
+    reason: 'stopped before pressing Enter, which may send',
+    pending: ['android', 'key', '--key', 'enter', '--serial', 'p1'],
+  });
+  const [typed, stop] = planAndroid({ action_type: 'type', action_inputs: { content: 'hi\n' } }, phone);
+  assert.ok(typed.kind === 'run' && stop.kind === 'stop');
+  assert.deepEqual(stop.pending, ['android', 'key', '--key', 'enter', '--serial', 'p1']);
 });
 
 test('navigation keys', () => {

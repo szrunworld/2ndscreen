@@ -31,7 +31,7 @@ export type Step =
   | { kind: 'wait'; ms: number }
   /** End the run: `done` when the model finished or stopped short of
    * submitting, `user` when it needs a person. */
-  | { kind: 'stop'; outcome: 'done' | 'user'; reason: string };
+  | { kind: 'stop'; outcome: 'done' | 'user'; reason: string; pending?: string[] };
 
 const MODIFIERS = new Set(['ctrl', 'control', 'cmd', 'command', 'meta', 'win', 'super', 'shift', 'alt', 'option']);
 

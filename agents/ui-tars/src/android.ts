@@ -90,7 +90,8 @@ export function planAndroid(action: ParsedAction, ctx: AndroidContext): Step[] {
       const text = content.replace(/(\\n|\n)+$/, '');
       const steps: Step[] = text ? [run(['type', '--text', text])] : [];
       if (submits) {
-        steps.push(ctx.allowSubmit ? run(['key', '--key', 'enter']) : { kind: 'stop', outcome: 'done', reason: 'typed the text but did not send it' });
+        const enter = run(['key', '--key', 'enter']);
+        steps.push(ctx.allowSubmit ? enter : { kind: 'stop', outcome: 'done', reason: 'typed the text but did not send it', pending: enter.kind === 'run' ? enter.words : undefined });
       }
       return steps;
     }
@@ -99,8 +100,11 @@ export function planAndroid(action: ParsedAction, ctx: AndroidContext): Step[] {
       const name = String(inputs.key ?? '').trim().toLowerCase();
       const key = KEYS[name];
       if (!key) return unreadable('the key');
-      if (key === 'enter' && !ctx.allowSubmit) return [{ kind: 'stop', outcome: 'done', reason: 'stopped before pressing Enter, which may send' }];
-      return [run(['key', '--key', key])];
+      const press = run(['key', '--key', key]);
+      if (key === 'enter' && !ctx.allowSubmit && press.kind === 'run') {
+        return [{ kind: 'stop', outcome: 'done', reason: 'stopped before pressing Enter, which may send', pending: press.words }];
+      }
+      return [press];
     }
     case 'press_home':
       return [run(['key', '--key', 'home'])];
@@ -191,7 +195,7 @@ export class AndroidOperator extends Operator {
     for (const step of planAndroid({ action_type: parsed.action_type, action_inputs: inputs }, context)) {
       if (step.kind === 'stop') {
         this.options.onStep?.(step);
-        return this.end(step.outcome, step.reason);
+        return this.end(step.outcome, step.reason, step.pending);
       }
       if (step.kind === 'wait') {
         this.options.onStep?.(step);
@@ -202,8 +206,8 @@ export class AndroidOperator extends Operator {
       // model says the tap is for.
       if (step.words[1] === 'tap' && !context.allowSubmit && SUBMIT_INTENT.test(params.prediction)) {
         const reason = 'stopped before a tap the model describes as sending';
-        this.options.onStep?.({ kind: 'stop', outcome: 'done', reason });
-        return this.end('done', reason);
+        this.options.onStep?.({ kind: 'stop', outcome: 'done', reason, pending: step.words });
+        return this.end('done', reason, step.words);
       }
       this.options.onStep?.(step);
       try {
@@ -218,8 +222,8 @@ export class AndroidOperator extends Operator {
     return { status: StatusEnum.RUNNING };
   }
 
-  private end(outcome: Stop['outcome'], reason: string): ExecuteOutput {
-    this.stop = { outcome, reason };
+  private end(outcome: Stop['outcome'], reason: string, pending?: string[]): ExecuteOutput {
+    this.stop = { outcome, reason, pending };
     return { status: outcome === 'done' ? StatusEnum.END : StatusEnum.CALL_USER };
   }
 }
