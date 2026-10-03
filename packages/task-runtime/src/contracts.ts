@@ -596,10 +596,14 @@ export interface DesktopAdapter {
 
 export type LeaseHolder = 'runtime' | 'bridge' | 'legacy-assistant';
 
-/** Exclusive right to drive one app for one account. */
+/**
+ * Exclusive right to drive one app. The account part of the scope is kept for
+ * resume and audit, but does not make leases independent: BOSS直聘 runs as a
+ * single instance, so any two leases on the same bundle id overlap.
+ */
 export interface SessionLease {
   leaseId: string;
-  /** e.g. "com.zhipin.www:<accountKey>" or "com.zhipin.www:*" before the account is known. */
+  /** leaseScopeKey(bundleId, accountKey): "com.zhipin.www:<accountKey>", or "com.zhipin.www:*" before the account is known. */
   scopeKey: string;
   holder: LeaseHolder;
   ownerPid: number;
@@ -607,9 +611,33 @@ export interface SessionLease {
   expiresAt: string;
 }
 
+/** "<bundleId>:<accountKey>", or "<bundleId>:*" when the account is not known yet. */
+export function leaseScopeKey(bundleId: string, accountKey?: string): string {
+  if (!bundleId || bundleId.includes(':')) throw new RuntimeError('invalid_input', `bad bundle id ${bundleId}`);
+  return `${bundleId}:${accountKey ?? '*'}`;
+}
+
+/**
+ * Whether two lease scopes contend for the same app. They do whenever the
+ * bundle ids match, whatever the account parts: "app:*" overlaps "app:acct1",
+ * and "app:acct1" overlaps "app:acct2", because one app process can only be
+ * driven by one session at a time.
+ */
+export function leaseScopesOverlap(a: string, b: string): boolean {
+  const app = (key: string) => {
+    const colon = key.lastIndexOf(':');
+    return colon < 0 ? key : key.slice(0, colon);
+  };
+  return app(a) === app(b);
+}
+
 /** Durable lease bookkeeping; implemented by the TaskStore. */
 export interface LeaseStore {
-  /** Throws `lease_held` if another unexpired lease holds the scope. */
+  /**
+   * Throws `lease_held` if another unexpired lease's scope overlaps the
+   * request's scope by leaseScopesOverlap (not only an equal scope key).
+   * Check and insert happen in one transaction.
+   */
   acquireLease(request: Omit<SessionLease, 'leaseId' | 'expiresAt'> & { ttlMs: number }): Promise<SessionLease>;
   renewLease(leaseId: string, ttlMs: number): Promise<SessionLease>;
   releaseLease(leaseId: string): Promise<void>;
@@ -784,13 +812,17 @@ export interface TelemetryRecorder {
 
 export type BudgetCheck = { ok: true } | { ok: false; exhausted: 'model_calls' | 'tokens' | 'wall_clock' };
 
-/** Whether the task may spend more. Unknown tokens never exhaust a token cap; calls still do. */
+/**
+ * Whether the task may spend more. With a token cap configured, an unknown
+ * token count is treated as exhausted, since spend under the cap cannot be
+ * shown; without a cap, unknown tokens are fine and calls and time still bound.
+ */
 export function checkBudget(budget: Budget, usage: Usage): BudgetCheck {
   const calls = usage.uiModelCalls + usage.repairModelCalls + usage.analysisModelCalls;
   if (calls >= budget.taskModelCalls) return { ok: false, exhausted: 'model_calls' };
   if (budget.taskTokens !== undefined) {
     const tokens = addTokens(usage.inputTokens, usage.outputTokens);
-    if (tokens !== 'unknown' && tokens >= budget.taskTokens) return { ok: false, exhausted: 'tokens' };
+    if (tokens === 'unknown' || tokens >= budget.taskTokens) return { ok: false, exhausted: 'tokens' };
   }
   if (usage.elapsedMs >= budget.wallClockMs) return { ok: false, exhausted: 'wall_clock' };
   return { ok: true };
@@ -994,9 +1026,14 @@ export interface ProcedureStep {
 }
 
 export interface ProcedureCounters {
+  /** All verified successful runs on this version, for audit. */
   successes: number;
   failures: number;
-  /** Distinct work items that succeeded on this version, oldest first. */
+  /**
+   * Distinct work items that succeeded since the last failure, oldest first:
+   * the promotion streak. Any failure, even below the degrade threshold,
+   * empties it.
+   */
   successItemIds: string[];
   consecutiveFailures: number;
 }
@@ -1030,7 +1067,7 @@ export interface ProcedureRepository {
 }
 
 export interface PromotionRule {
-  /** Distinct work items that must succeed before trial becomes stable. */
+  /** Distinct work items that must succeed in a row, with no failure between, before trial becomes stable. */
   promoteAfterSuccesses: number;
   /** Consecutive failures that degrade a stable or trial version. */
   degradeAfterFailures: number;
@@ -1040,8 +1077,10 @@ export const DEFAULT_PROMOTION: PromotionRule = { promoteAfterSuccesses: 3, degr
 
 /**
  * The state of a procedure after one verified run on one work item.
- * A success on an item already counted adds nothing toward promotion.
- * seeded/trial become stable after `promoteAfterSuccesses` distinct items;
+ * A success on an item already in the streak adds nothing toward promotion.
+ * seeded/trial become stable after `promoteAfterSuccesses` distinct items
+ * succeed consecutively; any failure resets that streak, even when it is
+ * below `degradeAfterFailures`;
  * a seeded version that succeeds once becomes trial. Failures degrade after
  * `degradeAfterFailures` in a row; a degraded version does not run again
  * until a repair inserts a new trial version. Retired stays retired.
@@ -1054,7 +1093,7 @@ export function nextProcedureState(
   const c = procedure.counters;
   if (procedure.status === 'retired' || procedure.status === 'degraded') return { status: procedure.status, counters: c };
   if (!outcome.ok) {
-    const counters = { ...c, failures: c.failures + 1, consecutiveFailures: c.consecutiveFailures + 1 };
+    const counters = { ...c, failures: c.failures + 1, consecutiveFailures: c.consecutiveFailures + 1, successItemIds: [] };
     return { status: counters.consecutiveFailures >= rule.degradeAfterFailures ? 'degraded' : procedure.status, counters };
   }
   const fresh = !c.successItemIds.includes(outcome.itemId);
@@ -1627,7 +1666,7 @@ export function validateProcedure(raw: unknown, policy: { submitAllowed: boolean
   const c = raw.counters;
   if (!isObject(c) || !isInt(c.successes) || !isInt(c.failures) || !isInt(c.consecutiveFailures) || !Array.isArray(c.successItemIds))
     errors.push('counters must hold successes, failures, consecutiveFailures and successItemIds');
-  else if (raw.status === 'stable' && raw.source !== 'seed' && c.successItemIds.length === 0)
+  else if (raw.status === 'stable' && raw.source !== 'seed' && c.successes === 0)
     errors.push('a learned stable procedure must have verified successes');
   if (!isIsoTime(raw.createdAt) || !isIsoTime(raw.updatedAt)) errors.push('createdAt and updatedAt must be ISO times');
   return ok(raw as unknown as ProcedureV2, errors);

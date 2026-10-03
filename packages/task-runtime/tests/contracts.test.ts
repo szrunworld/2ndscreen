@@ -19,6 +19,8 @@ import {
   globalToScreenshotRect,
   isCountable,
   isRuntimeError,
+  leaseScopeKey,
+  leaseScopesOverlap,
   nextProcedureState,
   normalizedToGlobal,
   parseBridgeEvent,
@@ -211,18 +213,29 @@ test('the capture mode decides which artifacts count', () => {
   assert.ok(!isCountable([], 'available'));
 });
 
-test('unknown token counts stay unknown and never exhaust a token cap', () => {
+test('unknown token counts stay unknown', () => {
   assert.equal(addTokens(3, 4), 7);
   assert.equal(addTokens(3, 'unknown'), 'unknown');
+  assert.equal(addTokens('unknown', 0), 'unknown');
+});
+
+test('with a token cap, unknown tokens exhaust the budget and known ones are compared', () => {
   const budget = { ...DEFAULT_BUDGET, taskModelCalls: 3, taskTokens: 100 };
   assert.deepEqual(checkBudget(budget, emptyUsage()), { ok: true });
-  assert.deepEqual(checkBudget(budget, { ...emptyUsage(), inputTokens: 'unknown', uiModelCalls: 2 }), { ok: true });
-  assert.deepEqual(checkBudget(budget, { ...emptyUsage(), inputTokens: 'unknown', uiModelCalls: 2, repairModelCalls: 1 }), {
-    ok: false,
-    exhausted: 'model_calls',
-  });
+  assert.deepEqual(checkBudget(budget, { ...emptyUsage(), inputTokens: 60, outputTokens: 39 }), { ok: true });
   assert.deepEqual(checkBudget(budget, { ...emptyUsage(), inputTokens: 60, outputTokens: 40 }), { ok: false, exhausted: 'tokens' });
-  assert.deepEqual(checkBudget(budget, { ...emptyUsage(), elapsedMs: budget.wallClockMs }), { ok: false, exhausted: 'wall_clock' });
+  assert.deepEqual(checkBudget(budget, { ...emptyUsage(), inputTokens: 'unknown', uiModelCalls: 1 }), { ok: false, exhausted: 'tokens' });
+  assert.deepEqual(checkBudget(budget, { ...emptyUsage(), inputTokens: 10, outputTokens: 'unknown' }), { ok: false, exhausted: 'tokens' });
+  // The call cap is checked first, so its reason wins when both apply.
+  assert.deepEqual(checkBudget(budget, { ...emptyUsage(), inputTokens: 'unknown', uiModelCalls: 3 }), { ok: false, exhausted: 'model_calls' });
+});
+
+test('without a token cap, unknown tokens are allowed and calls and time still bound', () => {
+  const budget = { ...DEFAULT_BUDGET, taskModelCalls: 3 };
+  const unknown = { ...emptyUsage(), inputTokens: 'unknown' as const, outputTokens: 'unknown' as const };
+  assert.deepEqual(checkBudget(budget, { ...unknown, uiModelCalls: 2 }), { ok: true });
+  assert.deepEqual(checkBudget(budget, { ...unknown, uiModelCalls: 2, repairModelCalls: 1 }), { ok: false, exhausted: 'model_calls' });
+  assert.deepEqual(checkBudget(budget, { ...unknown, elapsedMs: budget.wallClockMs }), { ok: false, exhausted: 'wall_clock' });
 });
 
 const counters = { successes: 0, failures: 0, successItemIds: [] as string[], consecutiveFailures: 0 };
@@ -251,6 +264,39 @@ test('a failure degrades a procedure, and a degraded one stays put until repaire
   assert.deepEqual(nextProcedureState(failed, { itemId: 'e', ok: true }), failed);
   const lenient = nextProcedureState(stable, { itemId: 'd', ok: false }, { promoteAfterSuccesses: 3, degradeAfterFailures: 2 });
   assert.equal(lenient.status, 'stable');
+  assert.deepEqual(lenient.counters.successItemIds, []);
+  assert.equal(lenient.counters.successes, 3);
+});
+
+test('a failure below the degrade threshold breaks the promotion streak', () => {
+  const rule = { promoteAfterSuccesses: 3, degradeAfterFailures: 2 };
+  let state = { status: 'trial' as ProcedureV2['status'], counters };
+  state = nextProcedureState(state, { itemId: 'i1', ok: true }, rule);
+  state = nextProcedureState(state, { itemId: 'i2', ok: true }, rule);
+  state = nextProcedureState(state, { itemId: 'i3', ok: false }, rule);
+  assert.equal(state.status, 'trial');
+  assert.deepEqual(state.counters.successItemIds, []);
+  // Successes before the failure do not count toward stable.
+  state = nextProcedureState(state, { itemId: 'i3', ok: true }, rule);
+  state = nextProcedureState(state, { itemId: 'i4', ok: true }, rule);
+  assert.equal(state.status, 'trial');
+  assert.equal(state.counters.consecutiveFailures, 0);
+  state = nextProcedureState(state, { itemId: 'i1', ok: true }, rule);
+  assert.equal(state.status, 'stable');
+  assert.deepEqual(state.counters.successItemIds, ['i3', 'i4', 'i1']);
+  assert.equal(state.counters.successes, 5);
+  assert.equal(state.counters.failures, 1);
+});
+
+test('lease scopes on the same app overlap whatever the account part', () => {
+  assert.equal(leaseScopeKey('com.zhipin.www'), 'com.zhipin.www:*');
+  assert.equal(leaseScopeKey('com.zhipin.www', 'acct1'), 'com.zhipin.www:acct1');
+  assert.throws(() => leaseScopeKey('bad:id'), (e: unknown) => isRuntimeError(e, 'invalid_input'));
+  assert.ok(leaseScopesOverlap('com.zhipin.www:*', 'com.zhipin.www:acct1'));
+  assert.ok(leaseScopesOverlap('com.zhipin.www:acct1', 'com.zhipin.www:*'));
+  assert.ok(leaseScopesOverlap('com.zhipin.www:acct1', 'com.zhipin.www:acct2'));
+  assert.ok(leaseScopesOverlap('com.zhipin.www:acct1', 'com.zhipin.www:acct1'));
+  assert.ok(!leaseScopesOverlap('com.zhipin.www:acct1', 'com.tencent.xinWeChat:acct1'));
 });
 
 const procedure = {

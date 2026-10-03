@@ -49,11 +49,13 @@
 | `ActionResult` | ok、no_effect（事件送达但页面未变，视为失败）、failed、stale_snapshot、unknown（结果不可知，external-submit 不得重发）；记录路由、坐标、前后快照、焦点是否变化 |
 | `Condition` / `WaitSpec` / `CheckResult` | element/text/page/window/file/all/any，嵌套 ≤4 层；等待 1 ms – 120 s，轮询 50 ms – 5 s（`WAIT_LIMITS`） |
 | `Budget` / `DEFAULT_BUDGET` / `checkBudget` | 每步本地恢复 2 次、每次修复 6 轮、每候选人 2 次模型修复、整任务调用数/token/墙钟上限 |
-| `Usage` / `TokenCount` / `addTokens` | ui/repair/analysis 调用分开计；服务不报 token 时为 `'unknown'`，不得记 0；unknown 不触发 token 上限，但调用数照常计 |
+| `Usage` / `TokenCount` / `addTokens` | ui/repair/analysis 调用分开计；服务不报 token 时为 `'unknown'`，不得记 0，任一项 unknown 则合计为 unknown |
+| `checkBudget` 与 unknown | 配置了 `taskTokens` 时，输入或输出 token 任一为 unknown 即返回 `exhausted: 'tokens'`（无法证明未超限，保守停止）；已知数值正常比较；未配置 token 上限时 unknown 允许继续，仍受调用数与墙钟上限约束。检查顺序：调用数 → token → 墙钟 |
 | `ArtifactKind` / `ArtifactCompleteness` | original、captured_page、captured_image、resume_text、metadata、diagnostic；complete/partial_capture/unverified/invalid |
 | `CaptureEvidence` / `captureCompleteness` | 只有 `topConfirmed`、`stop = bottom_confirmed` 且至少两种不同的底部信号时才是 complete；屏数上限、滚动无效、拼接缺口一律 partial_capture；连续相同截图本身不是底部信号 |
 | `isCountable(artifacts, mode)` | available：complete 的 original 或 captured_image；original-only：只有 complete 的 original |
 | `ProcedureV2` / `validateProcedure` | 见下文流程规则 |
+| `leaseScopeKey` / `leaseScopesOverlap` | 租约 scope 为 `<bundleId>:<accountKey>`，账号未知时为 `<bundleId>:*`；同一 bundleId 的任意两个 scope 都视为重叠（`app:*` 与 `app:acct1`、`app:acct1` 与 `app:acct2` 均冲突），因为单实例应用同一时刻只能由一个会话操作 |
 | `nextProcedureState` | 晋级与降级的唯一规则 |
 | `ExplorationRequest` / `BridgeEvent` / `parseBridgeEvent` | 见 Bridge 协议 |
 
@@ -95,7 +97,7 @@ export interface SessionManagerDeps {
 export function createSessionManager(deps: SessionManagerDeps): SessionManager;
 ```
 
-要求：Session 是唯一解析 Locator 并调用 `adapter.act` 的地方；`act` 对过期快照返回 `stale_snapshot`，对不允许的 external-submit 抛 `forbidden_effect`，在 `withExclusiveActor` 期间抛 `actor_busy`；`waitFor` 必须遵守 `WaitSpec` 上限；`rebind` 核对 bundle、进程启动时间和窗口归属，不凭历史 PID；模块不加载任何模型。
+要求：Session 用 `leaseScopeKey(profile.bundleId, account?.accountKey)` 申请租约，账号确认后可续期但不得另开第二个租约；Session 是唯一解析 Locator 并调用 `adapter.act` 的地方；`act` 对过期快照返回 `stale_snapshot`，对不允许的 external-submit 抛 `forbidden_effect`，在 `withExclusiveActor` 期间抛 `actor_busy`；`waitFor` 必须遵守 `WaitSpec` 上限；`rebind` 核对 bundle、进程启动时间和窗口归属，不凭历史 PID；模块不加载任何模型。
 
 ### A2 账本与产物
 
@@ -112,7 +114,7 @@ export function openTaskStore(options: {
 }): Promise<TaskStore>;
 ```
 
-要求：用 `node:sqlite`；迁移前备份、拒绝读取更高版本 schema；`transitionTask`/`transitionWorkItem` 用契约中的迁移表校验，非法迁移抛 `conflict`；`upsertWorkItem` 按 `candidateDedupeKey` 在任务内幂等；`commitItem` 在一个事务内写 artifact 并按 `isCountable` 决定 committed 或 failed（不计数的产物保留为诊断）；`counts` 由 work item 实时计算；`acquireLease` 对未过期的同 scope 租约抛 `lease_held`；同时实现 `ProcedureRepository`，同一 (key, version) 重复插入抛 `conflict`。
+要求：用 `node:sqlite`；迁移前备份、拒绝读取更高版本 schema；`transitionTask`/`transitionWorkItem` 用契约中的迁移表校验，非法迁移抛 `conflict`；`upsertWorkItem` 按 `candidateDedupeKey` 在任务内幂等；`commitItem` 在一个事务内写 artifact 并按 `isCountable` 决定 committed 或 failed（不计数的产物保留为诊断）；`counts` 由 work item 实时计算；`acquireLease` 对任何与请求 scope 按 `leaseScopesOverlap` 重叠的未过期租约抛 `lease_held`（不只是 scope 字符串相等），检查与插入在同一事务内；同时实现 `ProcedureRepository`，同一 (key, version) 重复插入抛 `conflict`。
 
 `packages/task-runtime/src/artifacts.ts`
 
@@ -281,9 +283,10 @@ export function createLocalVision(options: {
 ## 流程 V2 规则
 
 - 一个 `ProcedureKey`（skill、skillVersion、unit、platform、appVersion、profile、branch）下多个版本，`version` 递增，`parentVersion` 记修复来源。不同 key 不共享计数。
-- 状态：seeded →（首次验证成功）trial →（`promoteAfterSuccesses` 个**不同** work item 成功）stable。同一 item 重复成功只增加 successes，不推进晋级。
+- 状态：seeded →（首次验证成功）trial →（`promoteAfterSuccesses` 个**不同** work item **连续**成功，其间无失败）stable。`counters.successItemIds` 是当前连胜内的不同 item；同一 item 重复成功只增加 successes，不推进晋级。
+- 任何一次失败（即使低于降级阈值）都会清空 `successItemIds`，晋级须重新累积；`successes`/`failures` 为累计值，仅用于审计。
 - 连续失败达到 `degradeAfterFailures`（默认 1）进入 degraded，不再被 select；修复产生新的 trial 版本，旧 stable 保留，可经 `rollback` 重新作为新版本启用。retired 不变。
-- 存储的步骤不得使用元素 index（只能 role/label/labelPattern、relative、template、ocr）；步骤中的 `{{slot}}` 必须在 `parameters` 中声明；不允许 external-submit 时含该效果的流程不合法；非种子的 stable 必须有验证成功记录。
+- 存储的步骤不得使用元素 index（只能 role/label/labelPattern、relative、template、ocr）；步骤中的 `{{slot}}` 必须在 `parameters` 中声明；不允许 external-submit 时含该效果的流程不合法；非种子的 stable 必须有验证成功记录（`successes > 0`；stable 版本在低于阈值的失败后连胜可为空）。
 - 版本定义写入后不可修改，`updateProcedureState` 只改 status、counters、updatedAt。V2 只由 Runtime 写入；Bridge 只输出提案。
 
 ## Bridge JSONL 协议
