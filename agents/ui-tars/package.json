@@ -1,0 +1,24 @@
+{
+  "name": "@2ndscreen/ui-tars",
+  "private": true,
+  "description": "Drive apps on a 2ndscreen agent screen with a UI-TARS vision model",
+  "type": "module",
+  "bin": {
+    "2ndscreen-ui-tars": "src/cli.ts"
+  },
+  "scripts": {
+    "start": "tsx src/cli.ts",
+    "test": "tsx --test src/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ui-tars/sdk": "1.2.3",
+    "jimp": "1.6.0",
+    "uuid": "^14.0.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "tsx": "^4",
+    "typescript": "^5"
+  }
+}
