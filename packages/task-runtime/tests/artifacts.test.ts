@@ -19,7 +19,7 @@ import type {
   TaskStore,
   WorkItem,
 } from '../src/contracts.ts';
-import { createArtifactStore, createMacMediaInspector, pickStagedFile, sniffContent, xmlOutline } from '../src/artifacts.ts';
+import { JPEG_LIMITS, createArtifactStore, createMacMediaInspector, pickStagedFile, sniffContent } from '../src/artifacts.ts';
 import type { MediaInspector } from '../src/artifacts.ts';
 import { openTaskStore } from '../src/store.ts';
 
@@ -83,7 +83,17 @@ function png(width = 4, height = 3, seed = 0, opts: { interlace?: number; idat?:
   ]);
 }
 
-const jpeg = (): Buffer => Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0xff, 0xd9]);
+/** A JPEG header (APP0 + baseline SOF0) declaring width x height, then an end marker; enough for the header checks. */
+function jpeg(width = 1, height = 1): Buffer {
+  const sof = Buffer.from([0xff, 0xc0, 0x00, 0x11, 0x08, 0, 0, 0, 0, 0x03, 0x01, 0x22, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01]);
+  sof.writeUInt16BE(height, 5);
+  sof.writeUInt16BE(width, 7);
+  return Buffer.concat([
+    Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00]),
+    sof,
+    Buffer.from([0xff, 0xd9]),
+  ]);
+}
 
 type ZipEntry = { name: string; data: Buffer; deflate?: boolean; declaredSize?: number; crc?: number };
 
@@ -132,14 +142,34 @@ function docx(document = DOCUMENT, over: Partial<ZipEntry> = {}): Buffer {
   return zip([{ name: '[Content_Types].xml', data: CONTENT_TYPES }, { name: 'word/document.xml', data: document, deflate: true, ...over }]);
 }
 
-/** Test double for the platform decoders: counts page objects in our own synthetic PDFs. */
+const W_MAIN = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+
+/**
+ * Test double for the platform decoders, for tests about storage rather than
+ * decoding: counts page objects in our own synthetic PDFs, echoes the JPEG
+ * header size, and names the root of our own synthetic XML. It certifies
+ * nothing; the real decoders are tested separately on macOS.
+ */
 const fakeInspector: MediaInspector = {
   async inspect(path, type) {
-    if (type === 'jpeg') return { ok: true, width: 1, height: 1 };
+    if (type === 'jpeg') {
+      const d = sniffContent(readFileSync(path)).dimensions;
+      return d ? { ok: true, ...d } : { ok: false, problem: 'fake JPEG decoder: no size' };
+    }
     const pages = (readFileSync(path, 'latin1').match(/\/Type \/Page(?![a-z])/g) ?? []).length;
     return pages > 0 ? { ok: true, pageCount: pages } : { ok: false, problem: 'fake PDF parser: no pages' };
   },
+  async parseXml(xml) {
+    const text = xml.toString('utf8');
+    if (text.includes('<Types')) return { ok: true, root: { name: 'Types', namespace: 'http://schemas.openxmlformats.org/package/2006/content-types' }, children: [] };
+    return { ok: true, root: { name: 'document', namespace: W_MAIN }, children: [{ name: 'body', namespace: W_MAIN }] };
+  },
 };
+
+const failingInspector = (problem: string): MediaInspector => ({
+  inspect: async () => ({ ok: false, problem }),
+  parseXml: async () => ({ ok: false, problem }),
+});
 
 // ---------------------------------------------------------------------------
 // harness
@@ -222,7 +252,7 @@ function crashChild(env: Env, item: WorkItem, body: string): void {
     const [outputDir, taskId, itemId, identityJson, pdfB64] = process.argv.slice(2);
     const identity = JSON.parse(identityJson);
     // The decoder is not under test here; a fixed verdict keeps the crash test platform independent.
-    const store = createArtifactStore({ outputDir, taskId, inspector: { inspect: async () => ({ ok: true, pageCount: 2 }) } });
+    const store = createArtifactStore({ outputDir, taskId, inspector: { inspect: async () => ({ ok: true, pageCount: 2 }), parseXml: async () => ({ ok: false, problem: 'unused' }) } });
     const area = await store.stage(itemId);
     const path = join(area.dir, 'resume.pdf');
     writeFileSync(path, Buffer.from(pdfB64, 'base64'));
@@ -248,7 +278,7 @@ const files = (dir: string): string[] =>
 test('content is identified from bytes; PNG, DOCX and text are decoded in-process', () => {
   assert.deepEqual(sniffContent(pdf(3)), { type: 'application/pdf', problems: [] }, 'PDF pages are left to the parser');
   assert.ok(sniffContent(pdf(2).subarray(0, 120)).problems.some((p) => /%%EOF/.test(p)));
-  assert.deepEqual(sniffContent(jpeg()), { type: 'image/jpeg', problems: [] });
+  assert.deepEqual(sniffContent(jpeg(640, 480)), { type: 'image/jpeg', problems: [], dimensions: { width: 640, height: 480 } });
   assert.ok(sniffContent(jpeg().subarray(0, 10)).problems.length > 0, 'truncated JPEG');
   assert.deepEqual(sniffContent(Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1, 0, 0])), {
     type: 'application/msword', problems: ['legacy Word .doc cannot be verified here'],
@@ -278,19 +308,44 @@ test('PNG is decoded to its declared size: truncation, garbage, short or extra d
   assert.match(problems(png(100_000, 100_000, 0, { idat: deflateSync(Buffer.alloc(10)) }))[0] ?? '', /more pixel data than allowed/);
 });
 
-test('DOCX needs a parsed central directory and a well-formed document with a body', () => {
+test('DOCX container is parsed in-process; its XML is left to the parser', () => {
   const docxType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-  assert.deepEqual(sniffContent(docx()), { type: docxType, problems: [] });
-  assert.match(sniffContent(docx(Buffer.from('<w:document><w:body></w:document>'))).problems[0] ?? '', /not well-formed/);
-  assert.match(sniffContent(docx(Buffer.from('<w:document><w:p/></w:document>'))).problems[0] ?? '', /no document root with a body/);
+  const ok = sniffContent(docx());
+  assert.equal(ok.type, docxType);
+  assert.deepEqual(ok.problems, []);
+  assert.deepEqual(ok.xmlParts?.map((p) => p.name), ['[Content_Types].xml', 'word/document.xml'], 'both parts still need the XML parser');
+  // Malformed XML passes the container check: in-process decoding certifies nothing about the XML.
+  assert.deepEqual(sniffContent(docx(Buffer.from('<document invalid=><body>&undefined;</body></document>'))).problems, []);
   assert.match(sniffContent(docx(DOCUMENT, { crc: 1234 })).problems[0] ?? '', /CRC/);
   assert.match(sniffContent(docx(DOCUMENT, { declaredSize: 10 })).problems[0] ?? '', /declared size/, 'output beyond the declared size is cut off (bomb guard)');
+  assert.match(sniffContent(docx(DOCUMENT, { declaredSize: 64 * 1024 * 1024 })).problems[0] ?? '', /larger than the XML parser accepts/);
   assert.match(sniffContent(docx().subarray(0, 60)).problems[0] ?? '', /truncated/);
   assert.deepEqual(sniffContent(zip([{ name: 'a.txt', data: Buffer.from('x') }])), { type: 'application/zip', problems: [] });
   assert.match(sniffContent(zip([{ name: 'word/document.xml', data: DOCUMENT }])).problems[0] ?? '', /Content_Types/);
-  assert.deepEqual(xmlOutline(Buffer.from('<?xml version="1.0"?><!-- c --><a:r><b/><c x="1">t<![CDATA[<x>]]></c></a:r>')), { root: 'r', rootChildren: ['b', 'c'] });
-  assert.equal(typeof xmlOutline(Buffer.from('<!DOCTYPE x [<!ENTITY a "b">]><x/>')), 'string', 'no DTDs');
-  assert.equal(typeof xmlOutline(Buffer.from('<a/><b/>')), 'string', 'one root');
+});
+
+test('JPEG frame size is bounded from the header before any decoder runs', async () => {
+  const problems = (b: Buffer) => sniffContent(b).problems;
+  assert.match(problems(jpeg(60_000, 60_000))[0] ?? '', /exceeds the decode limit/);
+  assert.match(problems(jpeg(JPEG_LIMITS.maxSide + 1, 1))[0] ?? '', /exceeds the decode limit/);
+  assert.match(problems(jpeg(10_000, 10_000))[0] ?? '', /exceeds the decode limit/, 'each side fits but the pixel count does not');
+  assert.match(problems(jpeg(0, 100))[0] ?? '', /zero or deferred/);
+  assert.match(problems(Buffer.from([0xff, 0xd8, 0xff, 0xda, 0x00, 0x02, 0xff, 0xd9]))[0] ?? '', /no frame header/);
+
+  let calls = 0;
+  const counting: MediaInspector = { inspect: async () => (calls++, { ok: true, width: 1, height: 1 }), parseXml: fakeInspector.parseXml };
+  const env = await setup('available', counting);
+  try {
+    const item = await itemAt(env, 1);
+    const huge = await stageFile(env, item, 'captured_image', 'resume.jpg', jpeg(60_000, 60_000), COMPLETE);
+    assert.ok(huge.validation.problems.some((p) => /exceeds the decode limit/.test(p)));
+    assert.equal(calls, 0, 'an oversized frame never reaches the decoder');
+    const mismatch = await stageFile(env, item, 'captured_image', 'resume.jpg', jpeg(40, 30), COMPLETE);
+    assert.equal(calls, 1);
+    assert.ok(mismatch.validation.problems.includes('JPEG decodes to a different size than its header'));
+  } finally {
+    await env.cleanup();
+  }
 });
 
 test('the macOS decoders parse real structure: reachable pages only, fakes and truncation refused', { skip: process.platform !== 'darwin' }, async () => {
@@ -320,8 +375,47 @@ test('the macOS decoders parse real structure: reachable pages only, fakes and t
     assert.deepEqual(await inspector.inspect(join(dir, 'real.jpg'), 'jpeg'), { ok: true, width: 32, height: 24 });
     const cut = write('cut.jpg', Buffer.concat([realJpeg.subarray(0, realJpeg.length >> 1), Buffer.from([0xff, 0xd9])]));
     assert.equal((await inspector.inspect(cut, 'jpeg')).ok, false, 'a truncated JPEG with a forged end marker does not decode');
+    // Bounded from metadata before the raster is allocated.
+    const tight = createMacMediaInspector(undefined, undefined, { maxSide: 30_000, maxPixels: 100 });
+    assert.deepEqual(await tight.inspect(join(dir, 'real.jpg'), 'jpeg'), { ok: false, problem: 'JPEG 32x24 exceeds the decode limit' });
+    const forged = Buffer.from(realJpeg);
+    const sof = forged.indexOf(Buffer.from([0xff, 0xc0]));
+    forged.writeUInt16BE(60_000, sof + 5);
+    forged.writeUInt16BE(60_000, sof + 7);
+    assert.equal((await inspector.inspect(write('forged.jpg', forged), 'jpeg')).ok, false, 'a forged 60000x60000 frame is never rasterized');
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('DOCX XML is judged by NSXMLDocument: malformed attrs, undeclared entities and namespace errors fail', { skip: process.platform !== 'darwin' }, async () => {
+  const W = `xmlns:w="${W_MAIN}"`;
+  const env = await setup('available', createMacMediaInspector());
+  try {
+    const item = await itemAt(env, 1);
+    const verdict = async (document: string) => (await stageFile(env, item, 'original', 'cv.docx', docx(Buffer.from(document)))).validation.problems;
+    assert.deepEqual(await verdict(DOCUMENT.toString()), []);
+    const bad: Array<[string, string, RegExp]> = [
+      ['malformed attribute', '<document invalid=><body>&undefined;</body></document>', /not well-formed/],
+      ['undeclared entity', `<w:document ${W}><w:body><w:t>&undefined;</w:t></w:body></w:document>`, /not well-formed/],
+      ['duplicate attribute', `<w:document ${W}><w:body><w:p w:a="1" w:a="2"/></w:body></w:document>`, /not well-formed/],
+      ['undeclared prefix', '<w:document><w:body/></w:document>', /not well-formed/],
+      ['undeclared nested prefix', `<w:document ${W}><w:body><x:p/></w:body></w:document>`, /not well-formed/],
+      ['wrong namespace', '<w:document xmlns:w="urn:not-word"><w:body/></w:document>', /no WordprocessingML document root/],
+      ['body outside the namespace', `<w:document ${W}><body/></w:document>`, /no WordprocessingML document root/],
+      ['no body', `<w:document ${W}><w:p/></w:document>`, /no WordprocessingML document root/],
+      ['mismatched tags', `<w:document ${W}><w:body></w:document>`, /not well-formed/],
+      ['internal DTD', `<!DOCTYPE d [<!ENTITY e "x">]><w:document ${W}><w:body>&e;</w:body></w:document>`, /declares a DTD/],
+    ];
+    for (const [why, document, expected] of bad) {
+      const problems = await verdict(document);
+      assert.ok(problems.some((p) => expected.test(p)), `${why}: ${JSON.stringify(problems)}`);
+    }
+    const ok = await stageFile(env, item, 'original', 'cv.docx', docx());
+    const record = await env.artifacts.archive(ok.staged, item.identity, ok.validation, []);
+    assert.equal((await env.store.commitItem(item.id, [record])).counted, true);
+  } finally {
+    await env.cleanup();
   }
 });
 
@@ -368,13 +462,18 @@ test('the decoder fails closed when unavailable, and cancellation or timeout wai
     }
 
     // An original whose PDF cannot be parsed is never archivable as a resume.
-    const env = await setup('available', { inspect: async () => ({ ok: false, problem: 'no pdf decoder' }) });
+    const env = await setup('available', failingInspector('no pdf decoder'));
     try {
       const item = await itemAt(env, 1);
       const { staged, validation } = await stageFile(env, item, 'original', 'a.pdf', pdf(2));
       assert.deepEqual(validation.problems, ['no pdf decoder']);
       assert.equal(validation.pageCount, undefined);
       await rejectsCode(env.artifacts.archive(staged, item.identity, validation, []), 'invalid_input');
+      const word = await stageFile(env, item, 'original', 'cv.docx', docx());
+      assert.deepEqual(word.validation.problems, ['DOCX entry [Content_Types].xml: no pdf decoder'], 'no XML parser: the DOCX stays unverified');
+      await rejectsCode(env.artifacts.archive(word.staged, item.identity, word.validation, []), 'invalid_input');
+      const kept = await env.artifacts.archive({ ...word.staged, kind: 'diagnostic' }, item.identity, word.validation, []);
+      assert.equal(kept.completeness, 'unverified', 'but it can be retained as a diagnostic');
       const legacy = await stageFile(env, item, 'original', 'cv.doc', Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1, 0, 0]));
       await rejectsCode(env.artifacts.archive(legacy.staged, item.identity, legacy.validation, []), 'invalid_input');
     } finally {

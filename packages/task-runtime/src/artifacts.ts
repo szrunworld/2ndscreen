@@ -110,29 +110,42 @@ const KIND_TYPES: Record<ArtifactKind, readonly string[] | undefined> = {
 // ---------------------------------------------------------------------------
 // Content checks
 //
-// Each format is checked by actually decoding it, not by spotting markers:
-// PNG pixel data is inflated to exactly the size its header declares; a DOCX
-// central directory is parsed and its main part inflated and CRC-checked;
-// PDF and JPEG are opened by the platform decoders (PDFKit / ImageIO) through
-// the MediaInspector. Formats nothing here can decode fail closed.
+// Each format is checked by decoding it, not by spotting markers. In-process:
+// PNG pixel data is inflated to exactly the size its header declares, and a
+// DOCX central directory is parsed with its parts inflated and CRC-checked.
+// That proves the container is whole, not that its XML is correct: the XML,
+// PDF and JPEG are judged by platform decoders (NSXMLDocument, PDFKit,
+// ImageIO) through the MediaInspector. Formats nothing here can decode, and
+// any platform without those decoders, fail closed.
 
-/** Decompressed bytes allowed for one PNG image or DOCX part (bomb guard). */
+/** Decompressed bytes allowed for one PNG image (bomb guard). */
 export const MAX_DECODED_BYTES = 256 * 1024 * 1024;
+/** Largest DOCX XML part handed to the XML parser. */
+export const MAX_XML_BYTES = 32 * 1024 * 1024;
+/** JPEG bounds, checked from the header before any decoder allocates a raster (4 bytes per pixel). */
+export const JPEG_LIMITS = { maxSide: 30_000, maxPixels: 50_000_000 } as const;
+
+const W_MAIN = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+const CONTENT_TYPES_NS = 'http://schemas.openxmlformats.org/package/2006/content-types';
 
 interface Sniffed {
   type: string;
   problems: string[];
+  /** DOCX parts that still need the XML parser, already size- and CRC-checked. */
+  xmlParts?: Array<{ name: string; xml: Buffer }>;
+  /** JPEG frame size read from the SOF header. */
+  dimensions?: { width: number; height: number };
 }
 
 /**
- * Identifies a file by its bytes and decodes what can be decoded in-process
- * (PNG, DOCX, text). PDF and JPEG still need the MediaInspector; legacy .doc
- * is identified but never verified.
+ * Identifies a file by its bytes and checks what can be checked in-process
+ * (PNG pixels, DOCX container, JPEG header, text). PDF pages, JPEG pixels and
+ * DOCX XML still need the MediaInspector; legacy .doc is never verified.
  */
 export function sniffContent(buf: Buffer): Sniffed {
   if (buf.length >= 5 && buf.subarray(0, 1024).includes('%PDF-')) return checkPdfTrailer(buf);
   if (buf.length >= 8 && buf.subarray(0, 8).equals(PNG_SIGNATURE)) return checkPng(buf);
-  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return checkJpegMarkers(buf);
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return checkJpegHeader(buf);
   if (buf.length >= 4 && buf.readUInt32BE(0) === 0x504b0304) return checkZip(buf);
   if (buf.length >= 8 && buf.subarray(0, 8).equals(Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1])))
     return { type: MIME.doc, problems: ['legacy Word .doc cannot be verified here'] };
@@ -209,15 +222,52 @@ function checkPng(buf: Buffer): Sniffed {
   return { type: MIME.png, problems: [] };
 }
 
-/** Marker check only; the pixels are decoded by the MediaInspector. */
-function checkJpegMarkers(buf: Buffer): Sniffed {
+/**
+ * Reads the frame size from the SOF header and bounds it, so an oversized
+ * or zero-sized image never reaches a decoder; also requires the end marker.
+ * The pixels themselves are decoded by the MediaInspector.
+ */
+function checkJpegHeader(buf: Buffer): Sniffed {
+  const fail = (problem: string): Sniffed => ({ type: MIME.jpeg, problems: [problem] });
+  let at = 2;
+  let dimensions: { width: number; height: number } | undefined;
+  while (at + 4 <= buf.length) {
+    if (buf[at] !== 0xff) return fail('JPEG marker structure is damaged');
+    const marker = buf[at + 1]!;
+    if (marker === 0xff) {
+      at++; // fill byte
+      continue;
+    }
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) {
+      at += 2;
+      continue;
+    }
+    if (marker === 0xd9 || marker === 0xda) break; // image data follows; the frame header must precede it
+    const length = buf.readUInt16BE(at + 2);
+    if (length < 2 || at + 2 + length > buf.length) return fail('JPEG header segment is cut off (truncated)');
+    const isFrame = marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc;
+    if (isFrame) {
+      if (length < 8) return fail('JPEG frame header is too short');
+      dimensions = { height: buf.readUInt16BE(at + 5), width: buf.readUInt16BE(at + 7) };
+      break;
+    }
+    at += 2 + length;
+  }
+  if (!dimensions) return fail('JPEG has no frame header before its image data');
+  const { width, height } = dimensions;
+  if (width === 0 || height === 0) return fail('JPEG declares a zero or deferred dimension');
+  if (width > JPEG_LIMITS.maxSide || height > JPEG_LIMITS.maxSide || width * height > JPEG_LIMITS.maxPixels)
+    return fail(`JPEG ${width}x${height} exceeds the decode limit (${JPEG_LIMITS.maxSide} px a side, ${JPEG_LIMITS.maxPixels} px)`);
   let end = buf.length;
   while (end > 2 && buf[end - 1] === 0) end--;
-  const whole = buf[end - 2] === 0xff && buf[end - 1] === 0xd9;
-  return { type: MIME.jpeg, problems: whole ? [] : ['JPEG has no end-of-image marker (truncated)'] };
+  if (!(buf[end - 2] === 0xff && buf[end - 1] === 0xd9)) return { type: MIME.jpeg, problems: ['JPEG has no end-of-image marker (truncated)'], dimensions };
+  return { type: MIME.jpeg, problems: [], dimensions };
 }
 
-/** Parses the central directory; a DOCX must hold a decodable word/document.xml. */
+/**
+ * Parses the central directory and inflates the DOCX parts the XML parser
+ * must then judge. This certifies the container, never the XML.
+ */
 function checkZip(buf: Buffer): Sniffed {
   const zip = (problem: string): Sniffed => ({ type: MIME.zip, problems: [problem] });
   let eocd = -1;
@@ -248,13 +298,14 @@ function checkZip(buf: Buffer): Sniffed {
     at += 46 + nameLength + buf.readUInt16LE(at + 30) + buf.readUInt16LE(at + 32);
   }
   if (!entries.has('word/document.xml')) return { type: MIME.zip, problems: [] };
+  const xmlParts: Array<{ name: string; xml: Buffer }> = [];
   for (const name of ['[Content_Types].xml', 'word/document.xml']) {
     const e = entries.get(name);
     if (!e) return { type: MIME.docx, problems: [`DOCX has no ${name}`] };
     if (e.local + 30 > buf.length || buf.readUInt32LE(e.local) !== 0x04034b50) return { type: MIME.docx, problems: [`DOCX entry ${name} has no local header`] };
     const dataStart = e.local + 30 + buf.readUInt16LE(e.local + 26) + buf.readUInt16LE(e.local + 28);
     if (dataStart + e.compressed > buf.length) return { type: MIME.docx, problems: [`DOCX entry ${name} is cut off (truncated)`] };
-    if (e.size > MAX_DECODED_BYTES) return { type: MIME.docx, problems: [`DOCX entry ${name} is larger than allowed`] };
+    if (e.size > MAX_XML_BYTES) return { type: MIME.docx, problems: [`DOCX entry ${name} is larger than the XML parser accepts`] };
     const raw = buf.subarray(dataStart, dataStart + e.compressed);
     let content: Buffer;
     try {
@@ -265,77 +316,9 @@ function checkZip(buf: Buffer): Sniffed {
       return { type: MIME.docx, problems: [`DOCX entry ${name} does not decompress to its declared size`] };
     }
     if (content.length !== e.size || crc32(content) !== e.crc) return { type: MIME.docx, problems: [`DOCX entry ${name} fails its size or CRC check`] };
-    const xml = xmlOutline(content);
-    if (typeof xml === 'string') return { type: MIME.docx, problems: [`DOCX entry ${name} is not well-formed XML: ${xml}`] };
-    if (name === 'word/document.xml' && (xml.root !== 'document' || !xml.rootChildren.includes('body')))
-      return { type: MIME.docx, problems: ['DOCX word/document.xml has no document root with a body'] };
-    if (name === '[Content_Types].xml' && xml.root !== 'Types') return { type: MIME.docx, problems: ['DOCX [Content_Types].xml has no Types root'] };
+    xmlParts.push({ name, xml: content });
   }
-  return { type: MIME.docx, problems: [] };
-}
-
-/**
- * Checks that bytes are well-formed XML (balanced, properly nested tags, one
- * root) and returns the root's local name and its direct children's local
- * names; a string is the reason it is not. No DTDs or entities are expanded.
- */
-export function xmlOutline(bytes: Buffer): { root: string; rootChildren: string[] } | string {
-  let text: string;
-  try {
-    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-  } catch {
-    return 'not UTF-8';
-  }
-  const stack: string[] = [];
-  let root: string | undefined;
-  const rootChildren: string[] = [];
-  const local = (qname: string) => qname.slice(qname.indexOf(':') + 1);
-  let at = 0;
-  while (at < text.length) {
-    const lt = text.indexOf('<', at);
-    if (lt < 0) {
-      if (text.slice(at).trim() && stack.length === 0) return 'text outside the root';
-      break;
-    }
-    if (stack.length === 0 && text.slice(at, lt).trim() && !text.slice(at, lt).startsWith('\ufeff')) return 'text outside the root';
-    if (text.startsWith('<?', lt)) {
-      const end = text.indexOf('?>', lt + 2);
-      if (end < 0) return 'unterminated processing instruction';
-      at = end + 2;
-    } else if (text.startsWith('<!--', lt)) {
-      const end = text.indexOf('-->', lt + 4);
-      if (end < 0) return 'unterminated comment';
-      at = end + 3;
-    } else if (text.startsWith('<![CDATA[', lt)) {
-      if (stack.length === 0) return 'CDATA outside the root';
-      const end = text.indexOf(']]>', lt + 9);
-      if (end < 0) return 'unterminated CDATA';
-      at = end + 3;
-    } else if (text.startsWith('<!', lt)) {
-      return 'DTDs are not accepted';
-    } else {
-      const end = text.indexOf('>', lt + 1);
-      if (end < 0) return 'unterminated tag';
-      const tag = text.slice(lt + 1, end);
-      if (tag.startsWith('/')) {
-        const name = tag.slice(1).trim();
-        if (stack.pop() !== name) return `mismatched closing tag </${name}>`;
-      } else {
-        const m = /^([A-Za-z_][\w.:-]*)(\s[^]*)?$/.exec(tag.endsWith('/') ? tag.slice(0, -1) : tag);
-        if (!m) return `bad tag <${tag.slice(0, 40)}>`;
-        const name = m[1]!;
-        if (stack.length === 0) {
-          if (root !== undefined) return 'more than one root element';
-          root = local(name);
-        } else if (stack.length === 1) rootChildren.push(local(name));
-        if (!tag.endsWith('/')) stack.push(name);
-      }
-      at = end + 1;
-    }
-  }
-  if (stack.length) return `unclosed <${stack[stack.length - 1]}>`;
-  if (root === undefined) return 'no root element';
-  return { root, rootChildren };
+  return { type: MIME.docx, problems: [], xmlParts };
 }
 
 function checkText(buf: Buffer): Sniffed {
@@ -365,14 +348,27 @@ function checkText(buf: Buffer): Sniffed {
 
 export type InspectResult = { ok: true; pageCount?: number; width?: number; height?: number } | { ok: false; problem: string };
 
+export interface XmlName {
+  name: string;
+  namespace?: string;
+}
+
+export type XmlResult = { ok: true; root: XmlName; children: XmlName[] } | { ok: false; problem: string };
+
 /**
- * Opens a file with a real decoder: PDF pages, JPEG pixels. Never trusts markers.
- * Limitation of the default (ImageIO): libjpeg conceals corrupt entropy-coded
- * data instead of failing, so a JPEG with a damaged middle can still decode;
- * truncation and broken headers are caught. PNG does not rely on it.
+ * Real decoders for what the runtime cannot judge in-process.
+ * - PDF: page count from the page tree (PDFKit).
+ * - JPEG: dimensions from metadata, bounded, then a full decode (ImageIO).
+ *   Limitation: libjpeg conceals corrupt entropy-coded data instead of
+ *   failing, so a JPEG with a damaged middle can still decode; truncation,
+ *   broken headers and oversized frames are caught.
+ * - XML: a strict parse (NSXMLDocument) without DTDs or external entities;
+ *   malformed markup, undeclared entities and undeclared namespace prefixes
+ *   are rejected.
  */
 export interface MediaInspector {
   inspect(path: string, type: 'pdf' | 'jpeg', signal?: AbortSignal): Promise<InspectResult>;
+  parseXml(xml: Buffer, signal?: AbortSignal): Promise<XmlResult>;
 }
 
 /** Upper bound for one decoder run. */
@@ -380,78 +376,171 @@ export const INSPECT_TIMEOUT_MS = 20_000;
 
 const JXA_INSPECT = `
 ObjC.import('Foundation'); ObjC.import('PDFKit'); ObjC.import('ImageIO'); ObjC.import('CoreGraphics');
-function run(argv) {
-  const [type, path] = argv;
-  if (type === 'pdf') {
-    const doc = $.PDFDocument.alloc.initWithURL($.NSURL.fileURLWithPath(path));
-    if (doc.isNil()) return JSON.stringify({ ok: false, problem: 'PDFKit cannot open the PDF' });
-    if (doc.isLocked) return JSON.stringify({ ok: false, problem: 'PDF is password protected' });
-    return JSON.stringify({ ok: true, pageCount: Number(doc.pageCount) });
-  }
+const fail = (problem) => JSON.stringify({ ok: false, problem });
+const missing = (ref) => !ref || (typeof ref.isNil === 'function' && ref.isNil());
+function pdf(path) {
+  const doc = $.PDFDocument.alloc.initWithURL($.NSURL.fileURLWithPath(path));
+  if (missing(doc)) return fail('PDFKit cannot open the PDF');
+  if (doc.isLocked) return fail('PDF is password protected');
+  return JSON.stringify({ ok: true, pageCount: Number(doc.pageCount) });
+}
+function jpeg(path, maxSide, maxPixels) {
   const source = $.CGImageSourceCreateWithData($.NSData.dataWithContentsOfFile(path), null);
-  const image = source ? $.CGImageSourceCreateImageAtIndex(source, 0, null) : null;
-  const width = image ? Number($.CGImageGetWidth(image)) : 0;
-  const height = image ? Number($.CGImageGetHeight(image)) : 0;
-  if (!width || !height) return JSON.stringify({ ok: false, problem: 'ImageIO cannot decode the JPEG' });
+  if (missing(source) || Number($.CGImageSourceGetCount(source)) < 1) return fail('ImageIO cannot read the JPEG');
+  // Dimensions come from metadata first; nothing is rasterized before they are bounded.
+  const raw = $.CGImageSourceCopyPropertiesAtIndex(source, 0, null);
+  const props = missing(raw) ? {} : ObjC.deepUnwrap(ObjC.castRefToObject(raw)) || {};
+  const width = props.PixelWidth, height = props.PixelHeight;
+  if (!(Number.isInteger(width) && Number.isInteger(height) && width > 0 && height > 0)) return fail('JPEG has no readable dimensions');
+  if (width > maxSide || height > maxSide || width * height > maxPixels) return fail('JPEG ' + width + 'x' + height + ' exceeds the decode limit');
+  const image = $.CGImageSourceCreateImageAtIndex(source, 0, null);
+  if (missing(image)) return fail('ImageIO cannot decode the JPEG');
+  if (Number($.CGImageGetWidth(image)) !== width || Number($.CGImageGetHeight(image)) !== height) return fail('JPEG decodes to a different size than its metadata');
   const context = $.CGBitmapContextCreate(null, width, height, 8, width * 4, $.CGColorSpaceCreateDeviceRGB(), 1);
+  if (missing(context)) return fail('no bitmap context for the JPEG');
   $.CGContextDrawImage(context, $.CGRectMake(0, 0, width, height), image);
   return JSON.stringify({ ok: true, width, height });
+}
+function xml() {
+  const data = $.NSFileHandle.fileHandleWithStandardInput.readDataToEndOfFile;
+  // 1 << 19 = NSXMLNodeLoadExternalEntitiesNever. The error out-parameter is
+  // left null: passing a Ref hangs JXA when parsing fails.
+  const doc = $.NSXMLDocument.alloc.initWithDataOptionsError(data, 1 << 19, null);
+  if (missing(doc)) {
+    const parser = $.NSXMLParser.alloc.initWithData(data);
+    parser.shouldResolveExternalEntities = false;
+    parser.parse;
+    const code = missing(parser.parserError) ? '?' : Number(parser.parserError.code);
+    return fail('XML is not well-formed (NSXMLParser error ' + code + ')');
+  }
+  if (!missing(doc.DTD)) return fail('XML with a DTD is not accepted');
+  const root = doc.rootElement;
+  if (missing(root)) return fail('XML has no root element');
+  const name = (el) => {
+    const n = { name: ObjC.unwrap(el.localName) };
+    if (!missing(el.URI)) n.namespace = ObjC.unwrap(el.URI);
+    return n;
+  };
+  const children = [];
+  const kids = root.children;
+  const count = missing(kids) ? 0 : Number(kids.count);
+  for (let i = 0; i < count; i++) {
+    const kid = kids.objectAtIndex(i);
+    if (Number(kid.kind) === 2) children.push(name(kid));
+  }
+  return JSON.stringify({ ok: true, root: name(root), children });
+}
+function run(argv) {
+  if (argv[0] === 'pdf') return pdf(argv[1]);
+  if (argv[0] === 'jpeg') return jpeg(argv[1], Number(argv[2]), Number(argv[3]));
+  if (argv[0] === 'xml') return xml();
+  return fail('unknown mode');
 }`;
 
 /**
- * PDFKit and ImageIO through the built-in osascript, bounded by a timeout and
- * the caller's signal. On other platforms every inspection fails closed.
+ * Runs the JXA decoder once. Settles only after the process has exited, so a
+ * cancelled or timed-out validation never leaves a decoder running behind the
+ * caller; any failure to produce a verdict is reported as a problem.
  */
-export function createMacMediaInspector(osascript = '/usr/bin/osascript', timeoutMs = INSPECT_TIMEOUT_MS): MediaInspector {
+function runDecoder(
+  osascript: string,
+  timeoutMs: number,
+  what: string,
+  args: string[],
+  stdin: Buffer | undefined,
+  signal: AbortSignal | undefined,
+): Promise<Record<string, unknown>> {
+  throwIfAborted(signal);
+  if (process.platform !== 'darwin') return Promise.resolve({ ok: false, problem: `no ${what} decoder on ${process.platform}` });
+  return new Promise((resolveRun, reject) => {
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(osascript, ['-l', 'JavaScript', '-e', JXA_INSPECT, ...args], { stdio: [stdin ? 'pipe' : 'ignore', 'pipe', 'ignore'] });
+    } catch (error) {
+      return resolveRun({ ok: false, problem: `${what} decoder unavailable: ${(error as Error).message}` });
+    }
+    let stdout = '';
+    let timedOut = false;
+    let spawnError: Error | undefined;
+    const kill = () => child.kill('SIGKILL');
+    const timer = setTimeout(() => {
+      timedOut = true;
+      kill();
+    }, timeoutMs);
+    signal?.addEventListener('abort', kill, { once: true });
+    child.stdout?.setEncoding('utf8');
+    child.stdout?.on('data', (chunk: string) => {
+      stdout += chunk;
+      if (stdout.length > 64 * 1024) kill();
+    });
+    if (stdin && child.stdin) {
+      child.stdin.on('error', () => undefined); // a decoder that exits early closes the pipe
+      child.stdin.end(stdin);
+    }
+    child.on('error', (error) => {
+      spawnError = error;
+    });
+    child.on('close', (exitCode) => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', kill);
+      if (signal?.aborted) return reject(new RuntimeError('cancelled', 'the operation was cancelled'));
+      if (spawnError) return resolveRun({ ok: false, problem: `${what} decoder unavailable: ${spawnError.message}` });
+      if (timedOut) return resolveRun({ ok: false, problem: `${what} decoder timed out after ${timeoutMs} ms` });
+      if (exitCode !== 0) return resolveRun({ ok: false, problem: `${what} decoder exited with ${exitCode}` });
+      try {
+        const result = JSON.parse(stdout.trim()) as Record<string, unknown>;
+        if (result.ok === true || typeof result.problem === 'string') return resolveRun(result);
+      } catch {
+        // fall through
+      }
+      resolveRun({ ok: false, problem: `${what} decoder gave no verdict` });
+    });
+  });
+}
+
+/**
+ * PDFKit, ImageIO and NSXMLDocument through the built-in osascript, bounded
+ * by a timeout, the caller's signal and the JPEG size limits. On other
+ * platforms every inspection fails closed.
+ */
+export function createMacMediaInspector(
+  osascript = '/usr/bin/osascript',
+  timeoutMs = INSPECT_TIMEOUT_MS,
+  jpegLimits: { maxSide: number; maxPixels: number } = JPEG_LIMITS,
+): MediaInspector {
   return {
-    inspect(path, type, signal) {
-      throwIfAborted(signal);
-      if (process.platform !== 'darwin') return Promise.resolve({ ok: false, problem: `no ${type} decoder on ${process.platform}` });
-      return new Promise((resolveInspect, reject) => {
-        let child: ReturnType<typeof spawn>;
-        try {
-          child = spawn(osascript, ['-l', 'JavaScript', '-e', JXA_INSPECT, type, path], { stdio: ['ignore', 'pipe', 'ignore'] });
-        } catch (error) {
-          return resolveInspect({ ok: false, problem: `${type} decoder unavailable: ${(error as Error).message}` });
-        }
-        let stdout = '';
-        let timedOut = false;
-        let spawnError: Error | undefined;
-        const kill = () => child.kill('SIGKILL');
-        const timer = setTimeout(() => {
-          timedOut = true;
-          kill();
-        }, timeoutMs);
-        signal?.addEventListener('abort', kill, { once: true });
-        child.stdout?.setEncoding('utf8');
-        child.stdout?.on('data', (chunk: string) => {
-          stdout += chunk;
-          if (stdout.length > 64 * 1024) kill();
-        });
-        child.on('error', (error) => {
-          spawnError = error;
-        });
-        // Settle only once the decoder process has exited, so a cancelled
-        // validation never leaves it running behind the caller.
-        child.on('close', (exitCode) => {
-          clearTimeout(timer);
-          signal?.removeEventListener('abort', kill);
-          if (signal?.aborted) return reject(new RuntimeError('cancelled', 'the operation was cancelled'));
-          if (spawnError) return resolveInspect({ ok: false, problem: `${type} decoder unavailable: ${spawnError.message}` });
-          if (timedOut) return resolveInspect({ ok: false, problem: `${type} decoder timed out after ${timeoutMs} ms` });
-          if (exitCode !== 0) return resolveInspect({ ok: false, problem: `${type} decoder exited with ${exitCode}` });
-          try {
-            const result = JSON.parse(stdout.trim()) as InspectResult;
-            if (result.ok && type === 'pdf' && !(Number.isInteger(result.pageCount) && result.pageCount! > 0))
-              return resolveInspect({ ok: false, problem: 'PDF has no pages' });
-            resolveInspect(result.ok || typeof result.problem === 'string' ? result : { ok: false, problem: `${type} decoder gave no verdict` });
-          } catch {
-            resolveInspect({ ok: false, problem: `${type} decoder gave no verdict` });
-          }
-        });
-      });
+    async inspect(path, type, signal) {
+      const args = type === 'pdf' ? ['pdf', path] : ['jpeg', path, String(jpegLimits.maxSide), String(jpegLimits.maxPixels)];
+      const result = (await runDecoder(osascript, timeoutMs, type, args, undefined, signal)) as InspectResult;
+      if (result.ok && type === 'pdf' && !(Number.isInteger(result.pageCount) && result.pageCount! > 0)) return { ok: false, problem: 'PDF has no pages' };
+      return result;
+    },
+    async parseXml(xml, signal) {
+      if (xml.length > MAX_XML_BYTES) return { ok: false, problem: 'XML is larger than the parser accepts' };
+      const result = await runDecoder(osascript, timeoutMs, 'xml', ['xml'], xml, signal);
+      if (result.ok === true && (typeof (result.root as XmlName | undefined)?.name !== 'string' || !Array.isArray(result.children)))
+        return { ok: false, problem: 'xml decoder gave no verdict' };
+      return result as XmlResult;
     },
   };
+}
+
+/** Why the DOCX parts parsed by the inspector are not a WordprocessingML document; empty when they are. */
+async function docxXmlProblems(parts: Array<{ name: string; xml: Buffer }>, inspector: MediaInspector, signal?: AbortSignal): Promise<string[]> {
+  for (const { name, xml } of parts) {
+    // Refused before parsing: a DTD can declare entities that expand without bound.
+    if (xml.toString('latin1').toLowerCase().includes('<!doctype')) return [`DOCX entry ${name} declares a DTD`];
+    const parsed = await inspector.parseXml(xml, signal);
+    if (!parsed.ok) return [`DOCX entry ${name}: ${parsed.problem}`];
+    if (name === 'word/document.xml') {
+      const inMain = (n: XmlName, local: string) => n.name === local && n.namespace === W_MAIN;
+      if (!inMain(parsed.root, 'document') || !parsed.children.some((c) => inMain(c, 'body')))
+        return ['DOCX word/document.xml has no WordprocessingML document root with a body'];
+    } else if (parsed.root.name !== 'Types' || parsed.root.namespace !== CONTENT_TYPES_NS) {
+      return ['DOCX [Content_Types].xml has no package Types root'];
+    }
+  }
+  return [];
 }
 
 // ---------------------------------------------------------------------------
@@ -696,10 +785,16 @@ class FsArtifactStore implements ArtifactStore {
     const sniffed = sniffContent(buf);
     validation.sniffedType = sniffed.type;
     problems.push(...sniffed.problems);
-    if ((sniffed.type === MIME.pdf || sniffed.type === MIME.jpeg) && sniffed.problems.length === 0) {
-      const verdict = await this.inspector.inspect(located.path, sniffed.type === MIME.pdf ? 'pdf' : 'jpeg', signal);
-      if (!verdict.ok) problems.push(verdict.problem);
-      else if (sniffed.type === MIME.pdf) validation.pageCount = verdict.pageCount;
+    const needsDecoder = sniffed.type === MIME.pdf || sniffed.type === MIME.jpeg || sniffed.xmlParts !== undefined;
+    if (needsDecoder && sniffed.problems.length === 0) {
+      if (sniffed.xmlParts) problems.push(...(await docxXmlProblems(sniffed.xmlParts, this.inspector, signal)));
+      else {
+        const verdict = await this.inspector.inspect(located.path, sniffed.type === MIME.pdf ? 'pdf' : 'jpeg', signal);
+        if (!verdict.ok) problems.push(verdict.problem);
+        else if (sniffed.type === MIME.pdf) validation.pageCount = verdict.pageCount;
+        else if (verdict.width !== sniffed.dimensions?.width || verdict.height !== sniffed.dimensions?.height)
+          problems.push('JPEG decodes to a different size than its header');
+      }
       const after = await lstatOrUndefined(located.path);
       if (!after || after.size !== second.size || after.mtimeMs !== second.mtimeMs) problems.push('file changed while it was being decoded');
     }
