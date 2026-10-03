@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   End-to-end acceptance test for 2ndscreen on Windows.
 
