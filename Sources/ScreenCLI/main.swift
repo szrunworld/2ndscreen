@@ -27,7 +27,26 @@ usage:
 
   2ndscreen agent --screen NAME --pid PID [--window-id ID] [--allow-submit] [--foreground] [--no-elements]
                   [--no-learn] [--max-steps N] INSTRUCTION
+  2ndscreen agent --android [--serial SERIAL] [--allow-submit] [--max-steps N] INSTRUCTION
   2ndscreen mcp      serve these commands as MCP tools over stdio
+
+  2ndscreen android devices
+  2ndscreen android pair HOST:PORT CODE
+  2ndscreen android connect HOST:PORT
+  2ndscreen android disconnect [HOST:PORT]
+  2ndscreen android show [--serial SERIAL] [--screen NAME] [--max-size PIXELS]
+  2ndscreen android hide [--serial SERIAL]
+  2ndscreen android screenshot [--serial SERIAL] --output FILE.png
+  2ndscreen android tap   [--serial SERIAL] --x X --y Y
+  2ndscreen android swipe [--serial SERIAL] --x X --y Y --to-x X --to-y Y [--duration SECONDS]
+  2ndscreen android type  [--serial SERIAL] --text TEXT
+  2ndscreen android key   [--serial SERIAL] --key back|home|recents|enter|delete|KEYCODE
+  2ndscreen android adb ARGS...   run the bundled adb with these arguments
+
+Android points are device pixels, as in the screenshot. With the phone's
+mirror open, tap, swipe and key go through it at once; without it, through
+adb. type pastes through the phone's clipboard, so it takes any text and a
+Chinese keyboard on the phone cannot turn it into pinyin.
 
 state, click, type, key, scroll and drag act in the background, through
 accessibility or input events posted to the app, and only on a window that is
@@ -40,8 +59,10 @@ agent runs INSTRUCTION with a UI-TARS vision model, which reads screenshots of
 the screen and the app's controls, acting on a listed control by its number
 and on anything else by sight; --no-elements leaves the controls out. Without --allow-submit it stops before anything
 that would send: Enter, typed text ending in a newline, or a click on Send.
-It reads ARK_API_KEY, ARK_MODEL and ARK_BASE_URL from the environment or
-~/.config/2ndscreen/ark.env.
+With --android it works on a phone instead, by its screenshots, through the
+android commands. When it stops before sending, the result's "pending" holds
+the 2ndscreen arguments that would send. It reads ARK_API_KEY, ARK_MODEL and
+ARK_BASE_URL from the environment or ~/.config/2ndscreen/ark.env.
 
 A run that worked is kept as a procedure for its app, under
 ~/.config/2ndscreen/procedures: the next run of the same instruction repeats
@@ -80,6 +101,7 @@ struct Arguments {
                                       "--pid", "--window-id", "--output", "--query", "--screenshot",
                                       "--index", "--text", "--x", "--y", "--value", "--key",
                                       "--modifiers", "--ttl", "--idle-timeout", "--owner-pid",
+                                      "--serial", "--max-size", "--duration",
                                       "--direction", "--amount", "--by", "--from-x", "--from-y",
                                       "--to-x", "--to-y", "--duration-ms", "--max-steps"]
 
@@ -113,6 +135,10 @@ func parseDuration(_ text: String) -> Double? {
 let words = Array(CommandLine.arguments.dropFirst())
 if words == ["mcp"] {
     MCPServer.run()
+}
+// Before the help check, so `android adb ... -h` reaches adb.
+if words.first == "android", words.count > 1 {
+    AndroidCommands.run(Array(words.dropFirst()))
 }
 guard words.count >= 1, !words.contains("--help"), !words.contains("-h") else {
     print(usage)
@@ -193,11 +219,7 @@ default:
 }
 
 do {
-    let response = try sendControlRequest(request)
-    let encoder = JSONEncoder()
-    encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-    print(String(data: try encoder.encode(response), encoding: .utf8)!)
-    exit(response.ok ? 0 : 1)
+    finish(try sendControlRequest(request))
 } catch {
     fail(error.localizedDescription, code: 1)
 }

@@ -78,6 +78,40 @@ extension TarsAgent {
         }
     }
 
+    /// The action a run held back, as a replay would find it again; nil if
+    /// no control says where it went. Unlike a step, it never makes the run
+    /// unlearnable: the run stopped before it.
+    func learnedHeld(_ action: InputAction, named: AXElementInfo?) -> LearnedStep? {
+        let before = unlearnable
+        defer { unlearnable = before }
+        return learnedStep(action, named: named)
+    }
+
+    /// The held step as an action on the screen as it is.
+    func heldAction(_ step: LearnedStep, _ bindings: [String]) -> InputAction? {
+        guard let kind = InputAction.Kind(rawValue: step.kind) else { return nil }
+        var action = InputAction(kind)
+        action.button = step.button
+        action.count = step.count
+        action.value = step.value.map { Slots.fill($0, bindings) }
+        action.key = step.key
+        action.modifiers = step.modifiers
+        if let target = step.target {
+            elementCache = nil
+            guard let element = target.find(in: currentElements(), frame: currentFrame, bindings: bindings),
+                  let box = element.frame else { return nil }
+            if let offsetX = step.offsetX, let offsetY = step.offsetY {
+                action.x = box.x + offsetX * box.width
+                action.y = box.y + offsetY * box.height
+            } else {
+                action.index = element.index
+                action.x = box.x + box.width / 2
+                action.y = box.y + box.height / 2
+            }
+        }
+        return action
+    }
+
     /// The text of each control, keyed by role and place.
     static func texts(_ elements: [AXElementInfo], in frame: CGRect) -> [String: String] {
         var texts: [String: String] = [:]
@@ -176,7 +210,8 @@ extension TarsAgent {
             }
         }
 
-        let found = Slots.discover(instruction: instruction, steps: trace, texts: [result.reason])
+        let found = Slots.discover(instruction: instruction, steps: trace + (heldStep.map { [$0] } ?? []),
+                                   texts: [result.reason])
         let bound = Slots.match(found.template, instruction) ?? []
         let end = Self.controls(elements, in: frame, except: bound)
         if finish == .steps, end.count < Self.fewestEndControls {
@@ -185,7 +220,8 @@ extension TarsAgent {
         }
         let procedure = Procedure(
             app: options.app, instruction: instruction, template: found.template, slots: found.slots,
-            steps: found.steps, finish: finish, answerFrom: answerFrom, reason: found.texts[0],
+            steps: heldStep == nil ? found.steps : Array(found.steps.dropLast()), finish: finish,
+            answerFrom: answerFrom, reason: found.texts[0], held: heldStep == nil ? nil : found.steps.last,
             endControls: end, allowSubmit: options.allowSubmit, learned: Date(), successes: 1, failures: 0)
         var known = store.load(app: options.app)
         known.removeAll { $0.template == procedure.template && $0.allowSubmit == procedure.allowSubmit }
@@ -289,8 +325,17 @@ extension TarsAgent {
         let steps = procedure.steps.count
         switch procedure.finish {
         case .steps:
-            return .finished(Result(outcome: .done, reason: Slots.fill(procedure.reason, bindings), steps: steps,
-                                    modelCalls: modelCalls, replayed: steps))
+            var result = Result(outcome: .done, reason: Slots.fill(procedure.reason, bindings), steps: steps,
+                                modelCalls: modelCalls, replayed: steps)
+            if let held = procedure.held {
+                // The run ends where the learned one did: before an action for
+                // a person to confirm, which must be on screen to be offered.
+                guard let action = heldAction(held, bindings) else {
+                    return .handOver("the control it stopped before is not on screen", failed: true)
+                }
+                result.held = action
+            }
+            return .finished(result)
         case .element:
             guard let from = procedure.answerFrom, let element = locate(from, bindings) else {
                 return .handOver("the control that held the answer is not on screen", failed: true)

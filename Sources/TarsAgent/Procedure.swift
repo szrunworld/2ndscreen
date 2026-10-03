@@ -83,6 +83,9 @@ public struct Procedure: Codable {
     public var answerFrom: ElementRef?
     /// What the run reported; may hold slots.
     public var reason: String
+    /// The action the learned run stopped before for a person to confirm,
+    /// such as clicking Send: a replay holds the same one back.
+    public var held: LearnedStep?
     /// The named controls on screen when the run ended, as "role|label": a
     /// replay that ends somewhere else did not do the same thing.
     public var endControls: [String]

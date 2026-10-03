@@ -5,24 +5,39 @@ import SecondScreenCore
 import TarsAgent
 
 /// `2ndscreen agent`: run an instruction with a UI-TARS vision model on an
-/// agent screen, acting only on one app, through the running 2ndscreen app.
+/// agent screen, acting only on one app, or on an Android phone, through
+/// the running 2ndscreen app.
 enum AgentCommand {
     static func run(_ args: Arguments) -> Never {
         let instruction = args.positional.dropFirst().joined(separator: " ").trimmingCharacters(in: .whitespaces)
-        guard let screen = args.value("--screen"), let pid = args.value("--pid").flatMap(Int32.init),
-              !instruction.isEmpty
-        else { fail("usage: 2ndscreen agent --screen NAME --pid PID [--window-id ID] [--allow-submit] "
-            + "[--foreground] [--no-elements] [--no-learn] [--max-steps N] INSTRUCTION") }
+        let android = args.has("--android")
+        let usage = "usage: 2ndscreen agent --screen NAME --pid PID [--window-id ID] [--allow-submit] "
+            + "[--foreground] [--no-elements] [--no-learn] [--max-steps N] INSTRUCTION\n"
+            + "       2ndscreen agent --android [--serial SERIAL] [--allow-submit] [--max-steps N] INSTRUCTION"
+        guard !instruction.isEmpty else { fail(usage) }
 
         var options = TarsAgent.Options()
         options.allowSubmit = args.has("--allow-submit")
         options.foreground = args.has("--foreground")
         options.listElements = !args.has("--no-elements")
-        if !args.has("--no-learn") {
-            // Procedures are kept by app: its bundle identifier, else its name.
-            let app = NSRunningApplication(processIdentifier: pid)
-            options.app = app?.bundleIdentifier ?? app?.localizedName ?? "pid-\(pid)"
-            options.procedures = FileProcedureStore.standard
+        let target: AgentScreen
+        if android {
+            let screen = AndroidAgentScreen(serial: args.value("--serial"))
+            target = screen
+            options.actionSpaces = TarsAgent.phoneActionSpaces
+            options.listElements = false
+            // A swipe on the phone takes nothing of the user's.
+            options.foreground = true
+        } else {
+            guard let screen = args.value("--screen"), let pid = args.value("--pid").flatMap(Int32.init) else { fail(usage) }
+            target = ControlScreen(screen: screen, pid: pid, windowID: args.value("--window-id").flatMap(UInt32.init))
+            // Phones list no controls, so nothing they do could be replayed.
+            if !args.has("--no-learn") {
+                // Procedures are kept by app: its bundle identifier, else its name.
+                let app = NSRunningApplication(processIdentifier: pid)
+                options.app = app?.bundleIdentifier ?? app?.localizedName ?? "pid-\(pid)"
+                options.procedures = FileProcedureStore.standard
+            }
         }
         if let steps = args.value("--max-steps") {
             guard let number = Int(steps), number > 0 else { fail("--max-steps takes a positive number") }
@@ -35,7 +50,6 @@ enum AgentCommand {
             fail(error.localizedDescription)
         }
 
-        let target = ControlScreen(screen: screen, pid: pid, windowID: args.value("--window-id").flatMap(UInt32.init))
         let agent = TarsAgent(screen: target, model: ChatCompletionsModel(config), options: options) { event in
             log(event)
         }
@@ -44,6 +58,15 @@ enum AgentCommand {
                                      "reason": result.reason, "steps": result.steps,
                                      "modelCalls": result.modelCalls, "replayedSteps": result.replayed]
         if let learned = result.learned { output["learned"] = learned }
+        if let held = result.held {
+            // What would run on confirmation, as 2ndscreen arguments.
+            if let screen = target as? AndroidAgentScreen,
+               let words = try? AndroidPlan.commands(for: held, size: .zero), words.count == 1 {
+                output["pending"] = ["android"] + words[0] + (screen.serial.map { ["--serial", $0] } ?? [])
+            } else {
+                output["held"] = describe(held)
+            }
+        }
         DriverCommands.emit(output)
         exit(result.outcome == .done ? 0 : 1)
     }
@@ -64,6 +87,8 @@ enum AgentCommand {
             line = "  wait \(Int(seconds)) s"
         case .step(.stop(_, let reason)):
             line = "  stop: \(reason)"
+        case .step(.hold(let action, let reason)):
+            line = "  stop: \(reason) (held: \(describe(action)))"
         case .error(let message):
             line = "  ! \(message)"
         case .note(let message):

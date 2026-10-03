@@ -41,5 +41,9 @@ let package = Package(
             name: "TarsAgentTests",
             dependencies: ["TarsAgent"]
         ),
+        .testTarget(
+            name: "SecondScreenCoreTests",
+            dependencies: ["SecondScreenCore"]
+        ),
     ]
 )
