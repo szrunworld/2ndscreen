@@ -217,7 +217,7 @@ public static class Input
             if (previous != 0) TakeForeground(previous);
             RestoreForeground(Win32.GetAncestor(window, Win32.GA_ROOT), previous, 1000);
         }
-        return "sendinput";
+        return IsInFront(previous) ? "sendinput" : "sendinput (your window could not be put back in front)";
     }
 
     /// <summary>
@@ -260,7 +260,7 @@ public static class Input
             if (previous != 0) TakeForeground(previous);
             RestoreForeground(Win32.GetAncestor(window, Win32.GA_ROOT), previous, 1000);
         }
-        return "sendinput.key";
+        return IsInFront(previous) ? "sendinput.key" : "sendinput.key (your window could not be put back in front)";
     }
 
     // MARK: Helpers
@@ -326,16 +326,39 @@ public static class Input
 
     /// <summary>
     /// SetForegroundWindow from a background process is refused unless it shares the
-    /// foreground's input queue for the moment.
+    /// foreground's input queue for the moment, or sent the last input. Try the first, then
+    /// send a key that does nothing (VK_NONAME) to become the last input's sender and retry.
+    /// Returns whether <paramref name="window"/> is now in front.
     /// </summary>
-    private static void TakeForeground(nint window)
+    private static bool TakeForeground(nint window)
     {
-        uint foreground = Win32.GetWindowThreadProcessId(Win32.GetForegroundWindow(), out _);
-        uint own = Win32.GetCurrentThreadId();
-        bool attached = foreground != 0 && foreground != own && Win32.AttachThreadInput(own, foreground, true);
-        Win32.SetForegroundWindow(window);
-        if (attached) Win32.AttachThreadInput(own, foreground, false);
+        bool Try()
+        {
+            uint foreground = Win32.GetWindowThreadProcessId(Win32.GetForegroundWindow(), out _);
+            uint own = Win32.GetCurrentThreadId();
+            bool attached = foreground != 0 && foreground != own && Win32.AttachThreadInput(own, foreground, true);
+            Win32.SetForegroundWindow(window);
+            if (attached) Win32.AttachThreadInput(own, foreground, false);
+            return Win32.GetAncestor(Win32.GetForegroundWindow(), Win32.GA_ROOT) == Win32.GetAncestor(window, Win32.GA_ROOT);
+        }
+        if (Try()) return true;
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            var inputs = new Win32.INPUT[2];
+            inputs[0] = new Win32.INPUT { type = Win32.INPUT_KEYBOARD };
+            inputs[0].u.ki = new Win32.KEYBDINPUT { wVk = 0xFC };
+            inputs[1] = new Win32.INPUT { type = Win32.INPUT_KEYBOARD };
+            inputs[1].u.ki = new Win32.KEYBDINPUT { wVk = 0xFC, dwFlags = Win32.KEYEVENTF_KEYUP };
+            Win32.SendInput(2, inputs, Marshal.SizeOf<Win32.INPUT>());
+            Thread.Sleep(25);
+            if (Try()) return true;
+        }
+        return false;
     }
+
+    /// <summary>Whether the user's window is in front again, for reporting.</summary>
+    public static bool IsInFront(nint window) =>
+        window == 0 || Win32.GetAncestor(Win32.GetForegroundWindow(), Win32.GA_ROOT) == Win32.GetAncestor(window, Win32.GA_ROOT);
 
     /// <summary>The deepest visible, enabled child window at a screen point, and the point in its client area.</summary>
     public static (nint Window, (int X, int Y) Client) DeepestChild(nint window, (double X, double Y) point)
