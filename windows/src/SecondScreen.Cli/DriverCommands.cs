@@ -55,7 +55,9 @@ public sealed class Driver
     {
         try
         {
-            Process.Start(new ProcessStartInfo(Executable, "serve") { UseShellExecute = false, CreateNoWindow = true });
+            // Through the shell, so the daemon does not inherit this process's output:
+            // whoever reads it through a pipe would otherwise wait for the daemon to exit.
+            Process.Start(new ProcessStartInfo(Executable, "serve") { UseShellExecute = true, WindowStyle = ProcessWindowStyle.Hidden });
         }
         catch (Exception)
         {
