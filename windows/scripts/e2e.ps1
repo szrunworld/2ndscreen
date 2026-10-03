@@ -168,8 +168,8 @@ if ($SkipDriver -or -not $launched.ok) {
 
     # Scrolling, double- and right-clicks, and drags. TestTarget reports the list's top
     # row as "Top N" and what reached its pad as "Pad idle double right drag".
-    $target = @("--screen", "e2e", "--pid", "$targetPid")
-    $scrolled = Invoke-2ndscreen (@("scroll") + $target + @("--text", "Rows", "--direction", "down", "--amount", "10"))
+    $onTarget = @("--screen", "e2e", "--pid", "$targetPid")
+    $scrolled = Invoke-2ndscreen (@("scroll") + $onTarget + @("--text", "Rows", "--direction", "down", "--amount", "10"))
     Start-Sleep -Milliseconds 500
     $state = Invoke-2ndscreen @("state", "--screen", "e2e", "--pid", "$targetPid")
     Check "scroll a list in the background" ([bool]($scrolled.ok -and $state.tree -match "Top [1-9]")) "$($scrolled.effect) $($scrolled.error)"
@@ -181,9 +181,9 @@ if ($SkipDriver -or -not $launched.ok) {
     if (-not $rows) { Write-Host "elements: $(($state.elements | ForEach-Object { "$($_.role)/$($_.label)" }) -join ', ')" }
     $scale = $rows.width / 200
     $cx = $rows.x + [int]((360 - 20) * $scale); $cy = $rows.y + [int]((270 - 130) * $scale)
-    $double = Invoke-2ndscreen (@("click") + $target + @("--x", "$cx", "--y", "$cy", "--double"))
-    $right = Invoke-2ndscreen (@("click") + $target + @("--x", "$cx", "--y", "$cy", "--right"))
-    $drag = Invoke-2ndscreen (@("drag") + $target + @("--from-x", "$($cx - 80)", "--from-y", "$cy", "--to-x", "$($cx + 80)", "--to-y", "$cy"))
+    $double = Invoke-2ndscreen (@("click") + $onTarget + @("--x", "$cx", "--y", "$cy", "--double"))
+    $right = Invoke-2ndscreen (@("click") + $onTarget + @("--x", "$cx", "--y", "$cy", "--right"))
+    $drag = Invoke-2ndscreen (@("drag") + $onTarget + @("--from-x", "$($cx - 80)", "--from-y", "$cy", "--to-x", "$($cx + 80)", "--to-y", "$cy"))
     Start-Sleep -Milliseconds 500
     $state = Invoke-2ndscreen @("state", "--screen", "e2e", "--pid", "$targetPid")
     Check "double-click" ([bool]($double.ok -and $state.tree -match "Pad idle.* double")) "$($double.effect) $($double.error)"
@@ -195,13 +195,13 @@ if ($SkipDriver -or -not $launched.ok) {
     # pointer goes back afterwards.
     $listFrame = ($state.elements | Where-Object label -eq "Rows" | Select-Object -First 1).frame
     $lx = $listFrame.x + [int]($listFrame.width / 2); $ly = $listFrame.y + [int]($listFrame.height / 2)
-    $refused = Invoke-2ndscreen (@("scroll") + $target + @("--x", "$lx", "--y", "$ly", "--direction", "down"))
+    $refused = Invoke-2ndscreen (@("scroll") + $onTarget + @("--x", "$lx", "--y", "$ly", "--direction", "down"))
     Check "wheel at a point needs --foreground" ([bool](-not $refused.ok -and $refused.error -match "--foreground")) "$($refused.error)"
     Add-Type -AssemblyName System.Windows.Forms
     $before = [System.Windows.Forms.Cursor]::Position
     $topBefore = [int]([regex]::Match($state.tree, "Top (\d+)").Groups[1].Value)
     # The background scroll above left the list at or near its end, so scroll back up.
-    $wheel = Invoke-2ndscreen (@("scroll") + $target + @("--x", "$lx", "--y", "$ly", "--direction", "up", "--amount", "5", "--foreground"))
+    $wheel = Invoke-2ndscreen (@("scroll") + $onTarget + @("--x", "$lx", "--y", "$ly", "--direction", "up", "--amount", "5", "--foreground"))
     $after = [System.Windows.Forms.Cursor]::Position
     Start-Sleep -Milliseconds 500
     $state = Invoke-2ndscreen @("state", "--screen", "e2e", "--pid", "$targetPid")
