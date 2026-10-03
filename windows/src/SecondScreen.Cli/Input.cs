@@ -95,9 +95,9 @@ public static class Input
     /// Type text as characters to the focused control, one UTF-16 unit a message, so any
     /// script works without an input method. Line breaks become the Enter key.
     /// </summary>
-    public static string Type(nint window, string text)
+    public static string Type(nint window, string text, nint control = 0)
     {
-        var target = FocusedControl(window);
+        var target = control != 0 ? control : FocusedControl(window);
         Quietly(window, () =>
         {
             for (int i = 0; i < text.Length; i++)
@@ -123,11 +123,13 @@ public static class Input
     /// shortcut from a plain key; so for the moment of the key, this process joins the
     /// program's input queue and marks the modifiers held there.
     /// </summary>
-    public static string Key(nint window, string name, IReadOnlyList<string> modifiers)
+    /// <param name="control">The control to send to; else the focused one. A program that
+    /// was never activated has no focused control, and keys to its frame go nowhere.</param>
+    public static string Key(nint window, string name, IReadOnlyList<string> modifiers, nint control = 0)
     {
         var key = KeyCodes.VirtualKey(name) ?? throw new InvalidOperationException($"unknown key \"{name}\"");
         var held = modifiers.Select(KeyCodes.Modifier).Distinct().ToList();
-        var target = FocusedControl(window);
+        var target = control != 0 ? control : FocusedControl(window);
         bool alt = held.Contains(0x12);
         string route = held.Count == 0 ? "post.key" : "post.key+state";
         Quietly(window, () =>

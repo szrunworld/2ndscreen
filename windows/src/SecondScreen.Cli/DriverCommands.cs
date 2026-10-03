@@ -146,7 +146,8 @@ public static class DriverCommands
             Pattern(window, () => { Automation.SetValue(handle, before + text); return "uia.value"; });
             if (Landed(handle, before, text)) return Report(target, described, "uia.value");
         }
-        // Otherwise focus the element and type keys into it.
+        // Otherwise type keys into it: to its own window, else after focusing it.
+        if (native != 0 && native != window) return Report(target, described, Input.Type(window, text, native));
         Pattern(window, () => { Automation.Focus(handle); return "uia.focus"; });
         Thread.Sleep(50);
         return Report(target, described, Input.Type(window, text));
@@ -163,10 +164,24 @@ public static class DriverCommands
         var key = args.Value("--key") ?? throw new InvalidOperationException("key needs --key NAME, such as return");
         var modifiers = ModifierList(args);
         var described = new JsonObject { ["key"] = key, ["modifiers"] = JsonSerializer.SerializeToNode(modifiers) };
+        var window = target.Window.Handle;
+        // A named control takes the key directly: its own window, else focus through UI Automation.
+        nint control = 0;
+        if (Resolve(target, args, required: false) is ({ } element, { } handle))
+        {
+            described["element"] = JsonSerializer.SerializeToNode(element.ToJson());
+            control = Automation.NativeWindow(handle);
+            if (control == window)
+            {
+                control = 0;
+                Pattern(window, () => { Automation.Focus(handle); return "uia.focus"; });
+                Thread.Sleep(50);
+            }
+        }
         // Symbols with no key of their own, such as "*", arrive when typed as text.
         if (KeyCodes.VirtualKey(key) is null && key.Length == 1 && modifiers.Count == 0)
-            return Report(target, described, Input.Type(target.Window.Handle, key));
-        return Report(target, described, Input.Key(target.Window.Handle, key, modifiers));
+            return Report(target, described, Input.Type(window, key, control));
+        return Report(target, described, Input.Key(window, key, modifiers, control));
     }
 
     /// <summary>

@@ -167,7 +167,7 @@ if (-not $launched.ok) {
     $state = Invoke-2ndscreen @("state", "--screen", "e2e", "--pid", "$targetPid")
     Check "type in the background" ([bool]($typed.ok -and $state.tree -match "hello from 2ndscreen")) "$($typed.route) $($typed.error)"
     # A shortcut in the background: ctrl+a selects the box's text, which typing then replaces.
-    $selected = Invoke-2ndscreen @("key", "--screen", "e2e", "--pid", "$targetPid", "--key", "a", "--modifiers", "ctrl")
+    $selected = Invoke-2ndscreen @("key", "--screen", "e2e", "--pid", "$targetPid", "--text", "Input", "--key", "a", "--modifiers", "ctrl")
     $replaced = Invoke-2ndscreen @("type", "--screen", "e2e", "--pid", "$targetPid", "--text", "Input", "--value", "z")
     Start-Sleep -Milliseconds 500
     $state = Invoke-2ndscreen @("state", "--screen", "e2e", "--pid", "$targetPid")

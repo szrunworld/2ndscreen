@@ -230,8 +230,9 @@ public static class Mcp
                 w.AddRange(new[] { "--value", S(a, "value") });
                 return w;
             }),
-        new("key", "Press a key, optionally with modifiers, e.g. key enter, or key s with modifiers [ctrl].",
-            Merge(WindowTarget, new JsonObject
+        new("key", "Press a key, optionally with modifiers, e.g. key enter, or key s with modifiers [ctrl]. " +
+            "Name the control with index or text when the program has not been clicked yet, so nothing has focus.",
+            Merge(WindowTarget, ElementTarget, new JsonObject
             {
                 ["key"] = Prop("string", "Key name, e.g. enter, escape, tab, a"),
                 ["modifiers"] = new JsonObject { ["type"] = "array", ["items"] = new JsonObject { ["type"] = "string" }, ["description"] = "ctrl, shift, alt, win" },
@@ -240,6 +241,7 @@ public static class Mcp
             {
                 var w = new List<string> { "key" };
                 w.AddRange(TargetWords(a));
+                w.AddRange(ElementWords(a));
                 w.AddRange(new[] { "--key", S(a, "key") });
                 if (a["modifiers"] is JsonArray mods && mods.Count > 0) w.AddRange(new[] { "--modifiers", string.Join(',', mods.Select(m => m?.ToString())) });
                 return w;

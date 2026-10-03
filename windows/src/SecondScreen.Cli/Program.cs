@@ -19,7 +19,7 @@ usage:
   2ndscreen state --screen NAME --pid PID [--window-id ID] [--query TEXT] [--screenshot FILE.png]
   2ndscreen click --screen NAME --pid PID (--index N | --text TEXT | --x X --y Y) [--right | --double]
   2ndscreen type  --screen NAME --pid PID --value TEXT [--index N | --text TEXT]
-  2ndscreen key   --screen NAME --pid PID --key NAME [--modifiers ctrl,shift]
+  2ndscreen key   --screen NAME --pid PID --key NAME [--modifiers ctrl,shift] [--index N | --text TEXT]
   2ndscreen scroll --screen NAME --pid PID --direction up|down|left|right [--amount N] [--by line|page]
                    [--index N | --text TEXT | --x X --y Y] [--foreground]
   2ndscreen drag  --screen NAME --pid PID --from-x X --from-y Y --to-x X --to-y Y
