@@ -1,47 +1,30 @@
 import AVFoundation
 import CoreMedia
 import os
+import SecondScreenCore
 
 /// Plays a phone's AAC audio stream on the Mac.
 ///
 /// Packets are timed on the Mac's clock rather than the phone's: each one is
 /// due right after the one before, a little ahead of now. The two clocks
 /// drift apart, and the phone sends nothing while it is silent, so playing to
-/// the phone's timestamps would slowly add delay or leave gaps. Instead,
-/// running dry starts a fresh buffer, and running too far ahead drops
-/// packets.
+/// the phone's timestamps would slowly add delay or leave gaps.
 ///
-/// Over Wi-Fi, packets come in bursts after pauses of up to half a second
-/// (the phone's power saving holds them back), so the buffer starts short
-/// and grows each time it runs dry, and the burst after a pause is kept.
-/// What the burst leaves queued beyond the buffer is played off at 5%
-/// faster, with the pitch kept, so the delay comes back down without a gap.
+/// Over Wi-Fi the phone's packets come in bursts after hold-ups of up to two
+/// seconds, as long as its power saving or the network likes. A
+/// `JitterBuffer` decides when each plays: it grows the buffer to cover the
+/// hold-ups it meets and shrinks it again while the network is steady,
+/// playing the excess off at 5% faster, pitch kept.
 /// Thread use: the mirror's audio reader thread only.
 final class AndroidAudioPlayer {
-    /// How far ahead of now playback restarts after running dry: at first,
-    /// at most, and how much more each time.
-    private static let initialLatency = CMTime(value: 200, timescale: 1000)
-    private static let maxLatency = CMTime(value: 500, timescale: 1000)
-    private static let latencyStep = CMTime(value: 80, timescale: 1000)
-    /// Packets due this much later than the latency are dropped. The burst
-    /// after a pause refills what the pause used, so this covers the
-    /// longest pause.
-    private static let burstAllowance = CMTime(value: 400, timescale: 1000)
-    /// Catch up while more than this beyond the latency is queued, until
-    /// at most `caughtUp` is.
-    private static let catchUpAbove = CMTime(value: 120, timescale: 1000)
-    private static let caughtUp = CMTime(value: 30, timescale: 1000)
-    private static let catchUpRate: Float = 1.05
-
-    /// Underruns, drops and catch-ups, for `log stream --predicate 'category == "android-audio"'`.
+    /// How the buffer grows and shrinks, for `log stream --predicate 'category == "android-audio"'`.
     private static let log = Logger(subsystem: "io.github.szrunworld.2ndscreen", category: "android-audio")
 
     private let renderer = AVSampleBufferAudioRenderer()
     private let synchronizer = AVSampleBufferRenderSynchronizer()
     private var format: CMAudioFormatDescription?
     private var packetDuration = CMTime(value: 1024, timescale: 48000)
-    private var next = CMTime.invalid
-    private var latency = initialLatency
+    private var jitter = JitterBuffer()
     /// The rate last set. The synchronizer's own reads back 0 for a while
     /// after a change to anything but 1.
     private var rate: Float = 0
@@ -80,29 +63,24 @@ final class AndroidAudioPlayer {
     func play(_ packet: Data) {
         guard let format, !packet.isEmpty else { return }
         if renderer.status == .failed { renderer.flush() }
+        if rate == 0 { setRate(1, time: .zero) }
         let now = synchronizer.currentTime()
-        if rate == 0 {
-            setRate(1, time: .zero)
-            next = latency
-        } else if !next.isValid || next < now + CMTime(value: 10, timescale: 1000) {
-            let late = next.isValid ? (now - next).seconds * 1000 : 0
-            latency = min(latency + Self.latencyStep, Self.maxLatency)
-            Self.log.info("ran dry, \(Int(late)) ms late; buffer now \(Int(self.latency.seconds * 1000)) ms")
-            next = now + latency
-        } else if next > now + latency + Self.burstAllowance {
-            Self.log.info("dropped a packet, \(Int((self.next - now).seconds * 1000)) ms queued")
-            return
-        } else if next > now + latency + Self.catchUpAbove {
-            if rate != Self.catchUpRate {
-                Self.log.info("catching up, \(Int((self.next - now).seconds * 1000)) ms queued")
-                setRate(Self.catchUpRate, time: now)
-            }
-        } else if next <= now + latency + Self.caughtUp, rate != 1 {
-            setRate(1, time: now)
+        let decision = jitter.schedule(now: now.seconds, duration: packetDuration.seconds)
+        switch decision.event {
+        case .grew(let late, let latency):
+            Self.log.info("ran dry, \(Int(late * 1000)) ms late; buffer now \(Int(latency * 1000)) ms")
+        case .shrank(let latency):
+            Self.log.info("steady; buffer now \(Int(latency * 1000)) ms")
+        case .dropped(let queued):
+            Self.log.info("dropped a packet, \(Int(queued * 1000)) ms queued")
+        case nil:
+            break
         }
-        guard let sample = sampleBuffer(packet, format: format, at: next) else { return }
+        if decision.rate != rate { setRate(decision.rate, time: now) }
+        guard let at = decision.at,
+              let sample = sampleBuffer(packet, format: format, at: CMTime(seconds: at, preferredTimescale: 48000))
+        else { return }
         renderer.enqueue(sample)
-        next = next + packetDuration
     }
 
     func stop() {
