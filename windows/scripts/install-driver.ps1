@@ -60,10 +60,18 @@ if ($devcon) {
 }
 
 # Bind the driver to the device node now that the node exists: staging it
-# before the node was created leaves the device without a driver.
-pnputil /add-driver $inf.FullName /install
-pnputil /scan-devices
-Start-Sleep -Seconds 5
+# before the node was created leaves the device without a driver. Binding
+# sometimes still misses on a fresh machine, so check and try again.
+function Get-VirtualDisplay {
+    Get-PnpDevice -Class Display | Where-Object { $_.Status -eq "OK" -and $_.FriendlyName -like "*Virtual Display*" }
+}
+for ($attempt = 1; $attempt -le 4 -and -not (Get-VirtualDisplay); $attempt++) {
+    Write-Host "Binding the driver (attempt $attempt)"
+    pnputil /add-driver $inf.FullName /install
+    if (-not $devcon) { & $nefcon.FullName --install-driver --inf-path $inf.FullName }
+    pnputil /scan-devices
+    Start-Sleep -Seconds 5
+}
 
 # Report what Windows now sees.
 $devices = Get-PnpDevice -Class Display | Where-Object { $_.InstanceId -like "ROOT\*" }
@@ -72,6 +80,6 @@ foreach ($device in $devices) {
     $bound = (Get-PnpDeviceProperty -InstanceId $device.InstanceId -KeyName DEVPKEY_Device_DriverInfPath).Data
     Write-Host "$($device.InstanceId): $($device.FriendlyName) status $($device.Status), problem $problem, driver $bound"
 }
-if (-not ($devices | Where-Object { $_.Status -eq "OK" -and $_.FriendlyName -like "*Virtual Display*" })) {
+if (-not (Get-VirtualDisplay)) {
     throw "the Virtual Display Driver did not start"
 }
