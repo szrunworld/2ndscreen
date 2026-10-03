@@ -115,23 +115,32 @@ final class AndroidMirror: @unchecked Sendable {
         do {
             // The forward accepts at once but closes the connection until the
             // server listens; the dummy byte shows the server is there.
-            // The device name comes on whichever socket is first.
+            // The device name comes on the first socket, once the server
+            // has accepted every socket it expects.
             let first = try connectWhenReady(process: process)
+            if video {
+                videoFD = first
+                controlFD = try openSocket()
+            } else {
+                controlFD = first
+            }
             var name = try readExactly(first, 64)
             name = name.prefix { $0 != 0 }
             deviceName = String(decoding: name, as: UTF8.self)
             guard video else {
-                controlFD = first
+                setReceiveTimeout(first, seconds: 0)
                 return
             }
-            videoFD = first
-            controlFD = try openSocket()
             let codec = try readExactly(videoFD, 4).bigEndianUInt32(at: 0)
             guard codec == 0x6832_3634 else {  // "h264"
                 throw Failure.setup(codec <= 1
                     ? "The phone could not start screen capture.\(serverError())"
                     : "The phone sent an unexpected video format.")
             }
+            // Video stops while the screen does not change, and the control
+            // socket is quiet; wait as long as it takes.
+            setReceiveTimeout(videoFD, seconds: 0)
+            setReceiveTimeout(controlFD, seconds: 0)
         } catch {
             stop()
             throw error
@@ -204,7 +213,15 @@ final class AndroidMirror: @unchecked Sendable {
         }
         var one: Int32 = 1
         setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, socklen_t(MemoryLayout<Int32>.size))
+        // Setup gives up rather than hang on a slow or stuck phone; the
+        // sockets go back to blocking once it is done.
+        setReceiveTimeout(fd, seconds: 10)
         return fd
+    }
+
+    private func setReceiveTimeout(_ fd: Int32, seconds: Int) {
+        var timeout = timeval(tv_sec: seconds, tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
     }
 
     private func connectWhenReady(process: Process) throws -> Int32 {
