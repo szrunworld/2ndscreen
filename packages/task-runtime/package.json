@@ -1,0 +1,19 @@
+{
+  "name": "@2ndscreen/task-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Runs skill tasks on a 2ndscreen agent screen: sessions, ledger, procedures, artifacts and the exploration bridge",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "test": "tsx --test tests/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "tsx": "4.23.15",
+    "typescript": "5.9.3"
+  }
+}
