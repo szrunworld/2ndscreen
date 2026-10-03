@@ -103,8 +103,9 @@ The same is in the menu: each agent screen has **Fit to Window** and a
 for the app's window are disabled, since an app such as iPhone Mirroring
 decides its own orientation and size), and its preview
 has title bar buttons to make the app's window smaller or larger (⌘- and
-⌘=), plus Home Screen and App Switcher when the window is iPhone
-Mirroring's.
+⌘=), to turn the picture a quarter (the view only: the app, and a phone,
+keep their own orientation), and to set the Mac's output volume, plus
+Home Screen and App Switcher when the window is iPhone Mirroring's.
 
 Every command prints one JSON object and exits non-zero on failure.
 Frames are global, top-left-origin points, the same space accessibility

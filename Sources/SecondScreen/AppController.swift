@@ -830,19 +830,59 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             _ = try? BackgroundInput.key(key, modifiers: modifiers, in: window)
         }
         var buttons: [DisplayPreview.ToolbarButton] = [
-            .init(symbol: "minus.magnifyingglass", help: "Smaller (⌘-)") { send("-", ["cmd"]) },
-            .init(symbol: "plus.magnifyingglass", help: "Larger (⌘=)") { send("=", ["cmd"]) },
+            .init(symbol: "minus.magnifyingglass", help: "Smaller (⌘-)") { _ in send("-", ["cmd"]) },
+            .init(symbol: "plus.magnifyingglass", help: "Larger (⌘=)") { _ in send("=", ["cmd"]) },
+            .init(symbol: "rotate.right", help: "Turn the Picture (the phone keeps its own orientation)") {
+                [weak self] _ in self?.agentPreviews[name]?.rotate()
+            },
+            .init(symbol: "speaker.wave.2", help: "Mac Volume") { [weak self] view in self?.showVolume(from: view) },
         ]
         let isMirroring = agentScreens.mainWindow(on: name).flatMap {
             NSRunningApplication(processIdentifier: $0.pid)?.bundleIdentifier
         } == "com.apple.ScreenContinuity"
         if isMirroring {
             buttons += [
-                .init(symbol: "house", help: "Home Screen (⌘1)") { send("1", ["cmd"]) },
-                .init(symbol: "square.stack", help: "App Switcher (⌘2)") { send("2", ["cmd"]) },
+                .init(symbol: "house", help: "Home Screen (⌘1)") { _ in send("1", ["cmd"]) },
+                .init(symbol: "square.stack", help: "App Switcher (⌘2)") { _ in send("2", ["cmd"]) },
             ]
         }
         return buttons
+    }
+
+    private var volumePopover: NSPopover?
+
+    /// A slider for the Mac's output volume, under the preview's button.
+    /// iPhone Mirroring plays through it and has no volume of its own.
+    private func showVolume(from anchor: NSView) {
+        if let open = volumePopover, open.isShown {
+            open.close()
+            return
+        }
+        guard let level = SystemVolume.level else {
+            presentError("The current sound output has no volume control.")
+            return
+        }
+        let slider = NSSlider(value: Double(SystemVolume.muted == true ? 0 : level), minValue: 0, maxValue: 1,
+                              target: self, action: #selector(volumeChanged(_:)))
+        slider.isContinuous = true
+        slider.frame = NSRect(x: 36, y: 10, width: 160, height: 24)
+        let icon = NSImageView(image: NSImage(systemSymbolName: "speaker.wave.2", accessibilityDescription: nil)!)
+        icon.frame = NSRect(x: 10, y: 12, width: 20, height: 20)
+        let content = NSView(frame: NSRect(x: 0, y: 0, width: 208, height: 44))
+        content.addSubview(icon)
+        content.addSubview(slider)
+        let controller = NSViewController()
+        controller.view = content
+        let popover = NSPopover()
+        popover.contentViewController = controller
+        popover.behavior = .transient
+        popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minY)
+        volumePopover = popover
+    }
+
+    @objc private func volumeChanged(_ sender: NSSlider) {
+        SystemVolume.level = Float(sender.doubleValue)
+        if sender.doubleValue == 0 { SystemVolume.muted = true }
     }
 
     @objc private func toggleAgentPreviewItem(_ sender: NSMenuItem) {

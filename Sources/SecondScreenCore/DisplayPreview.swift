@@ -37,9 +37,10 @@ public final class DisplayPreview: NSObject, SCStreamOutput, SCStreamDelegate, N
     public struct ToolbarButton {
         public let symbol: String
         public let help: String
-        public let action: () -> Void
+        /// Called with the button, to anchor a popover to.
+        public let action: (NSView) -> Void
 
-        public init(symbol: String, help: String, action: @escaping () -> Void) {
+        public init(symbol: String, help: String, action: @escaping (NSView) -> Void) {
             self.symbol = symbol
             self.help = help
             self.action = action
@@ -47,12 +48,17 @@ public final class DisplayPreview: NSObject, SCStreamOutput, SCStreamDelegate, N
     }
 
     private final class ButtonTarget: NSObject {
-        let action: () -> Void
-        init(_ action: @escaping () -> Void) { self.action = action }
-        @objc func fire(_ sender: Any?) { action() }
+        let action: (NSView) -> Void
+        init(_ action: @escaping (NSView) -> Void) { self.action = action }
+        @objc func fire(_ sender: Any?) {
+            if let view = sender as? NSView { action(view) }
+        }
     }
 
     private var toolbar: NSTitlebarAccessoryViewController?
+    /// Quarter turns clockwise the picture is shown at. Only the view turns:
+    /// the display, and the app on it, keep their orientation.
+    public private(set) var quarterTurns = 0
     private var buttonTargets: [ButtonTarget] = []
 
     public var isFloating: Bool {
@@ -90,7 +96,6 @@ public final class DisplayPreview: NSObject, SCStreamOutput, SCStreamDelegate, N
         view.wantsLayer = true
         view.layer?.backgroundColor = NSColor.black.cgColor
         imageLayer.frame = view.bounds
-        imageLayer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
         imageLayer.contentsGravity = .resizeAspect
         view.layer?.addSublayer(imageLayer)
         window.contentView = view
@@ -133,16 +138,66 @@ public final class DisplayPreview: NSObject, SCStreamOutput, SCStreamDelegate, N
             let control = NSButton(image: image, target: target, action: #selector(ButtonTarget.fire(_:)))
             control.bezelStyle = .accessoryBarAction
             control.isBordered = false
+            control.imagePosition = .imageOnly
             control.toolTip = button.help
             control.setAccessibilityLabel(button.help)
+            control.translatesAutoresizingMaskIntoConstraints = false
+            control.widthAnchor.constraint(equalToConstant: 24).isActive = true
+            control.heightAnchor.constraint(equalToConstant: 22).isActive = true
             stack.addArrangedSubview(control)
         }
-        stack.frame.size = stack.fittingSize
+        // A fixed frame: the title bar does not size accessories by their
+        // content, and the last buttons were clipped.
+        stack.frame = NSRect(x: 0, y: 0, width: CGFloat(buttons.count) * 26 + 10, height: 28)
         let controller = NSTitlebarAccessoryViewController()
         controller.view = stack
         controller.layoutAttribute = .trailing
         window.addTitlebarAccessoryViewController(controller)
         toolbar = controller
+    }
+
+    /// The display's size as shown, with width and height swapped when the
+    /// picture is turned a quarter.
+    private func displayedSize(_ size: CGSize) -> NSSize {
+        quarterTurns % 2 == 0 ? NSSize(width: size.width, height: size.height)
+                              : NSSize(width: size.height, height: size.width)
+    }
+
+    /// Fill the window with the picture at the current turn: the layer keeps
+    /// the display's orientation and is rotated about its center.
+    private func layoutImage() {
+        guard let view = window.contentView else { return }
+        let size = view.bounds.size
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        imageLayer.setAffineTransform(.identity)
+        imageLayer.bounds = CGRect(origin: .zero, size: quarterTurns % 2 == 0
+                                   ? size : CGSize(width: size.height, height: size.width))
+        imageLayer.position = CGPoint(x: size.width / 2, y: size.height / 2)
+        imageLayer.setAffineTransform(CGAffineTransform(rotationAngle: -CGFloat(quarterTurns) * .pi / 2))
+        CATransaction.commit()
+    }
+
+    public func windowDidResize(_ notification: Notification) {
+        layoutImage()
+    }
+
+    /// Turn the picture a quarter clockwise, and the window with it.
+    @MainActor
+    public func rotate() {
+        quarterTurns = (quarterTurns + 1) % 4
+        if !isFullScreen {
+            let content = window.contentLayoutRect.size
+            var turned = NSSize(width: content.height, height: content.width)
+            if let visible = window.screen?.visibleFrame {
+                let titleBar = window.frame.height - content.height
+                let fit = min(1, visible.width / turned.width, (visible.height - titleBar) / turned.height)
+                turned = NSSize(width: (turned.width * fit).rounded(), height: (turned.height * fit).rounded())
+            }
+            window.contentAspectRatio = turned
+            window.setContentSize(turned)
+        }
+        layoutImage()
     }
 
     /// Draw the layer at the screen's pixel density, so that centered
@@ -182,8 +237,10 @@ public final class DisplayPreview: NSObject, SCStreamOutput, SCStreamDelegate, N
             let bounds = CGDisplayBounds(displayID)
             if bounds.height > 0 {
                 let width = window.contentLayoutRect.width
-                window.contentAspectRatio = NSSize(width: bounds.width, height: bounds.height)
-                window.setContentSize(NSSize(width: width, height: (width * bounds.height / bounds.width).rounded()))
+                let shown = displayedSize(bounds.size)
+                window.contentAspectRatio = shown
+                window.setContentSize(NSSize(width: width, height: (width * shown.height / shown.width).rounded()))
+                layoutImage()
             }
         }
         try await startStream()
@@ -278,8 +335,9 @@ public final class DisplayPreview: NSObject, SCStreamOutput, SCStreamDelegate, N
     public func windowDidExitFullScreen(_ notification: Notification) {
         let bounds = CGDisplayBounds(displayID)
         if bounds.height > 0 {
-            window.contentAspectRatio = NSSize(width: bounds.width, height: bounds.height)
+            window.contentAspectRatio = displayedSize(bounds.size)
         }
+        layoutImage()
         guard closeAfterExitingFullScreen else { return }
         closeAfterExitingFullScreen = false
         window.close()
