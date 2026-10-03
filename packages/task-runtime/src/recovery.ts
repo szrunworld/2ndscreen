@@ -30,6 +30,7 @@ import {
   type ProcedureEngine,
   type ProcedureProposal,
   type ProcedureV2,
+  type Session,
   type Recovery,
   type RecoveryContext,
   type RecoveryOutcome,
@@ -100,19 +101,62 @@ export function createRecovery(deps: {
     const wallClockLeft = (): number => budget.wallClockMs - usageNow().elapsedMs;
     const wallClockOut = (): RecoveryOutcome => ({ status: 'exhausted', budget: { ok: false, exhausted: 'wall_clock' } });
 
+    // The task's wall-clock deadline as a signal of its own: a timer for time
+    // spent inside one long call, and a check of the clock before every
+    // observation, check, wait and action. The caller's abort stays
+    // `cancelled`; this one becomes `exhausted: wall_clock`.
+    const deadline = new AbortController();
+    const timer = setTimeout(() => deadline.abort(), Math.min(Math.max(0, wallClockLeft()), 2 ** 31 - 1));
+    timer.unref?.();
+    const local = signal ? AbortSignal.any([signal, deadline.signal]) : deadline.signal;
+    const fence = (): void => {
+      if (!deadline.signal.aborted && wallClockLeft() <= 0) deadline.abort();
+      throwIfAborted(local);
+    };
+    /** The session as local recovery may use it: every call fenced by the deadline, waits cut to the time left. */
+    const fenced: Session = {
+      get id() {
+        return session.id;
+      },
+      get taskId() {
+        return session.taskId;
+      },
+      get profile() {
+        return session.profile;
+      },
+      get lease() {
+        return session.lease;
+      },
+      binding: () => session.binding(),
+      observe: async (options, s) => (fence(), session.observe(options, s ?? local)),
+      act: async (request, s) => (fence(), session.act(request, s ?? local)),
+      check: async (condition, observation, s) => (fence(), session.check(condition, observation, s ?? local)),
+      waitFor: async (spec, s) => {
+        fence();
+        return session.waitFor({ ...spec, timeoutMs: Math.max(1, Math.min(spec.timeoutMs, wallClockLeft())) }, s ?? local);
+      },
+      rebind: async (s) => (fence(), session.rebind(s ?? local)),
+      withExclusiveActor: (holder, fn, s) => (fence(), session.withExclusiveActor(holder, fn, s ?? local)),
+      close: (policy) => session.close(policy),
+    };
+
     async function observeAndVerify(): Promise<{ observation: Observation; check: CheckResult }> {
-      throwIfAborted(signal);
-      const observation = await session.observe({ elements: true, screenshot: needsScreenshot(unit.postconditions) }, signal);
-      throwIfAborted(signal);
-      return { observation, check: await context.verify(observation) };
+      const observation = await fenced.observe({ elements: true, screenshot: needsScreenshot(unit.postconditions) }, local);
+      fence();
+      const check = await context.verify(observation);
+      // A verify that ran past the deadline proves nothing in time.
+      fence();
+      return { observation, check };
     }
 
     // The failed procedure, when it is still the one the engine would run.
     let failedProcedure: ProcedureV2 | undefined;
-    if (isReplay(failure)) {
-      const current = await engine.select(key, signal);
-      if (current?.id === failure.procedureId) failedProcedure = current;
-    }
+    const ended = (error: unknown): RecoveryOutcome | undefined => {
+      if (signal?.aborted) return { status: 'cancelled' };
+      if (deadline.signal.aborted || (isRuntimeError(error, 'cancelled') && wallClockLeft() <= 0)) return wallClockOut();
+      if (isRuntimeError(error, 'cancelled')) return { status: 'cancelled' };
+      return undefined;
+    };
 
     async function tryRoute(route: LocalRoute): Promise<Observation | undefined> {
       switch (route) {
@@ -121,7 +165,7 @@ export function createRecovery(deps: {
           if (conditions.length > 0) {
             const timeoutMs = Math.max(1, Math.min(unit.timeoutMs, WAIT_LIMITS.maxTimeoutMs, LOCAL_WAIT_CAP_MS, wallClockLeft()));
             const condition = conditions.length === 1 ? conditions[0]! : { kind: 'all' as const, conditions };
-            const waited = await session.waitFor({ condition, timeoutMs }, signal);
+            const waited = await fenced.waitFor({ condition, timeoutMs }, local);
             if (!waited.ok) return undefined;
           }
           const { observation, check } = await observeAndVerify();
@@ -135,18 +179,18 @@ export function createRecovery(deps: {
           if (from < 0 || !failedStepRepeatable(failure, failedProcedure.steps[from]!.action.effect)) return undefined;
           const rest: ProcedureV2 = { ...failedProcedure, preconditions: [], steps: failedProcedure.steps.slice(from) };
           if (procedureOutsideUnit(rest, unit)) return undefined;
-          const result = await engine.replay(rest, session, bindings, signal);
+          const result = await engine.replay(rest, fenced, bindings, local);
           if (result.status === 'cancelled') throw new RuntimeError('cancelled', 'the operation was cancelled');
           if (result.status !== 'succeeded') return undefined;
           const { observation, check } = await observeAndVerify();
           return check.ok ? observation : undefined;
         }
         case 'local_procedure': {
-          const other = await engine.select(key, signal);
+          const other = await engine.select(key, local);
           if (!other || (isReplay(failure) && other.id === failure.procedureId)) return undefined;
           // Only a version that has verified at least once, and stays in the unit.
           if (other.counters.successes === 0 || procedureOutsideUnit(other, unit)) return undefined;
-          const result = await engine.replay(other, session, bindings, signal);
+          const result = await engine.replay(other, fenced, bindings, local);
           if (result.status === 'cancelled') throw new RuntimeError('cancelled', 'the operation was cancelled');
           if (result.status !== 'succeeded') return undefined;
           const { observation, check } = await observeAndVerify();
@@ -162,7 +206,11 @@ export function createRecovery(deps: {
     }
 
     try {
-      throwIfAborted(signal);
+      fence();
+      if (isReplay(failure)) {
+        const current = await engine.select(key, local);
+        if (current?.id === failure.procedureId) failedProcedure = current;
+      }
 
       // 1. Local recovery, at most budget.localRecoveriesPerStep attempts.
       let attempts = 0;
@@ -173,6 +221,7 @@ export function createRecovery(deps: {
         attempts += 1;
         const observation = await tryRoute(route);
         telemetry.record({ type: 'local_recovery', unit: unit.name, ok: observation !== undefined });
+        if (wallClockLeft() <= 0) return wallClockOut();
         if (observation) return { status: 'recovered', route, observation };
       }
       if (wallClockLeft() <= 0) return wallClockOut();
@@ -202,6 +251,10 @@ export function createRecovery(deps: {
             if (isRuntimeError(error, 'model_unavailable')) return { status: 'model_unavailable' };
             throw error;
           }
+          // Creating the model client may itself take time.
+          throwIfAborted(signal);
+          const afterSetup = checkBudget(budget, usageNow());
+          if (!afterSetup.ok) return { status: 'exhausted', budget: afterSetup };
         }
         repairs += 1;
 
@@ -236,6 +289,9 @@ export function createRecovery(deps: {
         let stopped: 'model_calls' | 'tokens' | 'rounds' | 'forbidden' | undefined;
         let violation: string | undefined;
         let seenCalls = 0;
+        let seenInput: TokenCount = 0;
+        let seenOutput: TokenCount = 0;
+        let attemptCalls = 0;
         const attemptStarted = clock.now().getTime();
         // Stop the bridge once it has spent past a limit; reaching a limit
         // exactly lets the call that reached it finish its step.
@@ -244,12 +300,15 @@ export function createRecovery(deps: {
           if (u.uiModelCalls + u.repairModelCalls + u.analysisModelCalls > budget.taskModelCalls) return 'model_calls';
           const tokens = addTokens(u.inputTokens, u.outputTokens);
           if (budget.taskTokens !== undefined && (tokens === 'unknown' || tokens > budget.taskTokens)) return 'tokens';
-          if (seenCalls > request.budget.maxRounds) return 'rounds';
+          if (attemptCalls > request.budget.maxRounds) return 'rounds';
           return undefined;
         };
         const onEvent = (event: BridgeEvent): void => {
           if (event.type === 'model_usage') {
             seenCalls += 1;
+            attemptCalls += 1;
+            seenInput = addTokens(seenInput, event.inputTokens);
+            seenOutput = addTokens(seenOutput, event.outputTokens);
             spent.calls += 1;
             if (event.purpose === 'ui') spent.ui += 1;
             else spent.repair += 1;
@@ -268,25 +327,37 @@ export function createRecovery(deps: {
           }
         };
 
-        const actorSignal = signal ? AbortSignal.any([signal, stop.signal]) : stop.signal;
+        const actorSignal = AbortSignal.any([local, stop.signal]);
         let outcome: ExplorationOutcome;
         try {
+          fence();
           outcome = await session.withExclusiveActor('bridge', (grant) => bridge!.explore(request, grant, onEvent), actorSignal);
         } catch (error) {
-          if (signal?.aborted) return { status: 'cancelled' };
           if (!(stopped && isRuntimeError(error, 'cancelled'))) throw error;
           outcome = { status: 'failed', failure: 'cancelled', executed: [], modelCalls: seenCalls, inputTokens: 0, outputTokens: 0 };
         }
 
-        // Calls the bridge counted but never reported still count, with unknown tokens.
+        // Reconcile with what the bridge says it spent: calls it never
+        // reported as events still count, with unknown tokens, and its token
+        // totals count where they exceed the events. Then the limits are
+        // checked again, so a silent overrun cannot pass as a repair.
         for (let i = seenCalls; i < outcome.modelCalls; i++) {
           spent.calls += 1;
+          attemptCalls += 1;
           if (fallbackPurpose === 'ui') spent.ui += 1;
           else spent.repair += 1;
           spent.input = 'unknown';
           spent.output = 'unknown';
           telemetry.record({ type: 'model_call', purpose: fallbackPurpose, reason, unit: unit.name, itemId: context.itemId, inputTokens: 'unknown', outputTokens: 'unknown' });
         }
+        const extra = (reported: TokenCount, seen: TokenCount): TokenCount => {
+          if (seen === 'unknown') return 0; // already counted as unknown
+          if (reported === 'unknown') return 'unknown';
+          return Math.max(0, reported - seen);
+        };
+        spent.input = addTokens(spent.input, extra(outcome.inputTokens, seenInput));
+        spent.output = addTokens(spent.output, extra(outcome.outputTokens, seenOutput));
+        if (stopped !== 'forbidden') stopped = overrun() ?? stopped;
 
         try {
           assertTraceWithinUnit(unit, outcome.executed);
@@ -299,6 +370,10 @@ export function createRecovery(deps: {
           throw new RuntimeError('forbidden_effect', violation, { unit: unit.name });
         }
         if (signal?.aborted) return { status: 'cancelled' };
+        if (deadline.signal.aborted || wallClockLeft() <= 0) {
+          telemetry.record({ type: 'unit', unit: unit.name, route, ok: false, elapsedMs: clock.now().getTime() - attemptStarted });
+          return wallClockOut();
+        }
 
         // A bridge that spent past the task budget is not a repair, even if the
         // screen now looks right; one that ran over its rounds is a failed attempt.
@@ -323,6 +398,7 @@ export function createRecovery(deps: {
                 if (!isRuntimeError(error, 'invalid_input')) throw error;
               }
             }
+            fence();
             return { status: 'repaired', outcome, proposal, verification: check };
           }
           continue;
@@ -336,8 +412,11 @@ export function createRecovery(deps: {
         // next attempt starts from the screen as it is now.
       }
     } catch (error) {
-      if (isRuntimeError(error, 'cancelled') || signal?.aborted) return { status: 'cancelled' };
+      const outcome = ended(error);
+      if (outcome) return outcome;
       throw error;
+    } finally {
+      clearTimeout(timer);
     }
   }
 

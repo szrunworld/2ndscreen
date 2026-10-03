@@ -64,6 +64,17 @@ export const UNIT: UnitDefinition = {
 
 export const CLICK_RESUME: Action = { kind: 'click', target: { kind: 'element', role: 'AXButton', label: '在线简历' }, effect: 'navigation' };
 
+/** A clock tests move by hand, to cross a deadline at an exact point. */
+export class FakeClock {
+  t = Date.parse('2026-10-04T08:00:00Z');
+  now(): Date {
+    return new Date(this.t);
+  }
+  advance(ms: number): void {
+    this.t += ms;
+  }
+}
+
 let seq = 0;
 export const newId = (): string => `id-${++seq}`;
 
@@ -205,6 +216,8 @@ export class FakeSession implements Session {
   acts: ActionRequest[] = [];
   observeOptions: ObserveOptions[] = [];
   busy = false;
+  /** Runs after each delivered action, e.g. to let a fake clock pass. */
+  onAct?: (request: ActionRequest) => void;
 
   readonly app: FakeApp;
   constructor(app: FakeApp) {
@@ -251,7 +264,9 @@ export class FakeSession implements Session {
     if (request.action.effect === 'external-submit') throw new RuntimeError('forbidden_effect', 'no submit');
     this.acts.push(structuredClone(request));
     const at = new Date().toISOString();
-    return { actionId: request.actionId, status: this.app.apply(request.action), route: 'element', startedAt: at, finishedAt: at };
+    const status = this.app.apply(request.action);
+    this.onAct?.(request);
+    return { actionId: request.actionId, status, route: 'element', startedAt: at, finishedAt: at };
   }
 
   async check(condition: Condition, observation: Observation): Promise<CheckResult> {
@@ -353,6 +368,8 @@ export interface BridgeScript {
   silentCalls?: number;
   /** Keep calling and acting after the grant is aborted, as a misbehaving bridge would. */
   ignoreAbort?: boolean;
+  /** Token totals the outcome reports, whatever the events said. */
+  reportTokens?: number | 'unknown';
 }
 
 /** A bridge that acts on the fake app directly, as the Swift agent would, never through the session. */
@@ -384,8 +401,8 @@ export class FakeBridge implements ExplorerBridge {
       status: 'failed',
       executed: [],
       modelCalls: emitted + (script.silentCalls ?? 0),
-      inputTokens: input,
-      outputTokens: emitted * 10,
+      inputTokens: script.reportTokens ?? input,
+      outputTokens: script.reportTokens ?? emitted * 10,
       ...o,
     });
     if (script.hang) {

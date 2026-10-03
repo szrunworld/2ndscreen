@@ -15,9 +15,9 @@ import {
 import { createLearner } from '../src/learning.ts';
 import { createProcedureEngine } from '../src/procedures.ts';
 import { createRecovery } from '../src/recovery.ts';
-import { FakeApp, FakeBridge, FakeSession, FakeTelemetry, KEY, MemoryRepository, UNIT, newId, procedure, verifyResume, type BridgeScript } from './procedures-fixtures.ts';
+import { FakeApp, FakeBridge, FakeClock, FakeSession, FakeTelemetry, KEY, MemoryRepository, UNIT, newId, procedure, verifyResume, type BridgeScript } from './procedures-fixtures.ts';
 
-function world(options: { scripts?: BridgeScript[]; procedures?: ProcedureV2[]; explorer?: ExplorerProvider } = {}) {
+function world(options: { scripts?: BridgeScript[]; procedures?: ProcedureV2[]; explorer?: ExplorerProvider; clock?: FakeClock } = {}) {
   const repository = new MemoryRepository();
   for (const p of options.procedures ?? []) repository.rows.set(p.id, structuredClone(p));
   const telemetry = new FakeTelemetry();
@@ -33,7 +33,7 @@ function world(options: { scripts?: BridgeScript[]; procedures?: ProcedureV2[]; 
       explorerCalls += 1;
       return bridge;
     });
-  const recovery = createRecovery({ engine, learner, explorer, telemetry, newId });
+  const recovery = createRecovery({ engine, learner, explorer, telemetry, newId, ...(options.clock ? { clock: options.clock } : {}) });
   const context = (name: string, failure: RecoveryContext['failure'], over: Partial<RecoveryContext> = {}): RecoveryContext => ({
     unit: UNIT,
     key: KEY,
@@ -340,4 +340,148 @@ test('relocate never repeats a navigation step whose outcome is unknown', async 
   const outcome = await w.recovery.recover(w.context('张三', failure, { unit: { ...UNIT, timeoutMs: 40 } }));
   assert.equal(outcome.status, 'model_unavailable', 'the model may look; nothing is resent locally');
   assert.equal(w.session.acts.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// Wall-clock and usage holes found in review: each of these used to report a
+// success past the task's limits.
+
+const WALL = { ...DEFAULT_BUDGET, wallClockMs: 10_000 };
+
+test('a verify that succeeds only after the deadline does not recover or repair the unit', async () => {
+  // Local wait route: the page is already right, but verifying takes past the deadline.
+  const clock = new FakeClock();
+  const w = world({ clock, explorer: noModel });
+  w.app.show('张三');
+  w.app.page = 'online_resume';
+  const slowVerify = async (o: Parameters<RecoveryContext['verify']>[0]) => {
+    clock.advance(20_000);
+    return verifyResume('张三')(o);
+  };
+  const failure: ReplayResult = { status: 'postcondition_failed', procedureId: 'p', stepsRun: 1, actions: [], checks: [] };
+  const local = await w.recovery.recover(w.context('张三', failure, { budget: WALL, verify: slowVerify }));
+  assert.deepEqual(local, { status: 'exhausted', budget: { ok: false, exhausted: 'wall_clock' } });
+
+  // Bridge route: it finished and the page verifies, but only after the deadline.
+  const c2 = new FakeClock();
+  const b = world({ clock: c2 });
+  b.app.show('李四');
+  const late = async (o: Parameters<RecoveryContext['verify']>[0]) => {
+    c2.advance(20_000);
+    return verifyResume('李四')(o);
+  };
+  const repaired = await b.recovery.recover(b.context('李四', { status: 'no_procedure' }, { budget: WALL, verify: late }));
+  assert.deepEqual(repaired, { status: 'exhausted', budget: { ok: false, exhausted: 'wall_clock' } });
+});
+
+test('a multi-step local replay stops before the next action once the deadline passes', async () => {
+  const clock = new FakeClock();
+  const p = procedure({
+    preconditions: [],
+    postconditions: [],
+    steps: [
+      { id: 's1', action: { kind: 'click', target: { kind: 'element', role: 'AXButton', label: '在线简历' }, effect: 'navigation' } },
+      { id: 's2', action: { kind: 'scroll', direction: 'down', effect: 'read' } },
+      { id: 's3', action: { kind: 'scroll', direction: 'down', effect: 'read' } },
+    ],
+  });
+  const w = world({ procedures: [p], clock, explorer: noModel });
+  w.app.show('张三');
+  w.app.clickStatus = 'failed';
+  const failure = await w.engine.replay(p, w.session, { 'candidate.name': '张三' });
+  assert.equal(failure.failedStepId, 's1');
+  w.app.clickStatus = undefined;
+  w.session.acts = [];
+  // Each delivered action takes 6 s of the 10 s budget.
+  w.session.onAct = () => clock.advance(6_000);
+  const unit = { ...UNIT, postconditions: [], timeoutMs: 40 };
+  const outcome = await w.recovery.recover(w.context('张三', failure, { unit, budget: WALL, usage: { ...emptyUsage(), elapsedMs: 3_000 } }));
+  assert.deepEqual(outcome, { status: 'exhausted', budget: { ok: false, exhausted: 'wall_clock' } });
+  // The wait route acted on nothing; relocate sent s1, then s2 would start at 9 s and finish
+  // past 10 s: it is sent (the fence is before each action) and s3 is not.
+  assert.deepEqual(w.session.acts.map((a) => a.action.kind), ['click', 'scroll']);
+});
+
+test('the deadline timer aborts a long in-flight local wait in real time', async () => {
+  const p = procedure({ preconditions: [] });
+  const w = world({ procedures: [p], explorer: noModel });
+  w.app.show('张三');
+  w.app.clickStatus = 'failed';
+  const failure = await w.engine.replay(p, w.session, { 'candidate.name': '张三' });
+  w.app.clickStatus = undefined;
+  w.app.transitionDelay = 1_000_000; // the page never comes
+  const started = Date.now();
+  const outcome = await w.recovery.recover(
+    w.context('张三', failure, { unit: { ...UNIT, timeoutMs: 60_000 }, usage: { ...emptyUsage(), elapsedMs: DEFAULT_BUDGET.wallClockMs - 80 } }),
+  );
+  assert.deepEqual(outcome, { status: 'exhausted', budget: { ok: false, exhausted: 'wall_clock' } });
+  assert.ok(Date.now() - started < 1_000);
+});
+
+test('a finished bridge with no usage events but modelCalls over the task cap is not a repair', async () => {
+  const w = world({ scripts: [{ calls: 0, silentCalls: 5 }] });
+  w.app.show('张三');
+  const outcome = await w.recovery.recover(w.context('张三', { status: 'no_procedure' }, { budget: { ...DEFAULT_BUDGET, taskModelCalls: 3 } }));
+  assert.deepEqual(outcome, { status: 'exhausted', budget: { ok: false, exhausted: 'model_calls' } });
+  assert.equal(w.app.page, 'online_resume', 'the bridge did act; the result still does not count');
+  assert.equal(w.telemetry.modelCalls(), 5);
+});
+
+test('silent calls over the rounds of one repair are a failed attempt', async () => {
+  const w = world({ scripts: [{ calls: 0, silentCalls: 4 }] });
+  w.app.show('张三');
+  const budget = { ...DEFAULT_BUDGET, modelRoundsPerRepair: 2, modelRepairsPerItem: 1 };
+  assert.deepEqual(await w.recovery.recover(w.context('张三', { status: 'no_procedure' }, { budget })), { status: 'exhausted', budget: 'item_repairs' });
+});
+
+test('unknown tokens under a configured cap exhaust the budget even with no usage events', async () => {
+  const capped = { ...DEFAULT_BUDGET, taskTokens: 50_000 };
+  // Silent calls: their tokens are unknown.
+  const a = world({ scripts: [{ calls: 0, silentCalls: 1 }] });
+  a.app.show('张三');
+  assert.deepEqual(await a.recovery.recover(a.context('张三', { status: 'no_procedure' }, { budget: capped })), { status: 'exhausted', budget: { ok: false, exhausted: 'tokens' } });
+  // No calls reported at all, but the outcome's token total is unknown.
+  const b = world({ scripts: [{ calls: 0, reportTokens: 'unknown' }] });
+  b.app.show('张三');
+  assert.deepEqual(await b.recovery.recover(b.context('张三', { status: 'no_procedure' }, { budget: capped })), { status: 'exhausted', budget: { ok: false, exhausted: 'tokens' } });
+  // A known total above what the events said counts too.
+  const c = world({ scripts: [{ calls: 1, inputTokens: 100, reportTokens: 60_000 }] });
+  c.app.show('张三');
+  assert.deepEqual(await c.recovery.recover(c.context('张三', { status: 'no_procedure' }, { budget: capped })), { status: 'exhausted', budget: { ok: false, exhausted: 'tokens' } });
+  // Without a cap, unknown tokens are allowed and the repair stands.
+  const d = world({ scripts: [{ calls: 0, reportTokens: 'unknown' }] });
+  d.app.show('张三');
+  assert.equal((await d.recovery.recover(d.context('张三', { status: 'no_procedure' }))).status, 'repaired');
+});
+
+test('a slow explorer setup that uses up the wall clock starts no bridge', async () => {
+  const clock = new FakeClock();
+  let bridge: FakeBridge | undefined;
+  const w = world({
+    clock,
+    explorer: async () => {
+      clock.advance(20_000);
+      return bridge!;
+    },
+  });
+  bridge = w.bridge;
+  w.app.show('张三');
+  const outcome = await w.recovery.recover(w.context('张三', { status: 'no_procedure' }, { budget: WALL }));
+  assert.deepEqual(outcome, { status: 'exhausted', budget: { ok: false, exhausted: 'wall_clock' } });
+  assert.equal(w.bridge.requests.length, 0);
+  assert.equal(w.app.page, 'candidate_detail');
+});
+
+test('the caller cancelling during local recovery is still cancelled, not a budget stop', async () => {
+  const p = procedure({ preconditions: [] });
+  const w = world({ procedures: [p], explorer: noModel });
+  w.app.show('张三');
+  w.app.clickStatus = 'failed';
+  const failure = await w.engine.replay(p, w.session, { 'candidate.name': '张三' });
+  w.app.clickStatus = undefined;
+  w.app.transitionDelay = 1_000_000;
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), 30);
+  const outcome = await w.recovery.recover(w.context('张三', failure, { unit: { ...UNIT, timeoutMs: 5_000 } }), controller.signal);
+  assert.deepEqual(outcome, { status: 'cancelled' });
 });
