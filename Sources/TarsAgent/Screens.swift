@@ -50,20 +50,58 @@ public struct ControlScreen: AgentScreen {
         var request = ControlRequest(command: .input)
         request.screen = screen
         request.pid = pid
-        request.windowID = windowID
+        request.windowID = try? mainWindow()
+        var action = action
+        // A popup's control goes by its place: the engine's indexes are the main window's.
+        if let index = action.index, index >= Self.popupBase { action.index = nil }
         request.input = action
         return try sendControlRequest(request)
+    }
+
+    /// Popups' elements are numbered from here up, a block for each popup.
+    public static let popupBase = 100_000
+
+    /// The window the agent works in: the one named, else the app's largest on
+    /// the screen, so a suggestion list or popup left open in front does not
+    /// stand in for it.
+    func mainWindow() throws -> UInt32 {
+        if let windowID { return windowID }
+        guard let largest = try windowsOnScreen().max(by: { $0.frame.width * $0.frame.height < $1.frame.width * $1.frame.height })
+        else { throw AgentError("pid \(pid) has no window on screen \"\(screen)\"") }
+        return largest.windowID
+    }
+
+    private func windowsOnScreen() throws -> [WindowInfo] {
+        let frame = try self.frame()
+        return WindowMover.windows(ofPID: pid).filter { frame.contains(CGPoint(x: $0.frame.midX, y: $0.frame.midY)) }
     }
 
     public func menuOpen() -> Bool {
         BackgroundInput.hasOpenMenu(pid: pid)
     }
 
+    /// The main window's elements, then any popups' on the screen, numbered
+    /// from `popupBase`, so neither hides the other.
     public func elements() throws -> [AXElementInfo] {
+        let main = try mainWindow()
+        var elements = try state(of: main)
+        let popups = windowID == nil ? try windowsOnScreen().filter { $0.windowID != main } : []
+        for (number, popup) in popups.enumerated() {
+            let offset = Self.popupBase * (number + 1)
+            elements += ((try? state(of: popup.windowID)) ?? []).map { element in
+                var element = element
+                if element.index >= 0 { element.index += offset }
+                return element
+            }
+        }
+        return elements
+    }
+
+    private func state(of window: UInt32) throws -> [AXElementInfo] {
         var request = ControlRequest(command: .windowState)
         request.screen = screen
         request.pid = pid
-        request.windowID = windowID
+        request.windowID = window
         let response = try sendControlRequest(request)
         guard response.ok else { throw AgentError(response.error ?? "state failed") }
         return response.elements ?? []

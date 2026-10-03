@@ -625,6 +625,29 @@ func button(_ index: Int, _ label: String, x: Double, y: Double = 100, value: St
         #expect(again.reason == "1652" && again.modelCalls == 0)
     }
 
+    @Test func aTaskThatAsksNothingRepeatsNoAnswer() {
+        // The model reports what this search found; the next search finds something else.
+        let store = MemoryStore()
+        func search() -> FakeScreen {
+            let screen = FakeScreen()
+            screen.fields = [AXElementInfo(index: 1, role: "AXTextField", label: "Search", value: "", frame: CGRect(x: 2800, y: 100, width: 200, height: 30)),
+                             button(2, "Aa, Helvetica", x: 2000, y: 300), button(3, "Fonts", x: 2200, y: 300), button(4, "Info", x: 2400, y: 300)]
+            screen.afterAction = { screen in
+                guard let typed = screen.performed.last, typed.kind == .type else { return }
+                screen.fields[0] = AXElementInfo(index: 1, role: "AXTextField", label: "Search", value: typed.value,
+                                                 frame: CGRect(x: 2800, y: 100, width: 200, height: 30))
+                screen.fields[1] = button(2, "Aa, \(typed.value ?? "")", x: 2000, y: 300)
+            }
+            return screen
+        }
+        _ = TarsAgent(screen: search(), model: ScriptedModel(["Action: type(content='Helvetica', element='1')",
+                                                             "Action: finished(content='找到了 Helvetica 和 Helvetica Neue')"]),
+                      options: options(store)).run("搜索 Helvetica")
+        #expect(store.procedures.first?.finish == .steps && store.procedures.first?.answerFrom == nil)
+        let again = TarsAgent(screen: search(), model: ScriptedModel([]), options: options(store)).run("搜索 Menlo")
+        #expect(again.modelCalls == 0 && !again.reason.contains("Helvetica"))
+    }
+
     @Test func aQuestionIsNeverAnsweredFromMemory() {
         // Nothing on screen shows the answer: the replay asks the model rather than repeat the old reply.
         let store = MemoryStore()

@@ -188,7 +188,13 @@ extension TarsAgent {
         var finish = Procedure.Finish.steps
         var answerFrom: ElementRef?
         var answerPattern: String?
-        if let content = finishedContent, !content.isEmpty {
+        var reason = result.reason
+        if let content = finishedContent, !content.isEmpty, !Self.matches(Self.asksForInformation, instruction) {
+            // A task that asks for nothing has no answer to read again; what the
+            // model said about this run (the fonts a search found) would be wrong
+            // about the next.
+            reason = "done: replayed the steps learned for this task"
+        } else if let content = finishedContent, !content.isEmpty {
             // A control the run changed whose text holds the answer, or part of
             // it: Windows Calculator shows "显示为 1651" where the model said
             // "结果为 1651". Text the instruction already holds, such as the sum
@@ -212,13 +218,13 @@ extension TarsAgent {
                 // Found by place: its label holds the answer, which changes.
                 if answerFrom!.label.contains(best.core) { answerFrom!.label = "" }
                 if best.text != best.core { answerPattern = best.text.replacingOccurrences(of: best.core, with: "⟦⟧") }
-            } else if Self.matches(Self.asksForInformation, instruction) || reportsBack(instruction, content) {
+            } else {
                 finish = .model
             }
         }
 
         let found = Slots.discover(instruction: instruction, steps: trace + (heldStep.map { [$0] } ?? []),
-                                   texts: [result.reason])
+                                   texts: [reason])
         let bound = Slots.match(found.template, instruction) ?? []
         let end = Self.controls(elements, in: frame, except: bound)
         if finish == .steps, end.count < Self.fewestEndControls {
@@ -243,7 +249,7 @@ extension TarsAgent {
     /// Wording that asks for something to be read and reported, which no
     /// learned run may answer from memory.
     static let asksForInformation = try! NSRegularExpression(
-        pattern: #"告诉我|多少|是什么|是谁|是否|几[个点号次]|读出|读取|查看|查一下|结果|what|which|how many|how much|tell me|read|find out"#,
+        pattern: #"告诉我|多少|是什么|是谁|是否|几[个点号次]|读|查|算|求|结果|what|which|how many|how much|tell me|read|find out|calculate|compute"#,
         options: .caseInsensitive)
 
     /// The longest text the two share.
@@ -274,17 +280,6 @@ extension TarsAgent {
         return String(characters[first...last])
     }
 
-    /// Whether the instruction asks for something to be read and reported:
-    /// one short question to the model, when a run is learned.
-    private func reportsBack(_ instruction: String, _ content: String) -> Bool {
-        modelCalls += 1
-        let question = "A GUI agent was given this task:\n\(instruction)\n\nIt finished and reported:\n\(content)\n\n"
-            + "Does the task ask for information to be read from the screen and reported back, "
-            + "as opposed to only carrying out actions? Answer with one word: yes or no."
-        guard let reply = try? model.complete([.user(question)]) else { return true }
-        let answer = reply.lowercased()
-        return answer.contains("yes") || answer.contains("是")
-    }
 
     // MARK: Replay
 
