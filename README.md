@@ -129,6 +129,13 @@ recommendations list in BOSS直聘 (Electron 22), without moving the pointer
 or changing the frontmost app. The result's `route` is then
 `2ndscreen_wheel`.
 
+Typing into those apps is refused the same way. Their text fields take a
+value set through accessibility, which the page receives as an `input`
+event, so `type` with `--index` or `--text` sets the field to its text plus
+the new text (`route` `accessibility_value`). It needs the field named. In
+BOSS直聘 a reply drafted this way showed in the message box and enabled its
+Send button, so the page took it as typed.
+
 A right-click at a point reaches the app twice (a web page saw two
 `contextmenu` events), because cua-driver posts each event through two
 routes so that it reaches backgrounded apps. A context menu usually just

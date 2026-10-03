@@ -71,7 +71,8 @@ CLI=2ndscreen   # or <repo>/.build/release/2ndscreen
    or chat history inside a larger window; give its element or a point.
    With neither, arrow or page keys scroll the focused area. Electron and
    Chromium apps take a wheel posted by 2ndscreen instead, mid-window when
-   you give no point.
+   you give no point. Name the field when you `type` into them (`--index`
+   or `--text`): they only take text set on a named field.
 
    ```bash
    $CLI scroll --screen login-test --pid PID --index 5 --direction down --amount 5

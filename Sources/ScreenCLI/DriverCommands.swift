@@ -94,6 +94,25 @@ enum DriverCommands {
             }
         }
         let result = try driver.act("type_text", arguments)
+        // cua-driver will not type into Electron and Chromium windows in the
+        // background. Their text fields take a value set through
+        // accessibility, which the page sees as input: so set the field to
+        // its text plus the new text. That needs the field named.
+        if Driver.describe(result, fallback: "").contains("background_unavailable") {
+            guard let element else {
+                throw DriverError("this app takes background typing only into a named field; give --index or --text")
+            }
+            let combined = element.value + text
+            let setting: [String: Any] = ["pid": target.pid, "window_id": target.window.windowID,
+                                          "element_token": element.token, "value": combined]
+            var fallback = try driver.act("set_value", setting)
+            // set_value reports "unverifiable" even when it lands, so read the field back.
+            let landed = try driver.state(pid: target.pid, windowID: target.window.windowID)
+                .elements.first { $0.index == element.index }?.value == combined
+            fallback["effect"] = landed ? "confirmed" : (fallback["effect"] ?? "unverifiable")
+            fallback["route"] = "accessibility_value"
+            return report(fallback, target, described)
+        }
         return report(result, target, described)
     }
 
@@ -234,10 +253,16 @@ enum DriverCommands {
             return (element, snapshot)
         }
         if let text {
-            guard let element = snapshot.element(text: text) else {
+            if let element = snapshot.element(text: text) { return (element, snapshot) }
+            // Electron and Chromium build the page's tree only once something
+            // reads it, so the first read of a fresh window can come back
+            // without its content. Read once more.
+            Thread.sleep(forTimeInterval: 0.7)
+            let again = try driver.state(pid: target.pid, windowID: target.window.windowID)
+            guard let element = again.element(text: text) else {
                 throw DriverError("no element matches \"\(text)\"; run state to see what is there")
             }
-            return (element, snapshot)
+            return (element, again)
         }
         if required { throw DriverError("give --index N, --text TEXT, or --x X --y Y") }
         return (nil, snapshot)
