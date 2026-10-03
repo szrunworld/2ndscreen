@@ -114,21 +114,38 @@ public enum ADB {
     /// `adb devices -l`, parsed. A phone connected both by address and by
     /// the mDNS name adb found it under is listed once, by that name.
     public static func devices() throws -> [Device] {
+        let devices = try allDevices()
+        let duplicates = duplicateAddresses(devices)
+        return devices.filter { !duplicates.contains($0.serial) }
+    }
+
+    /// Disconnect addresses of phones also connected by mDNS name, which
+    /// would leave plain `adb` commands asking which device is meant.
+    public static func disconnectDuplicates() {
+        guard let devices = try? allDevices() else { return }
+        for address in duplicateAddresses(devices) {
+            _ = try? run(["disconnect", address], timeout: 5)
+        }
+    }
+
+    private static func allDevices() throws -> [Device] {
         let result = try run(["devices", "-l"], timeout: 10)
         guard result.ok else { throw ControlClientError.io(result.message) }
-        let devices: [Device] = result.output.split(separator: "\n").dropFirst().compactMap { line in
+        return result.output.split(separator: "\n").dropFirst().compactMap { line in
             let fields = line.split(whereSeparator: \.isWhitespace).map(String.init)
             guard fields.count >= 2, !line.hasPrefix("*") else { return nil }
             let model = fields.first { $0.hasPrefix("model:") }.map { String($0.dropFirst(6)) }
             return Device(serial: fields[0], state: fields[1], model: model)
         }
+    }
+
+    private static func duplicateAddresses(_ devices: [Device]) -> Set<String> {
         let mdnsSuffix = "._adb-tls-connect._tcp"
         let named = devices.filter { $0.serial.hasSuffix(mdnsSuffix) }.map { $0.serial.dropLast(mdnsSuffix.count) }
-        guard !named.isEmpty, devices.count > named.count else { return devices }
-        let duplicates = Set(((try? services()) ?? []).filter { service in
+        guard !named.isEmpty, devices.count > named.count else { return [] }
+        return Set(((try? services()) ?? []).filter { service in
             service.type.contains("connect") && named.contains { $0 == service.name }
         }.map(\.address))
-        return devices.filter { !duplicates.contains($0.serial) }
     }
 
     /// Save a PNG of the device's screen at its full resolution.

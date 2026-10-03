@@ -561,6 +561,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for device in (try? ADB.devices()) ?? [] where device.state == "offline" && addresses.contains(device.serial) {
             _ = try? ADB.run(["disconnect", device.serial], timeout: 5)
         }
+        ADB.disconnectDuplicates()
     }
 
     private func androidList() async -> ControlResponse {
