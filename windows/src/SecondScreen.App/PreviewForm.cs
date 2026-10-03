@@ -46,6 +46,14 @@ internal sealed class PreviewForm : Form
 
     public bool IsFullScreen => FormBorderStyle == FormBorderStyle.None;
 
+    /// <summary>The virtual desktop the app created for this preview, removed when it closes.</summary>
+    public Guid? DesktopId { get; set; }
+
+    /// <summary>Show without activating, which would take the user to the window's desktop.</summary>
+    public bool OpenInactive { get; set; }
+
+    protected override bool ShowWithoutActivation => OpenInactive;
+
     /// <summary>Cover the real display the window is on, or go back to a window.</summary>
     public void ToggleFullScreen()
     {
@@ -55,12 +63,20 @@ internal sealed class PreviewForm : Form
             Bounds = windowedBounds;
             return;
         }
-        windowedBounds = Bounds;
-        windowedStyle = FormBorderStyle;
-        var host = Screen.FromControl(this);
-        FormBorderStyle = FormBorderStyle.None;
-        Bounds = host.Bounds;
+        Cover(Screen.FromControl(this).Bounds);
         Activate();
+    }
+
+    /// <summary>Go full screen over <paramref name="display"/> without activating.</summary>
+    public void Cover(Rectangle display)
+    {
+        if (!IsFullScreen)
+        {
+            windowedBounds = Bounds;
+            windowedStyle = FormBorderStyle;
+        }
+        FormBorderStyle = FormBorderStyle.None;
+        Bounds = display;
     }
 
     private void CaptureFrame()

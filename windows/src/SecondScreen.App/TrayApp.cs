@@ -12,6 +12,9 @@ internal sealed class Preferences
     public bool? HiDpi { get; set; }
     public bool ShowPreview { get; set; }
     public bool PreviewOnTop { get; set; } = true;
+    public bool PreviewOnOwnDesktop { get; set; }
+    /// <summary>The desktop the preview is on, so one left by a crash can be removed.</summary>
+    public Guid? PreviewDesktop { get; set; }
 
     private static string FilePath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "2ndscreen", "settings.json");
 
@@ -67,6 +70,12 @@ internal sealed class TrayApp : ApplicationContext
         server = new ControlServer(Handle, SynchronizationContext.Current!);
         server.Start();
 
+        if (preferences.PreviewDesktop is { } leftover)
+        {
+            VirtualDesktops.Remove(leftover);
+            preferences.PreviewDesktop = null;
+            preferences.Save();
+        }
         if (preferences.Enabled) EnablePrimary(quiet: true);
     }
 
@@ -164,13 +173,60 @@ internal sealed class TrayApp : ApplicationContext
         preview.FormClosed += (_, _) =>
         {
             previews.Remove(name);
+            if (preview.DesktopId is { } desktop)
+            {
+                VirtualDesktops.Remove(desktop);
+                preferences.PreviewDesktop = null;
+            }
             if (name == Screens.PrimaryName) { preferences.ShowPreview = false; preferences.Save(); }
         };
         previews[name] = preview;
         if (name == Screens.PrimaryName) { preferences.ShowPreview = true; preferences.Save(); }
         // Show without stealing the foreground from whatever the user is doing.
         AppLauncher.GuardForeground(Desktop.Foreground(), Environment.ProcessId, TimeSpan.FromSeconds(1));
+        if (name == Screens.PrimaryName && preferences.PreviewOnOwnDesktop && ShowOnOwnDesktop(preview)) return;
+        preview.Opacity = 1;
         preview.Show();
+    }
+
+    /// <summary>
+    /// Like a full-screen window on macOS: a desktop of its own, after the user's, with
+    /// the preview covering the main display there. Swiping to it shows the screen.
+    /// </summary>
+    private bool ShowOnOwnDesktop(PreviewForm preview)
+    {
+        if (VirtualDesktops.Create(out var problem) is not { } desktop)
+        {
+            Notify($"Showing the preview here instead: {problem}");
+            return false;
+        }
+        // Invisible and inactive until it is on its desktop, so it neither flashes here
+        // nor pulls the user over there.
+        preview.OpenInactive = true;
+        preview.Opacity = 0;
+        preview.Show();
+        var main = Desktop.Primary().Bounds;
+        preview.Cover(new Rectangle(main.X, main.Y, main.Width, main.Height));
+        if (!VirtualDesktops.MoveWindow(preview.Handle, desktop))
+        {
+            VirtualDesktops.Remove(desktop);
+            Notify("Showing the preview here instead: Windows would not move it to its desktop");
+            return false;
+        }
+        preview.DesktopId = desktop;
+        preferences.PreviewDesktop = desktop;
+        preferences.Save();
+        preview.Opacity = 1;
+        return true;
+    }
+
+    private void SetPreviewOnOwnDesktop(bool on)
+    {
+        preferences.PreviewOnOwnDesktop = on;
+        preferences.Save();
+        bool showing = previews.TryGetValue(Screens.PrimaryName, out var open);
+        open?.Close();
+        if (showing || on) TogglePreview(Screens.PrimaryName);
     }
 
     // MARK: Windows
@@ -239,6 +295,10 @@ internal sealed class TrayApp : ApplicationContext
             () => { if (previews.TryGetValue(Screens.PrimaryName, out var form)) form.ToggleFullScreen(); });
         fullScreen.Enabled = previews.ContainsKey(Screens.PrimaryName);
         menu.Items.Add(fullScreen);
+        var ownDesktop = Check("Preview on Its Own Desktop", preferences.PreviewOnOwnDesktop,
+            () => SetPreviewOnOwnDesktop(!preferences.PreviewOnOwnDesktop));
+        ownDesktop.Enabled = primary is not null;
+        menu.Items.Add(ownDesktop);
         menu.Items.Add(new ToolStripSeparator());
 
         if (primary is not null)

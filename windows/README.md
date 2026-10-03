@@ -45,8 +45,16 @@ needs Windows.
 
 Run `SecondScreen.exe`, which lives in the notification area. Its menu has
 **Virtual Display**, **Resolution**, **HiDPI (200%)**, the preview
-(**Show Preview**, **Keep Preview on Top**, **Preview Full Screen**), and
-**Move Front Window to Other Screen**, also on Ctrl+Alt+Win+M.
+(**Show Preview**, **Keep Preview on Top**, **Preview Full Screen**,
+**Preview on Its Own Desktop**), and **Move Front Window to Other Screen**,
+also on Ctrl+Alt+Win+M.
+
+**Preview on Its Own Desktop** is the counterpart of a macOS full-screen
+Space: 2ndscreen adds a virtual desktop after yours with the preview
+covering the main display, so a four-finger swipe (or Ctrl+Win+Right)
+shows the screen. The desktop goes away with the preview. Creating it uses
+an undocumented shell interface checked against Windows 11 24H2 and 25H2;
+elsewhere the preview stays on the current desktop.
 
 Agents use `2ndscreen.exe`, or `2ndscreen mcp` for the same commands as MCP
 tools:
