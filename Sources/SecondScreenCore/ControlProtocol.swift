@@ -169,6 +169,9 @@ public struct InputAction: Codable {
     public var text: String?
     /// `type`: the text to enter.
     public var value: String?
+    /// `type`: set the field's whole text to `value` instead of adding to it;
+    /// needs the field named.
+    public var replace: Bool?
     /// `key`: a key name such as return, a, f5 or down, and modifiers
     /// (cmd, shift, option, ctrl).
     public var key: String?

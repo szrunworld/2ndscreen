@@ -263,6 +263,19 @@ public enum AXActions {
         return false
     }
 
+    /// Set the element's whole text to `value`, and read it back. The page in
+    /// an Electron or Chromium window receives the write as an `input` event.
+    public static func replace(with value: String, in snapshot: AXSnapshot, index: Int) -> Bool {
+        guard let element = snapshot.handle(index) else { return false }
+        var settable: DarwinBoolean = false
+        guard AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settable) == .success,
+              settable.boolValue,
+              AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, value as CFString) == .success
+        else { return false }
+        let now: String = WindowMover.copyAttribute(element, kAXValueAttribute) ?? ""
+        return now == value
+    }
+
     /// The element's current text value, read live rather than from the snapshot.
     public static func value(_ snapshot: AXSnapshot, index: Int) -> String? {
         guard let element = snapshot.handle(index) else { return nil }

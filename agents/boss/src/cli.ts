@@ -1,0 +1,111 @@
+#!/usr/bin/env -S npx tsx
+// Watch BOSS直聘 on a 2ndscreen agent screen. For each conversation with
+// unread messages: open it, read it, draft a reply into the message box,
+// and ask in this terminal whether to send it. Nothing is sent without a
+// yes here.
+//
+//   ARK_API_KEY=... npx tsx src/cli.ts --screen boss --pid 1234 --brief "先请对方发简历"
+
+import { createInterface } from 'node:readline/promises';
+import { parseArgs } from 'node:util';
+import { Boss, sleep } from './boss.ts';
+import { draftReply } from './draft.ts';
+import type { Conversation } from './parse.ts';
+
+const usage = `usage: boss --screen NAME --pid PID [--window-id ID] [--brief TEXT]
+            [--interval SECONDS] [--max N] [--once] [--name CANDIDATE]
+
+Watches BOSS直聘 on the agent screen for conversations with unread
+messages. For each one it opens the conversation (the candidate then sees
+it as read), drafts a reply into the message box, and asks here:
+  s  send it      e  edit it, then ask again
+  k  keep the draft in the box and move on      q  quit
+Without a terminal to ask, drafts stay in the box unsent.
+
+  --brief TEXT     how replies should go, e.g. "先请对方发简历，再约电话"
+  --interval S     seconds between checks (default 60)
+  --max N          conversations to handle per check (default 3)
+  --once           check once and exit
+  --name NAME      handle only this candidate's conversation, read or not,
+                   once, and exit
+
+Environment: ARK_API_KEY, and optionally ARK_TEXT_MODEL (default
+doubao-seed-2-1-lite-260915), ARK_BASE_URL, SECONDSCREEN_CLI.`;
+
+const { values } = parseArgs({
+  options: {
+    screen: { type: 'string' },
+    pid: { type: 'string' },
+    'window-id': { type: 'string' },
+    brief: { type: 'string' },
+    interval: { type: 'string', default: '60' },
+    max: { type: 'string', default: '3' },
+    once: { type: 'boolean', default: false },
+    name: { type: 'string' },
+    help: { type: 'boolean', short: 'h' },
+  },
+});
+if (values.help || !values.screen || !values.pid) {
+  console.error(usage);
+  process.exit(values.help ? 0 : 2);
+}
+if (!process.env.ARK_API_KEY) {
+  console.error('set ARK_API_KEY to a Volcengine Ark API key');
+  process.exit(2);
+}
+
+const boss = new Boss(values.screen, Number(values.pid), values['window-id'] ? Number(values['window-id']) : undefined);
+const ask = process.stdin.isTTY ? createInterface({ input: process.stdin, output: process.stderr }) : undefined;
+/** Conversations handled this run, by what their row showed. */
+const handled = new Set<string>();
+const key = (c: Conversation) => `${c.name}|${c.time}|${c.preview}`;
+let quitting = false;
+
+async function handle(conversation: Conversation): Promise<void> {
+  const open = await boss.open(conversation);
+  const c = open.candidate;
+  console.error(`\n── ${c.name}（${c.summary}）· ${c.position}${c.expects ? ` · 期望 ${c.expects}` : ''}`);
+  for (const m of open.messages.slice(-6)) console.error(`  ${m.from === 'me' ? '我' : '他'}：${m.text}`);
+
+  let draft = await draftReply(open, { brief: values.brief });
+  for (;;) {
+    await boss.draft(draft);
+    console.error(`  草稿（已放进输入框，未发送）：${draft}`);
+    if (!ask) return;
+    const answer = (await ask.question('  [s] 发送  [e] 修改  [k] 保留草稿跳过  [q] 退出 > ')).trim().toLowerCase();
+    if (answer === 's') {
+      await boss.send(draft);
+      console.error('  已发送。');
+      return;
+    }
+    if (answer === 'e') {
+      const edited = (await ask.question('  新的回复：')).trim();
+      if (edited) draft = edited;
+      continue;
+    }
+    if (answer === 'q') quitting = true;
+    console.error('  草稿留在输入框里，没有发送。');
+    return;
+  }
+}
+
+for (;;) {
+  try {
+    const listed = await boss.conversations();
+    const waiting = values.name
+      ? listed.filter((c) => c.name === values.name)
+      : listed.filter((c) => c.unread > 0 && !handled.has(key(c)));
+    if (values.name && waiting.length === 0) console.error(`${values.name} is not in the visible list`);
+    if (waiting.length === 0) console.error(`${new Date().toLocaleTimeString()} 没有新消息`);
+    for (const conversation of waiting.slice(0, Number(values.max))) {
+      handled.add(key(conversation));
+      await handle(conversation);
+      if (quitting) break;
+    }
+  } catch (error) {
+    console.error(`error: ${(error as Error).message}`);
+  }
+  if (values.once || values.name || quitting) break;
+  await sleep(Number(values.interval) * 1000);
+}
+ask?.close();

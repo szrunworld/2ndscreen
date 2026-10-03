@@ -86,8 +86,17 @@ public final class InputEngine {
             }
 
         case .type:
-            guard let text = action.value, !text.isEmpty else { throw AccessibilityError("type needs --value TEXT") }
-            if let element, element.snapshot.isWeb(element.info.index), let center = element.info.center {
+            let replace = action.replace == true
+            // Replacing with nothing clears the field.
+            guard let text = action.value, !text.isEmpty || replace else { throw AccessibilityError("type needs --value TEXT") }
+            if replace {
+                guard let element else { throw AccessibilityError("--replace needs the field named with --index or --text") }
+                guard AXActions.replace(with: text, in: element.snapshot, index: element.info.index) else {
+                    throw AccessibilityError("the field did not take its text through accessibility")
+                }
+                if let center = element.info.center { cursor(.move, center) }
+                response.route = "ax.value"
+            } else if let element, element.snapshot.isWeb(element.info.index), let center = element.info.center {
                 // Web fields mostly take neither accessibility writes nor focus
                 // from the background: type keys, clicking into the field first
                 // unless it has focus, since a click would drop a selection.

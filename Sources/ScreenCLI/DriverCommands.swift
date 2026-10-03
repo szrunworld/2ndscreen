@@ -75,6 +75,7 @@ enum DriverCommands {
         case .type:
             guard let value = args.value("--value") else { throw CommandError("type needs --value TEXT") }
             action.value = value
+            if args.has("--replace") { action.replace = true }
         case .key:
             guard let key = args.value("--key") else { throw CommandError("key needs --key NAME, such as return") }
             action.key = key
