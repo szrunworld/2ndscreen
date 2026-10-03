@@ -386,6 +386,39 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         menu.addItem(.separator())
         menu.addItem(item("Connect Phone…", #selector(showAndroidPairing), on: false))
+        menu.addItem(soundDelayItem())
+    }
+
+    /// How long the phone's sound is held back to match its picture; see
+    /// `AndroidAudioPlayer.extraDelay`.
+    private func soundDelayItem() -> NSMenuItem {
+        let current = AndroidAudioPlayer.extraDelay
+        func label(_ seconds: Double) -> String {
+            seconds == 0 ? "None" : "\(seconds.formatted(.number.precision(.fractionLength(0...2)))) s"
+        }
+        let parent = NSMenuItem(title: "Sound Delay: \(label(current))", action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+        var choices: [Double] = [0, 0.25, 0.5, 0.75, 1, 1.5, 2, 3]
+        if !choices.contains(current) {
+            choices.append(current)
+            choices.sort()
+        }
+        for seconds in choices {
+            var title = label(seconds)
+            if seconds == 1 { title += " (default)" }
+            if ![0, 0.25, 0.5, 0.75, 1, 1.5, 2, 3].contains(seconds) { title += " (custom)" }
+            let entry = item(title, #selector(setSoundDelay(_:)), on: seconds == current)
+            entry.representedObject = seconds
+            submenu.addItem(entry)
+        }
+        parent.submenu = submenu
+        parent.toolTip = "Holds the phone's sound back to line it up with the picture. Takes effect at once."
+        return parent
+    }
+
+    @objc private func setSoundDelay(_ sender: NSMenuItem) {
+        guard let seconds = sender.representedObject as? Double else { return }
+        AndroidAudioPlayer.extraDelay = seconds
     }
 
     /// Full screen on its own Space, opened or brought forward.

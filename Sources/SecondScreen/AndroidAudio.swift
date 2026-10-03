@@ -17,6 +17,17 @@ import SecondScreenCore
 /// playing the excess off at 5% faster, pitch kept.
 /// Thread use: the mirror's audio reader thread only.
 final class AndroidAudioPlayer {
+    /// Delay added to line the sound up with the picture, in seconds. The
+    /// phone's player holds its picture back by its speaker's latency, which
+    /// the captured sound skips, so the sound comes early: 1 s lined it up by
+    /// ear on a Honor phone over Wi-Fi. Set from the menu (Android Phones →
+    /// Sound Delay) or `defaults write io.github.szrunworld.2ndscreen
+    /// androidAudioDelay -float SECONDS`; it takes effect at once.
+    static var extraDelay: Double {
+        get { UserDefaults.standard.object(forKey: "androidAudioDelay") as? Double ?? 1 }
+        set { UserDefaults.standard.set(newValue, forKey: "androidAudioDelay") }
+    }
+
     /// How the buffer grows and shrinks, for `log stream --predicate 'category == "android-audio"'`.
     private static let log = Logger(subsystem: "io.github.szrunworld.2ndscreen", category: "android-audio")
 
@@ -66,11 +77,13 @@ final class AndroidAudioPlayer {
         packetDuration = CMTime(value: 1024, timescale: CMTimeScale(rates[rateIndex]))
     }
 
-    /// Queue one AAC packet.
-    func play(_ packet: Data) {
-        guard let format, !packet.isEmpty else { return }
+    /// Queue one AAC packet; returns how long until it plays, or nil if dropped.
+    @discardableResult
+    func play(_ packet: Data) -> Double? {
+        guard let format, !packet.isEmpty else { return nil }
         if renderer.status == .failed { renderer.flush() }
         if rate == 0 { setRate(1, time: .zero) }
+        jitter.setExtraDelay(Self.extraDelay)
         var now = synchronizer.currentTime()
         let host = CACurrentMediaTime()
         if now.seconds != lastClock {
@@ -100,8 +113,9 @@ final class AndroidAudioPlayer {
         if decision.rate != rate { setRate(decision.rate, time: now) }
         guard let at = decision.at,
               let sample = sampleBuffer(packet, format: format, at: CMTime(seconds: at, preferredTimescale: 48000))
-        else { return }
+        else { return nil }
         renderer.enqueue(sample)
+        return (at - now.seconds) / Double(rate == 0 ? 1 : rate)
     }
 
     func stop() {

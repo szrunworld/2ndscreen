@@ -32,7 +32,10 @@ public struct JitterBuffer {
     /// Packets queued this far beyond the buffer are dropped.
     public var dropAbove = 0.5
 
-    /// The buffer's length now.
+    /// Delay added on top of the buffer, to line the sound up with a
+    /// picture that comes later; `setExtraDelay` changes it while playing.
+    public private(set) var extraDelay = 0.0
+    /// The buffer's length now, the extra delay included.
     public private(set) var latency: Double
     /// When the next packet is due; nil until the first.
     public private(set) var next: Double?
@@ -58,6 +61,18 @@ public struct JitterBuffer {
 
     public init(latency: Double = 0.2) {
         self.latency = latency
+    }
+
+    /// Change the extra delay. A longer one pauses the sound once by the
+    /// difference; a shorter one is played off faster, like any excess.
+    public mutating func setExtraDelay(_ delay: Double) {
+        let change = max(0, delay) - extraDelay
+        guard change != 0 else { return }
+        extraDelay += change
+        minimum += change
+        maximum += change
+        latency = max(minimum, latency + change)
+        if change > 0, let due = next { next = due + change }
     }
 
     /// Start over on a new clock, keeping the buffer's length.
