@@ -25,6 +25,11 @@ set `ARK_API_KEY`. `ARK_MODEL` takes a model or endpoint ID, and
 `ARK_BASE_URL` any OpenAI-compatible server, such as a self-hosted
 UI-TARS-1.5 under vLLM (then set `UI_TARS_VERSION=1.5`).
 
+The default, `doubao-1-5-ui-tars-250428`, takes no new activations since
+2026-09-24 and stops serving on 2026-11-24 (Ark's model deprecation
+notice). Set `ARK_MODEL` to its successor, or self-host the open
+UI-TARS-1.5 weights, which do not expire.
+
 ## Use
 
 ```bash
