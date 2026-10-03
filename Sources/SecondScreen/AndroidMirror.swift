@@ -6,9 +6,9 @@ import SecondScreenCore
 ///
 /// adb pushes scrcpy-server to the device and runs it there with shell
 /// rights, which let it capture the screen with the hardware encoder and
-/// inject input without any app or prompt on the phone. Two sockets come
-/// back through an adb forward: H.264 video, and control messages the other
-/// way. See doc/develop.md in scrcpy's repository.
+/// inject input without any app or prompt on the phone. Up to three sockets
+/// come back through an adb forward: H.264 video, AAC audio, and control
+/// messages the other way. See doc/develop.md in scrcpy's repository.
 /// Thread use: the reader threads own the sockets' read sides, writes go
 /// through `controlQueue`, `lock` guards the rest that they share, and the
 /// sizes and callbacks belong to the main queue.
@@ -48,11 +48,15 @@ final class AndroidMirror: @unchecked Sendable {
     private var serverLog = Data()
     private var port: UInt16 = 0
     private var videoFD: Int32 = -1
+    private var audioFD: Int32 = -1
     private var controlFD: Int32 = -1
+    /// Set once the phone has agreed to send audio.
+    private var audioPlayer: AndroidAudioPlayer?
     private let controlQueue = DispatchQueue(label: "2ndscreen.android.control")
     private let lock = NSLock()
     private var stopped = false
     private var video = true
+    private var audio = true
 
     init(serial: String) {
         self.serial = serial
@@ -62,8 +66,12 @@ final class AndroidMirror: @unchecked Sendable {
     /// call off the main thread, then `startStreaming()`.
     /// - Parameter video: false for a control-only session, which streams
     ///   nothing and only types and presses keys for agents.
-    func start(maxSize: Int, video: Bool = true) throws {
+    /// - Parameter audio: also play the phone's sound on the Mac, with
+    ///   video only. The phone goes quiet meanwhile, as it does with
+    ///   scrcpy's default source, which is the only one that captures every app.
+    func start(maxSize: Int, video: Bool = true, audio: Bool = true) throws {
         self.video = video
+        self.audio = video && audio
         guard let server = Bundle.main.url(forResource: "scrcpy-server", withExtension: nil,
                                            subdirectory: "android") else {
             throw Failure.setup("scrcpy-server is missing from the app; rebuild it with scripts/bundle-app.sh")
@@ -89,7 +97,7 @@ final class AndroidMirror: @unchecked Sendable {
         let process = try ADB.makeProcess([
             "-s", serial, "shell", "CLASSPATH=\(Self.devicePath)", "app_process", "/",
             "com.genymobile.scrcpy.Server", Self.serverVersion, "scid=\(scid)", "log_level=info",
-            "tunnel_forward=true", "audio=false", "video=\(video)", "video_codec=h264", "max_size=\(maxSize)",
+            "tunnel_forward=true", "audio=\(self.audio)", "audio_codec=aac", "video=\(video)", "video_codec=h264", "max_size=\(maxSize)",
             "clipboard_autosync=false",
         ])
         // Keep the server's output for the error message if it fails.
@@ -120,6 +128,7 @@ final class AndroidMirror: @unchecked Sendable {
             let first = try connectWhenReady(process: process)
             if video {
                 videoFD = first
+                if audio { audioFD = try openSocket() }
                 controlFD = try openSocket()
             } else {
                 controlFD = first
@@ -137,10 +146,20 @@ final class AndroidMirror: @unchecked Sendable {
                     ? "The phone could not start screen capture.\(serverError())"
                     : "The phone sent an unexpected video format.")
             }
-            // Video stops while the screen does not change, and the control
-            // socket is quiet; wait as long as it takes.
-            setReceiveTimeout(videoFD, seconds: 0)
-            setReceiveTimeout(controlFD, seconds: 0)
+            if audioFD >= 0 {
+                // 0 means the phone cannot capture audio (before Android
+                // 11), 1 that capture failed; mirror without sound then.
+                let audioCodec = try readExactly(audioFD, 4).bigEndianUInt32(at: 0)
+                if audioCodec == 0x0061_6163 {  // "\0aac"
+                    audioPlayer = AndroidAudioPlayer()
+                }
+            }
+            // Video stops while the screen does not change, audio while the
+            // phone is silent, and the control socket is quiet; wait as long
+            // as it takes.
+            for fd in [videoFD, audioFD, controlFD] where fd >= 0 {
+                setReceiveTimeout(fd, seconds: 0)
+            }
         } catch {
             stop()
             throw error
@@ -154,6 +173,9 @@ final class AndroidMirror: @unchecked Sendable {
         if video {
             Thread.detachNewThread { [weak self] in self?.readVideo() }
         }
+        if audioPlayer != nil {
+            Thread.detachNewThread { [weak self] in self?.readAudio() }
+        }
         Thread.detachNewThread { [weak self] in self?.drainControl() }
     }
 
@@ -164,7 +186,7 @@ final class AndroidMirror: @unchecked Sendable {
         }
         guard !alreadyStopped else { return }
         // Shutting the sockets down wakes the reader threads.
-        for fd in [videoFD, controlFD] where fd >= 0 {
+        for fd in [videoFD, audioFD, controlFD] where fd >= 0 {
             shutdown(fd, SHUT_RDWR)
         }
         server?.terminate()
@@ -275,6 +297,23 @@ final class AndroidMirror: @unchecked Sendable {
             }
         } catch {
             end("The connection to the phone was lost.\(serverError())")
+        }
+    }
+
+    // MARK: Audio
+
+    /// Play audio packets until the socket closes. Losing audio alone
+    /// leaves the mirror running; the video reader reports the phone going away.
+    private func readAudio() {
+        guard let audioPlayer else { return }
+        defer { audioPlayer.stop() }
+        while let header = try? readExactly(audioFD, 12),
+              let packet = try? readExactly(audioFD, Int(header.bigEndianUInt32(at: 8))) {
+            if header[header.startIndex] & 0x80 != 0 {
+                audioPlayer.configure(packet)
+            } else {
+                audioPlayer.play(packet)
+            }
         }
     }
 
@@ -428,7 +467,7 @@ final class AndroidMirror: @unchecked Sendable {
 
     deinit {
         stop()
-        for fd in [videoFD, controlFD] where fd >= 0 {
+        for fd in [videoFD, audioFD, controlFD] where fd >= 0 {
             close(fd)
         }
     }
