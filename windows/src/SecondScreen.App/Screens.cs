@@ -247,10 +247,12 @@ internal sealed class Screens
         var path = Path.GetFullPath(Environment.ExpandEnvironmentVariables(output));
         try
         {
-            using var bitmap = new Bitmap(bounds.Width, bounds.Height, PixelFormat.Format32bppArgb);
+            // RGB: BitBlt leaves alpha at zero, which would make an ARGB image transparent.
+            using var bitmap = new Bitmap(bounds.Width, bounds.Height, PixelFormat.Format32bppRgb);
             using (var graphics = Graphics.FromImage(bitmap))
             {
-                graphics.CopyFromScreen(bounds.X, bounds.Y, 0, 0, new Size(bounds.Width, bounds.Height), CopyPixelOperation.SourceCopy);
+                // Including layered windows, so the agent cursor shows.
+                ScreenCapture.Copy(graphics, bounds, layered: true);
             }
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             bitmap.Save(path, ImageFormat.Png);

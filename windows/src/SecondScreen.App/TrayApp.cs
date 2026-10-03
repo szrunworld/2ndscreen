@@ -161,7 +161,9 @@ internal sealed class TrayApp : ApplicationContext
         }
         foreach (var screen in screens.All.Where(s => !overlays.ContainsKey(s.Name)))
         {
-            overlays[screen.Name] = new CursorOverlay(screen.Device);
+            var overlay = new CursorOverlay(screen.Device);
+            overlays[screen.Name] = overlay;
+            overlay.Show();
         }
     }
 
@@ -173,7 +175,7 @@ internal sealed class TrayApp : ApplicationContext
             return;
         }
         if (screens.Named(name) is not { } screen) return;
-        var preview = new PreviewForm(name, screen.Device, preferences.PreviewOnTop);
+        var preview = new PreviewForm(name, screen.Device, overlays.GetValueOrDefault(name), preferences.PreviewOnTop);
         preview.FormClosed += (_, _) =>
         {
             previews.Remove(name);

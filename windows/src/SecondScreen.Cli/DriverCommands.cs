@@ -37,14 +37,21 @@ public sealed class Driver
     /// <summary>
     /// Run one tool. Non-JSON output (some failures print text) becomes <c>error</c>.
     /// On Windows, tool calls go through cua-driver's daemon, which does not start
-    /// itself; start it once and retry.
+    /// itself; start it once and retry. The daemon also ends idle sessions, after
+    /// which it rejects calls until the session starts again.
     /// </summary>
     public JsonObject Call(string tool, JsonObject arguments)
     {
         var result = CallOnce(tool, (JsonObject)arguments.DeepClone());
-        if (result["error"]?.ToString() is { } error && error.Contains("daemon is not running", StringComparison.OrdinalIgnoreCase)
-            && StartDaemon())
+        string error = result["error"]?.ToString() ?? "";
+        if (error.Contains("daemon is not running", StringComparison.OrdinalIgnoreCase) && StartDaemon())
         {
+            result = CallOnce(tool, (JsonObject)arguments.DeepClone());
+            error = result["error"]?.ToString() ?? "";
+        }
+        if (error.Contains("session has ended", StringComparison.OrdinalIgnoreCase))
+        {
+            CallOnce("start_session", new JsonObject());
             result = CallOnce(tool, arguments);
         }
         return result;
