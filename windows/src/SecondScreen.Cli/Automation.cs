@@ -157,14 +157,39 @@ public sealed class Automation
                 (false, true) => ScrollAmount.LargeDecrement,
                 (false, false) => ScrollAmount.SmallDecrement,
             };
+            double Percent() => vertical ? pattern.Current.VerticalScrollPercent : pattern.Current.HorizontalScrollPercent;
+            double before = Percent();
             for (int i = 0; i < notches; i++)
             {
                 if (vertical) pattern.ScrollVertical(amount);
                 else pattern.ScrollHorizontal(amount);
             }
-            return "uia.scroll";
+            if (Percent() != before) return "uia.scroll";
+            // Chromium answers Scroll without scrolling a background page; a position it takes.
+            double view = vertical ? pattern.Current.VerticalViewSize : pattern.Current.HorizontalViewSize;
+            double step = (byPage ? view : Math.Max(view / 10, 1)) * notches * (direction is "down" or "right" ? 1 : -1);
+            double target = Math.Clamp(before + step, 0, 100);
+            if (vertical) pattern.SetScrollPercent(ScrollPattern.NoScroll, target);
+            else pattern.SetScrollPercent(target, ScrollPattern.NoScroll);
+            return Percent() != before ? "uia.scrollpercent" : null;
         }
         return null;
+    }
+
+    /// <summary>The element at a screen point, if it belongs to the window.</summary>
+    public static AutomationElement? At((double X, double Y) point, nint window)
+    {
+        try
+        {
+            var element = AutomationElement.FromPoint(new System.Windows.Point(point.X, point.Y));
+            int pid = element.Current.ProcessId;
+            Win32.GetWindowThreadProcessId(window, out var owner);
+            return pid == owner ? element : null;
+        }
+        catch (Exception error) when (error is ElementNotAvailableException or InvalidOperationException or System.Runtime.InteropServices.COMException)
+        {
+            return null;
+        }
     }
 
     /// <summary>The element's own window handle, or its nearest ancestor's.</summary>

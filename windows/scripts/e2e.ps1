@@ -255,10 +255,14 @@ function Test-Program([string] $kind, $launched) {
     Check "${kind}: type" ([bool]($typed.ok -and (Value-Of $state "Input") -eq "你好 2ndscreen")) "value '$(Value-Of $state "Input")' $($typed.route) $($typed.error)"
 
     # ctrl+a then backspace empties the box only if the shortcut selected everything.
+    if (-not (Value-Of $state "Input")) {
+        Skip "${kind}: ctrl+a" "the box is empty, so emptying it would prove nothing"
+    } else {
     $selected = Invoke-2ndscreen (@("key") + $on + @("--text", "Input", "--key", "a", "--modifiers", "ctrl"))
     $erased = Invoke-2ndscreen (@("key") + $on + @("--text", "Input", "--key", "backspace"))
     $state = Read-State
     Check "${kind}: ctrl+a" ([bool]($selected.ok -and $erased.ok -and -not (Value-Of $state "Input"))) "value '$(Value-Of $state "Input")' $($selected.route) $($selected.error) $($erased.error)"
+    }
 
     $scrolled = Invoke-2ndscreen (@("scroll") + $on + @("--text", "Rows", "--direction", "down", "--amount", "5"))
     $state = Read-State

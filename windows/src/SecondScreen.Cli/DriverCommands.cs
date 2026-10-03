@@ -146,6 +146,13 @@ public static class DriverCommands
         // to the page's renderer window.
         if (Automation.IsWeb(handle))
         {
+            // Chromium ignores characters posted to its renderer; a value written through
+            // UI Automation reaches the page when it lands.
+            if (Automation.IsEditable(handle))
+            {
+                Pattern(window, () => { Automation.SetValue(handle, before + text); return "uia.value"; });
+                if (Landed(handle, before, text)) return Report(target, described, "uia.value");
+            }
             var route = FocusWeb(window, element, handle);
             return Report(target, described, route + Input.Type(window, text, native != window ? native : 0));
         }
@@ -234,7 +241,14 @@ public static class DriverCommands
             point = (frame.CenterX, frame.CenterY);
         }
 
-        if (!args.Has("--foreground")) return Report(target, described, Input.Wheel(window, point, direction, notches, by == "page"));
+        if (!args.Has("--foreground"))
+        {
+            // Chromium ignores a posted wheel; scroll what lies under the point instead.
+            if (IsChromium(window) && Automation.At(point, window) is { } under
+                && Pattern(window, () => Automation.Scroll(under, direction, notches, by == "page")) is { } route)
+                return Report(target, described, route);
+            return Report(target, described, Input.Wheel(window, point, direction, notches, by == "page"));
+        }
         var (delta, horizontal) = Messages.Wheel(direction, notches * (by == "page" ? 3 : 1));
         return Report(target, described, Input.Foreground(window, (move, send) =>
         {
@@ -300,8 +314,7 @@ public static class DriverCommands
         var root = Win32.GetAncestor(window, Win32.GA_ROOT);
         if (root == 0) root = window;
         var name = Win32.ClassName(root);
-        bool disable = name.StartsWith("Chrome_WidgetWin_", StringComparison.Ordinal) || name.StartsWith("CefBrowser", StringComparison.Ordinal)
-            || name is "ApplicationFrameWindow" or "WinUIDesktopWin32WindowClass" or "Windows.UI.Core.CoreWindow";
+        bool disable = IsChromium(root) || name is "ApplicationFrameWindow" or "WinUIDesktopWin32WindowClass" or "Windows.UI.Core.CoreWindow";
         bool wasEnabled = Win32.IsWindowEnabled(root);
         string? route = null;
         Input.Quietly(window, () =>
@@ -321,6 +334,14 @@ public static class DriverCommands
             }
         });
         return route;
+    }
+
+    /// <summary>Whether the window is a Chromium browser or Electron program.</summary>
+    private static bool IsChromium(nint window)
+    {
+        var root = Win32.GetAncestor(window, Win32.GA_ROOT);
+        var name = Win32.ClassName(root != 0 ? root : window);
+        return name.StartsWith("Chrome_WidgetWin_", StringComparison.Ordinal) || name.StartsWith("CefBrowser", StringComparison.Ordinal);
     }
 
     private static void RequireInWindow(Target target, (double X, double Y) point)

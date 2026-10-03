@@ -25,6 +25,9 @@ usage:
   2ndscreen drag  --screen NAME --pid PID --from-x X --from-y Y --to-x X --to-y Y
                   [--modifiers shift] [--duration-ms MS] [--foreground]
 
+  2ndscreen agent --screen NAME --pid PID [--window-id ID] [--allow-submit] [--foreground]
+                  [--max-steps N] INSTRUCTION
+
   2ndscreen mcp      serve these commands as MCP tools over stdio
   2ndscreen doctor   report displays and the virtual display driver
 
@@ -43,6 +46,12 @@ is on the named screen. For programs that ignore background input, scroll and
 drag take --foreground, which brings the program to the front and moves the
 real pointer (2ndscreen puts both back afterwards). Indexes come from state;
 click and type re-read the window, so run state again after the UI changes.
+
+agent runs INSTRUCTION with a UI-TARS vision model, which reads screenshots of
+the screen and acts by sight through the commands above. Without
+--allow-submit it stops before anything that would send: Enter, typed text
+ending in a newline, or a click on Send. It reads ARK_API_KEY, ARK_MODEL and
+ARK_BASE_URL from the environment or %USERPROFILE%\.config\2ndscreen\ark.env.
 """;
 
 if (OperatingSystem.IsWindows()) Desktop.BecomeDpiAware();
@@ -63,6 +72,7 @@ if (args is ["doctor"]) return Doctor.Run();
 var parsed = new Arguments(args);
 var first = parsed.Positional.FirstOrDefault() ?? "";
 if (DriverCommands.Verbs.Contains(first)) return DriverCommands.Run(first, parsed);
+if (first == "agent") return AgentCommand.Run(parsed);
 
 var request = new ControlRequest();
 switch (string.Join(' ', parsed.Positional.Take(2)))
@@ -160,7 +170,7 @@ namespace SecondScreen.Cli
             "--name", "--size", "--screen", "--bundle", "--path", "--arg", "--pid", "--window-id", "--output",
             "--query", "--screenshot", "--index", "--text", "--x", "--y", "--value", "--key", "--modifiers",
             "--ttl", "--idle-timeout", "--owner-pid", "--direction", "--amount", "--by",
-            "--from-x", "--from-y", "--to-x", "--to-y", "--duration-ms",
+            "--from-x", "--from-y", "--to-x", "--to-y", "--duration-ms", "--max-steps",
         };
 
         public List<string> Positional { get; } = new();

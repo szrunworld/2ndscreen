@@ -3,6 +3,14 @@ using System.Windows.Automation;
 using System.Windows.Controls;
 
 // A text box, a button counting presses, and a list reporting its top row, as in TestTarget.
+// WPF needs a single-threaded apartment, which top-level statements do not get.
+var thread = new Thread(Run);
+thread.SetApartmentState(ApartmentState.STA);
+thread.Start();
+thread.Join();
+
+static void Run()
+{
 var app = new Application();
 var panel = new StackPanel { Margin = new Thickness(20) };
 var input = new TextBox { Width = 460, HorizontalAlignment = HorizontalAlignment.Left };
@@ -26,6 +34,7 @@ panel.Children.Add(list);
 panel.Children.Add(top);
 var window = new Window { Title = "2ndscreen WPF test target", Width = 520, Height = 520, Content = panel };
 app.Run(window);
+}
 
 static ScrollViewer? FindScroller(DependencyObject node)
 {
