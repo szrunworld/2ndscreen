@@ -196,12 +196,13 @@ if ($SkipDriver -or -not $launched.ok) {
     Add-Type -AssemblyName System.Windows.Forms
     $before = [System.Windows.Forms.Cursor]::Position
     $topBefore = [int]([regex]::Match($state.tree, "Top (\d+)").Groups[1].Value)
-    $wheel = Invoke-2ndscreen (@("scroll") + $target + @("--x", "$lx", "--y", "$ly", "--direction", "down", "--amount", "5", "--foreground"))
+    # The background scroll above left the list at or near its end, so scroll back up.
+    $wheel = Invoke-2ndscreen (@("scroll") + $target + @("--x", "$lx", "--y", "$ly", "--direction", "up", "--amount", "5", "--foreground"))
     $after = [System.Windows.Forms.Cursor]::Position
     Start-Sleep -Milliseconds 500
     $state = Invoke-2ndscreen @("state", "--screen", "e2e", "--pid", "$targetPid")
     $topAfter = [int]([regex]::Match($state.tree, "Top (\d+)").Groups[1].Value)
-    Check "wheel at a point with --foreground" ([bool]($wheel.ok -and $topAfter -gt $topBefore)) "Top $topBefore -> $topAfter $($wheel.error)"
+    Check "wheel at a point with --foreground" ([bool]($wheel.ok -and $topAfter -lt $topBefore)) "Top $topBefore -> $topAfter $($wheel.error)"
     Check "pointer put back after --foreground" ($before -eq $after) "$before -> $after"
     Invoke-2ndscreen @("screenshot", "--screen", "e2e", "--output", (Join-Path $Out "e2e-input.png")) | Out-Null
 }

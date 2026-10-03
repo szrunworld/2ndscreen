@@ -10,7 +10,8 @@ button.Click += (_, _) => label.Text = $"Pressed {++presses}";
 var list = new ListBox { Left = 20, Top = 130, Width = 200, Height = 300, AccessibleName = "Rows" };
 list.Items.AddRange(Enumerable.Range(1, 200).Select(i => (object)$"Row {i}").ToArray());
 var top = new Label { Left = 240, Top = 130, Width = 240, Text = "Top 0" };
-var pad = new Panel { Left = 240, Top = 170, Width = 240, Height = 200, BorderStyle = BorderStyle.FixedSingle, AccessibleName = "Pad" };
+// A label, since UI Automation names it by its text; a panel's AccessibleName does not show up.
+var pad = new Label { Left = 240, Top = 170, Width = 240, Height = 200, BorderStyle = BorderStyle.FixedSingle, Text = "Pad" };
 var events = new Label { Left = 240, Top = 390, Width = 240, Height = 60, Text = "Pad idle" };
 var timer = new System.Windows.Forms.Timer { Interval = 100 };
 timer.Tick += (_, _) => top.Text = $"Top {list.TopIndex}";
