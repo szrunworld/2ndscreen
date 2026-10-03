@@ -73,8 +73,7 @@ final class AgentScreens {
     }
 
     func destroyAll() {
-        var arrangement = DisplayLayout.origins()
-        for screen in screens { arrangement.removeValue(forKey: screen.display.displayID) }
+        let arrangement = userArrangement()
         screens.removeAll()
         bindings.removeAll()
         onChange?()
@@ -375,15 +374,24 @@ final class AgentScreens {
     // MARK: Helpers
 
     private func remove(named name: String) {
-        guard let removed = screen(named: name) else { return }
-        var arrangement = DisplayLayout.origins()
-        arrangement.removeValue(forKey: removed.display.displayID)
+        guard screen(named: name) != nil else { return }
+        let arrangement = userArrangement()
         screens.removeAll { $0.name == name }
         bindings = bindings.filter { $0.value.screen != name }
         onChange?()
         // The display goes once nothing holds it; macOS may then close the
         // gap by shifting the displays beside it.
         Task { await keepArrangement(arrangement, adding: nil, windows: []) }
+    }
+
+    /// The origins of the displays that are not this app's agent screens.
+    /// macOS keeps displays touching, so the agent screens right of a removed
+    /// one must move left to close the gap; putting them back only fights it
+    /// and flickers every display. Agents read a screen's frame afresh anyway.
+    private func userArrangement() -> [CGDirectDisplayID: CGPoint] {
+        var arrangement = DisplayLayout.origins()
+        for screen in screens { arrangement.removeValue(forKey: screen.display.displayID) }
+        return arrangement
     }
 
     /// Undo what adding or removing a display did to the rest of the
