@@ -27,7 +27,7 @@ import {
   type UnitRunResult,
 } from '../../../../packages/task-runtime/src/contracts.ts';
 import { clickElement, delivered, look, pollFor, pressKey, scrollOver, Trace, type Env } from './actions.ts';
-import { findRows, identify, listCandidates, listContinues, listEnded, listLoading, matchJob, normalize, rowElement } from './candidates.ts';
+import { findRows, identify, identityIncomplete, listCandidates, listContinues, listEnded, listLoading, matchJob, normalize, rowElement } from './candidates.ts';
 import {
   ATTACHMENT_ROUTE_OFF,
   captureOnlineResume,
@@ -223,11 +223,15 @@ export function createBossResumesWorkflowWith(options: BossResumesOptions): Boss
     const shown = await pollFor(session, env, signal, openTimeoutMs, (x) => (optionsOf(x).length ? optionsOf(x) : undefined));
     o = shown.observation;
     const options = shown.value ?? [];
+    // Diagnostic only: a click the app took without changing the tree at all is told apart from a menu with no readable options.
+    const unchanged = !options.length && (o.elements ?? []).every((e) => before.has(placed(e, text(e))));
     const match = matchJob(options.map(text), task.input.job);
     if (match.kind !== 'unique') {
       await pressKey(session, o, 'escape', trace, signal);
       const after = await look(session, env, signal);
-      return result(false, trace, after, match.kind === 'ambiguous' ? 'job_ambiguous' : options.length ? 'job_not_found' : 'job_options_not_shown');
+      const reason = match.kind === 'ambiguous' ? 'job_ambiguous' : options.length ? 'job_not_found'
+        : unchanged ? 'job_options_not_shown: the filter click changed nothing in the accessibility tree' : 'job_options_not_shown';
+      return result(false, trace, after, reason);
     }
     const option = options.find((e) => text(e) === match.option)!;
     resolvedJobs.set(key, normalize(match.option));
@@ -256,12 +260,18 @@ export function createBossResumesWorkflowWith(options: BossResumesOptions): Boss
     if (!row) return result(false, trace, o, 'candidate_row_not_found');
     const clicked = await clickElement(session, o, row, trace, signal, 'row');
     if (!delivered(clicked)) return result(false, trace, o, `row_click_${clicked.status}`);
-    // The header may still show the previous person for a moment; wait for this one.
+    // The header may still show the previous person, or nothing yet, for a moment; wait for this one.
+    // Only a match or an ambiguity that more loading cannot resolve ends the wait early.
     const opened = await pollFor(session, env, signal, openTimeoutMs, (x) => {
+      if (x.pageClass !== 'conversation_detail') return undefined;
       const m = identify(x, rows[0]!, account, collisions);
-      return m.kind === 'mismatch' || x.pageClass !== 'conversation_detail' ? undefined : m;
+      return m.kind === 'mismatch' || identityIncomplete(m) ? undefined : m;
     });
-    if (!opened.value) return result(false, trace, opened.observation, 'conversation_not_opened');
+    if (!opened.value) {
+      const last = opened.observation;
+      const incomplete = last.pageClass === 'conversation_detail' && identityIncomplete(identify(last, rows[0]!, account, collisions));
+      return result(false, trace, last, incomplete ? 'identity_incomplete' : 'conversation_not_opened');
+    }
     if (opened.value.kind === 'ambiguous') return result(false, trace, opened.observation, 'identity_ambiguous');
     const known = context.item?.identity;
     if (known && opened.value.kind === 'match' && known.fingerprint !== opened.value.identity.fingerprint)

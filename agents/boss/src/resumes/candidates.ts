@@ -183,6 +183,23 @@ const nameMatches = (seen: string, listed: string) => {
 };
 
 /**
+ * Ambiguities that only mean the conversation has not finished drawing: no
+ * header name, no job, or nothing beyond the name yet. BOSS fills the header
+ * in after the message box appears, so these are waited out, never accepted.
+ */
+const INCOMPLETE = {
+  noChat: 'no conversation is open',
+  noName: 'the conversation header shows no name',
+  noJob: 'the conversation shows no job to check',
+  nameOnly: 'only a name is visible; identity needs summary or history',
+} as const;
+
+/** Whether an identity check failed only because the conversation is still loading. */
+export function identityIncomplete(match: IdentityMatch): boolean {
+  return match.kind === 'ambiguous' && (Object.values(INCOMPLETE) as string[]).includes(match.reason);
+}
+
+/**
  * Check the opened conversation against the list ref and derive the
  * person's identity from the header summary and history. The name and job
  * must agree; the identity needs history or summary beyond the name; the
@@ -190,17 +207,17 @@ const nameMatches = (seen: string, listed: string) => {
  */
 export function identify(observation: Observation, ref: CandidateRef, account: AccountScope, collisions?: ReadonlySet<string>): IdentityMatch {
   const open = openChat(observation);
-  if (!open) return { kind: 'ambiguous', reason: 'no conversation is open' };
+  if (!open) return { kind: 'ambiguous', reason: INCOMPLETE.noChat };
   const c = open.candidate;
-  if (!c.name) return { kind: 'ambiguous', reason: 'the conversation header shows no name' };
+  if (!c.name) return { kind: 'ambiguous', reason: INCOMPLETE.noName };
   if (!nameMatches(c.name, ref.name)) return { kind: 'mismatch', expected: hashTag('name', ref.name), seen: hashTag('name', c.name) };
   // The job is part of the match: without it on both sides nothing shows this is the right conversation.
   if (!ref.jobTitle) return { kind: 'ambiguous', reason: 'the list row shows no job to check' };
-  if (!c.position) return { kind: 'ambiguous', reason: 'the conversation shows no job to check' };
+  if (!c.position) return { kind: 'ambiguous', reason: INCOMPLETE.noJob };
   if (!jobBelongs(c.position, ref.jobTitle) && !jobBelongs(ref.jobTitle, c.position))
     return { kind: 'mismatch', expected: hashTag('job', ref.jobTitle), seen: hashTag('job', c.position) };
   const history = c.history.map((l) => l.trim()).filter(Boolean);
-  if (!history.length && !c.summary) return { kind: 'ambiguous', reason: 'only a name is visible; identity needs summary or history' };
+  if (!history.length && !c.summary) return { kind: 'ambiguous', reason: INCOMPLETE.nameOnly };
   if (ref.hints.includes('name_job_collision') || collisions?.has(pairKey(account, ref.name, ref.jobTitle)))
     return { kind: 'ambiguous', reason: 'another row with the same name and job was seen; the opened row cannot be told apart' };
   const twins = listRows(observation).filter((r) => normalize(r.name) === normalize(c.name) && normalize(r.position) === normalize(ref.jobTitle!));

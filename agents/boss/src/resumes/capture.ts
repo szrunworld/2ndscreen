@@ -9,6 +9,13 @@
 // pane is at its scroll end (it scrolls up, comes back to the same image,
 // and goes no further). Identical screens alone never end a capture.
 //
+// The top has no platform mark: the real image (BOSS 1.7.4) starts with the
+// candidate's avatar, name and activity, then the summary. The top counts
+// as confirmed only when upward scrolls stopped changing the pane, the
+// mirror probe shows the scroll start (down changes it, up comes back to
+// the same image, a further up changes nothing), and that image's first
+// text row near its top is the listed name.
+//
 // Original attachment: not verified on macOS (P0 had no received
 // attachment), so the route is off unless explicitly enabled. When enabled,
 // the file must appear as exactly one new, finished file whose name names
@@ -59,6 +66,13 @@ export interface CaptureLimits {
   /** Clicks on 查看全部 allowed in one capture. */
   maxExpansions: number;
   /**
+   * Points below the content's top within which the candidate's name must
+   * sit on the top screen, as its first text row. The header row (avatar,
+   * name, activity) is the first thing in the image; 120 pt leaves room for
+   * a tall avatar without reaching into the body.
+   */
+  headerMaxPt: number;
+  /**
    * Points at the pane's right edge left out of comparing and stitching: the
    * scrollbar moves there on every scroll while the content does not. P0
    * (BOSS 1.7.4, macOS) measured 4 pt; 8 pt keeps a margin.
@@ -81,6 +95,7 @@ export const DEFAULT_CAPTURE_LIMITS: CaptureLimits = {
   sameSimilarity: 0.995,
   minOverlapPx: 48,
   maxExpansions: 12,
+  headerMaxPt: 120,
   gutterPt: 8,
   topBorderPt: 1,
 };
@@ -105,8 +120,11 @@ export function contentRoi(shot: Pick<ScreenshotRef, 'widthPx' | 'heightPx' | 'c
 export const FOOTER_MARKERS = ['为妥善保护牛人在boss直聘平台提交', '在线浏览牛人简历'];
 /** Lines the footer may wrap into on a narrow pane. */
 const FOOTER_LINES = 4;
-/** The logo line drawn at the top of the resume image. */
-export const TOP_MARKER = 'boss直聘';
+/**
+ * The activity note BOSS prints after the name in the header row, in case
+ * OCR reads the two as one line. Matched against what follows the name.
+ */
+export const HEADER_ACTIVITY = /^(刚刚活跃|今日活跃|昨日活跃|本周活跃|本月活跃|半年内活跃|\d+(日|天|周|月)内活跃|在线)$/;
 
 interface Frame {
   observation: Observation;
@@ -147,9 +165,41 @@ export function footerVisible(ocr: OcrResult): boolean {
   return FOOTER_MARKERS.some((m) => joined.includes(normalize(m)));
 }
 
-/** The logo line in the top part of the screen. */
-export function topMarkerVisible(ocr: OcrResult): boolean {
-  return ocrText(ocr.lines.filter((l) => l.box.y < ocr.heightPx * 0.2)).includes(TOP_MARKER);
+/** Where on a top screen the header name may sit, in the screenshot's pixels. */
+export interface HeaderBand {
+  /** Content top: lines ending above it are the clipped border row. */
+  topPx: number;
+  /** The name's line must start above this. */
+  maxYPx: number;
+  /** The name's line must start left of this (it follows the avatar). */
+  maxXPx: number;
+}
+
+/** The band for a screenshot, converted by its measured pixels per point. */
+export function headerBand(shot: Pick<ScreenshotRef, 'widthPx' | 'heightPx' | 'covers'>, limits: { headerMaxPt: number; topBorderPt: number }): HeaderBand {
+  const pxPerPt = shot.heightPx / shot.covers.height;
+  const topPx = Math.ceil(limits.topBorderPt * pxPerPt);
+  return { topPx, maxYPx: topPx + Math.floor(limits.headerMaxPt * pxPerPt), maxXPx: Math.floor(shot.widthPx * 0.6) };
+}
+
+const isHeaderName = (line: string, want: string) => {
+  const t = normalize(line);
+  return t === want || (t.startsWith(want) && HEADER_ACTIVITY.test(t.slice(want.length)));
+};
+
+/**
+ * Whether `name` is the resume's header on this screen: one OCR line that
+ * reads exactly the name (or the name and its activity note), starting in
+ * the band near the top and left, with no other text above it. The name
+ * anywhere else, inside a longer line, or under other text is not a header.
+ */
+export function headerShowsName(ocr: OcrResult, name: string, band: HeaderBand): boolean {
+  const want = normalize(name);
+  if (!want) return false;
+  const lines = ocr.lines.filter((l) => normalize(l.text) && l.box.y + l.box.height > band.topPx);
+  return lines.some((l) => isHeaderName(l.text, want)
+    && l.box.y < band.maxYPx && l.box.x < band.maxXPx
+    && !lines.some((o) => o !== l && o.box.y + o.box.height / 2 < l.box.y));
 }
 
 const isFold = (l: OcrLine) => normalize(l.text) === '查看全部';
@@ -191,6 +241,7 @@ export async function captureOnlineResume(input: CaptureInput): Promise<Acquisit
 
   let size: { widthPx: number; heightPx: number } | undefined;
   let roi: Rect | undefined;
+  let band: HeaderBand | undefined;
   const shoot = async (): Promise<Frame> => {
     const observation = await look(session, env, signal, { screenshot: true, region: pane });
     const overlay = resumeOverlay(observation);
@@ -202,6 +253,7 @@ export async function captureOnlineResume(input: CaptureInput): Promise<Acquisit
     size ??= { widthPx: shot.widthPx, heightPx: shot.heightPx };
     if (shot.widthPx !== size.widthPx || shot.heightPx !== size.heightPx) throw new CaptureStop('resume_pane_resized');
     roi ??= contentRoi(shot, limits);
+    band ??= headerBand(shot, limits);
     return { observation, shot, overlay };
   };
   const ocr = async (path: string): Promise<OcrResult> => {
@@ -231,15 +283,17 @@ export async function captureOnlineResume(input: CaptureInput): Promise<Acquisit
 
   let stop: CaptureEvidence['stop'] | undefined;
   let topConfirmed = false;
+  let upNoChange = false;
+  let topProbeOk = false;
+  let headerName = false;
   let unexpanded = false;
   let expansions = 0;
   let footer = false;
   let probeOk = false;
 
   try {
-    // Top: scroll up until a scroll changes nothing, then require the logo line.
+    // Top: scroll up until a scroll changes nothing, then probe the start and require the header.
     let frame = await shoot();
-    let upNoChange = false;
     for (let i = 0; i < limits.maxTopScrolls; i++) {
       const next = await scroll(frame, 'up', Math.min(50, limits.scrollLines * 3));
       const c = await compare(frame.shot.path, next.shot.path);
@@ -249,6 +303,7 @@ export async function captureOnlineResume(input: CaptureInput): Promise<Acquisit
         break;
       }
     }
+    if (upNoChange) ({ ok: topProbeOk, frame } = await probeStart(frame));
 
     /** Expand folded sections visible in `page`, replacing it with the expanded screen. */
     const expand = async (page: Kept, current: Frame): Promise<{ page: Kept; frame: Frame }> => {
@@ -292,10 +347,11 @@ export async function captureOnlineResume(input: CaptureInput): Promise<Acquisit
     };
 
     let page = await keep(frame);
+    headerName = headerShowsName(page.ocr, input.candidateName, band!);
     ({ page, frame } = await expand(page, frame));
-    topConfirmed = upNoChange && topMarkerVisible(kept[0]!.ocr);
-    if (!axName && !ocrText(kept[0]!.ocr.lines).includes(normalize(input.candidateName)))
-      return { status: 'failed', reason: 'resume_identity_unconfirmed: neither the overlay nor the resume shows the listed name' };
+    topConfirmed = upNoChange && topProbeOk && headerName;
+    if (!axName && !headerName)
+      return { status: 'failed', reason: 'resume_identity_unconfirmed: neither the overlay nor the resume header shows the listed name' };
 
     let progressed = false;
     let downNoChange = 0;
@@ -339,6 +395,22 @@ export async function captureOnlineResume(input: CaptureInput): Promise<Acquisit
     }
 
     /**
+     * The scroll start, shown by control: from the top screen a scroll down
+     * changes it, a scroll up returns to it, and a further scroll up leaves
+     * it unchanged. Returns the last screen, which is the top image again
+     * when the probe holds. Probe screens are not kept.
+     */
+    async function probeStart(top: Frame): Promise<{ ok: boolean; frame: Frame }> {
+      const step = limits.scrollLines;
+      const down = await scroll(top, 'down', step);
+      if (same(await compare(top.shot.path, down.shot.path))) return { ok: false, frame: down };
+      const up = await scroll(down, 'up', Math.min(50, step * 2));
+      if (!same(await compare(top.shot.path, up.shot.path))) return { ok: false, frame: up };
+      const further = await scroll(up, 'up', step);
+      return { ok: same(await compare(top.shot.path, further.shot.path)), frame: further };
+    }
+
+    /**
      * The scroll end, shown by control rather than by sameness: from the
      * end screen a scroll up changes it, a scroll down returns to it, and a
      * further scroll down leaves it unchanged. Probe screens are not kept.
@@ -359,6 +431,8 @@ export async function captureOnlineResume(input: CaptureInput): Promise<Acquisit
   }
 
   if (unexpanded) problems.push('folded_section_not_expanded');
+  if (kept.length && !topConfirmed)
+    problems.push(`top_unconfirmed: ${[!upNoChange && 'up_scroll_kept_moving', upNoChange && !topProbeOk && 'start_probe_failed', !headerName && 'header_name_not_first_row'].filter(Boolean).join(',')}`);
   const evidence: CaptureEvidence = {
     pages: kept.length,
     topConfirmed,
@@ -405,7 +479,8 @@ export async function captureOnlineResume(input: CaptureInput): Promise<Acquisit
     contentRoi: roi ?? null,
     gutterPt: limits.gutterPt,
     topBorderPt: limits.topBorderPt,
-    identity: { overlayName: axName, resumeName: ocrText(kept[0]!.ocr.lines).includes(normalize(input.candidateName)) },
+    identity: { overlayName: axName, resumeHeaderName: headerName },
+    top: { upScrollStable: upNoChange, startProbe: topProbeOk, headerName, headerMaxPt: limits.headerMaxPt },
     composed: composed ?? null,
     problems,
   };

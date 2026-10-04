@@ -20,6 +20,7 @@ import {
   isCountable,
   isRuntimeError,
   safePathSegment,
+  systemClock,
   throwIfAborted,
   validateCondition,
   type AccountScope,
@@ -50,7 +51,8 @@ import { createArtifactStore } from '../src/artifacts.ts';
 import { createBossResumesWorkflow, createBossResumesWorkflowWith } from '../../../agents/boss/src/resumes/workflow.ts';
 import { classifyPage } from '../../../agents/boss/src/resumes/pages.ts';
 import { identify, listCandidates, matchJob } from '../../../agents/boss/src/resumes/candidates.ts';
-import { footerVisible, resumeText, topMarkerVisible } from '../../../agents/boss/src/resumes/capture.ts';
+import { captureOnlineResume, footerVisible, headerShowsName, resumeText } from '../../../agents/boss/src/resumes/capture.ts';
+import { Trace } from '../../../agents/boss/src/resumes/actions.ts';
 import type { AttachmentRoute } from '../../../agents/boss/src/resumes/capture.ts';
 
 // ---------------------------------------------------------------------------
@@ -105,6 +107,10 @@ interface Person {
   bodyLines: number;
   fold?: boolean;
   attachment?: { fileName: string; bytes: Buffer } | 'none';
+  /** The name the resume image's header shows, when it is not the listed one. */
+  headerName?: string;
+  /** A body line on the first screen that reads exactly the listed name. */
+  bodyMention?: boolean;
 }
 
 const people = (): Person[] => [
@@ -127,24 +133,32 @@ interface Shot {
   /** Changes when the resume's text changes under the capture. */
   version: number;
   /** Lines of the document as drawn at this offset. */
-  lines: Array<{ text: string; y: number }>;
+  lines: Array<{ text: string; y: number; x?: number; width?: number }>;
 }
 
 interface DocLine {
   text: string;
   y: number;
+  /** Pixels from the left; body lines start at 100. */
+  x?: number;
+  width?: number;
   kind?: 'fold' | 'unfold';
 }
 
+/**
+ * The resume image as BOSS 1.7.4 draws it (P0, shape only): no platform mark
+ * at the top; the first row is the avatar (an image, no text), the name and
+ * an activity note, then the summary and the body.
+ */
 function documentOf(p: Person, expanded: boolean, footer: boolean): DocLine[] {
   const lines: DocLine[] = [
-    { text: 'BOSS直聘', y: 20 },
-    { text: p.name, y: 100 },
-    { text: (p.summary as string[]).join('|') || '示例', y: 160 },
+    { text: p.headerName ?? p.name, y: 36, x: 170, width: 90 },
+    { text: '刚刚活跃', y: 36, x: 300, width: 120 },
+    { text: (p.summary as string[]).join('|') || '示例', y: 110 },
   ];
   let y = 220;
   for (let j = 1; j <= p.bodyLines; j++) {
-    lines.push({ text: `第${j}行 示例经历与项目描述 ${p.name.length}${j}`, y });
+    lines.push({ text: p.bodyMention && j === 2 ? p.name : `第${j}行 示例经历与项目描述 ${p.name.length}${j}`, y });
     y += 60;
     if (p.fold && j === 5) {
       if (expanded) {
@@ -187,6 +201,18 @@ interface AppOptions {
   extraDownload?: string;
   /** Pixels per point of screenshots; P0 measured 2, never assumed. */
   scale?: number;
+  /** Where the resume opens, in pixels from its top. */
+  startOffset?: number;
+  /** Upward scrolls over the resume that do nothing before scrolling works. */
+  upStuckFor?: number;
+  /** Whether the overlay's side column shows the name as text (default yes). */
+  overlayName?: boolean;
+  /**
+   * After a row click the conversation shows its message box at once, but
+   * its header fills in later, on the wall clock: nothing for the first
+   * half, then the name and job only, then everything.
+   */
+  headerDelayMs?: number;
 }
 
 class FakeBoss implements Session {
@@ -204,6 +230,8 @@ class FakeBoss implements Session {
   loadingLeft = 0;
   offset = 0;
   expanded = false;
+  upStuckLeft = 0;
+  headerReadyAt = 0;
   /** Bumped by a test to change the resume's text mid-capture. */
   version = 0;
   readonly clicks: string[] = [];
@@ -286,18 +314,24 @@ class FakeBoss implements Session {
     // Open conversation.
     if (this.open !== undefined) {
       const p = this.persons[this.open]!;
-      add('AXStaticText', p.name, { x: 531, y: 23, width: 66, height: 24 }, '', p.name);
-      (p.summary as string[]).forEach((s, k) => add('AXStaticText', s, { x: 531 + 50 * k, y: 62, width: 30, height: 16 }, '', s));
+      const left = this.headerReadyAt - Date.now();
+      const delay = this.opts.headerDelayMs ?? 0;
+      const named = left <= delay / 2;
+      const full = left <= 0;
+      if (named) add('AXStaticText', p.name, { x: 531, y: 23, width: 66, height: 24 }, '', p.name);
+      if (full) (p.summary as string[]).forEach((s, k) => add('AXStaticText', s, { x: 531 + 50 * k, y: 62, width: 30, height: 16 }, '', s));
       add('AXLink', '在线简历', { x: 1164, y: 36, width: 96, height: 38 }, 'link:online');
       add('AXStaticText', '在线简历', { x: 1196, y: 48, width: 53, height: 15 }, 'link:online', '在线简历');
       add('AXStaticText', '附件简历', { x: 1306, y: 48, width: 52, height: 15 }, 'attach', '附件简历');
-      p.history.forEach((h, k) => {
+      if (full) p.history.forEach((h, k) => {
         const [dates, ...rest] = h.split(' ');
         add('AXStaticText', dates, { x: 548, y: 118 + 28 * k, width: 99, height: 15 }, '', dates);
         add('AXStaticText', rest.join(' '), { x: 663, y: 118 + 28 * k, width: 207, height: 15 }, '', rest.join(' '));
       });
-      add('AXStaticText', '沟通职位：', { x: 987, y: 118, width: 65, height: 15 }, '', '沟通职位：');
-      add('AXStaticText', p.position, { x: 1055, y: 118, width: 122, height: 15 }, '', p.position);
+      if (named) {
+        add('AXStaticText', '沟通职位：', { x: 987, y: 118, width: 65, height: 15 }, '', '沟通职位：');
+        add('AXStaticText', p.position, { x: 1055, y: 118, width: 122, height: 15 }, '', p.position);
+      }
       for (const [k, q] of ['求简历', '换电话', '换微信', '约面试'].entries()) add('AXStaticText', q, { x: 733 + 67 * k, y: 761, width: 39, height: 15 }, `quick:${q}`, q);
       add('AXTextArea', undefined, { x: 511, y: 788, width: 878, height: 61 }, 'input');
       add('AXStaticText', '发送', { x: 1323, y: 845, width: 26, height: 15 }, 'send', '发送');
@@ -313,7 +347,7 @@ class FakeBoss implements Session {
       add('AXImage', '', { x: 138, y: 0, width: 734, height: 848 });
       for (const [k, a] of ['收藏', '转发', '举报'].entries()) add('AXStaticText', undefined, { x: 938 + 96 * k, y: 62, width: 26, height: 15 }, `action:${a}`, a);
       add('AXButton', '继续沟通', { x: 903, y: 106, width: 289, height: 40 }, 'continue');
-      add('AXStaticText', undefined, { x: 903, y: 174, width: 41, height: 15 }, '', p.name);
+      if (this.opts.overlayName !== false) add('AXStaticText', undefined, { x: 903, y: 174, width: 41, height: 15 }, '', p.name);
       add('AXStaticText', undefined, { x: 994, y: 174, width: 159, height: 15 }, '', '向您发起沟通，沟通职位');
       add('AXGroup', '', { x: 1234, y: 12, width: 30, height: 30 }, 'close');
     }
@@ -347,7 +381,7 @@ class FakeBoss implements Session {
       if (this.overlay === 'resume')
         shot.lines = this.doc()
           .filter((l) => l.y >= this.offset && l.y + 40 <= this.offset + this.viewPx)
-          .map((l) => ({ text: this.version && l.y > this.offset + this.viewPx / 2 ? `${l.text}（已更新）` : l.text, y: l.y - this.offset }));
+          .map((l) => ({ text: this.version && l.y > this.offset + this.viewPx / 2 ? `${l.text}（已更新）` : l.text, y: l.y - this.offset, x: l.x, width: l.width }));
       const seed = `${shot.person}|${shot.offset}|${shot.expanded}|${shot.version}`;
       await writeFile(path, png(seed));
       this.shots.set(path, shot);
@@ -388,6 +422,10 @@ class FakeBoss implements Session {
       const lines = action.amount ?? 1;
       if (this.overlay === 'resume' && gx >= PANE.x && gx < PANE.x + PANE.width) {
         if (this.opts.resumeScrollStuck) return done();
+        if (action.direction === 'up' && this.upStuckLeft > 0) {
+          this.upStuckLeft--;
+          return done();
+        }
         const delta = (action.direction === 'down' ? 1 : -1) * lines * LINE_STEP_PX;
         this.offset = Math.min(this.maxOffset(), Math.max(0, this.offset + delta));
       } else if (this.overlay === 'none' && gx < WIN.x + 520) {
@@ -419,10 +457,12 @@ class FakeBoss implements Session {
       if (this.opts.wrongOpen) i = (i + 1) % this.persons.length;
       this.open = i;
       this.overlay = 'none';
+      this.headerReadyAt = Date.now() + (this.opts.headerDelayMs ?? 0);
     } else if (tag === 'link:online') {
       this.overlay = this.opts.loadingReads ? 'loading' : 'resume';
       this.loadingLeft = this.opts.loadingReads ?? 0;
-      this.offset = 0;
+      this.offset = this.opts.startOffset ?? 0;
+      this.upStuckLeft = this.opts.upStuckFor ?? 0;
       this.expanded = false;
     } else if (tag === 'attach') {
       const a = this.persons[this.open!]!.attachment;
@@ -478,7 +518,7 @@ function fakeVision(app: FakeBoss, options: { compose?: boolean; composeGap?: bo
       throwIfAborted(signal);
       calls.ocr++;
       const s = await shotOf(path);
-      const lines: OcrLine[] = s.lines.map((l) => ({ text: l.text, box: { x: 100, y: l.y, width: 600, height: 40 }, confidence: 0.98 }));
+      const lines: OcrLine[] = s.lines.map((l) => ({ text: l.text, box: { x: l.x ?? 100, y: l.y, width: l.width ?? 600, height: 40 }, confidence: 0.98 }));
       return { lines, imageSha256: 'x', widthPx: s.widthPx, heightPx: s.heightPx };
     },
     async compare(a, b, o, signal): Promise<ImageComparison> {
@@ -839,6 +879,60 @@ test('open_candidate re-finds a row that moved, and never takes the wrong person
   }
 });
 
+test('open_candidate waits out a header that fills in after the message box, and never accepts it unfilled', async () => {
+  // Asynchronous on the wall clock: the conversation classifies as open at once, the name and job come later, the history last.
+  const r = await rig({ headerDelayMs: 60 });
+  try {
+    const ref = listCandidates(await r.app.observe(), ACCOUNT).candidates.find((c) => c.name === '林二')!;
+    const started = Date.now();
+    const opened = await r.workflow.runScripted('open_candidate', r.context({ candidate: ref }))!;
+    assert.equal(opened.ok, true, opened.reason);
+    assert.ok(Date.now() - started >= 55, 'the match came only once the header had filled in');
+    assert.equal(r.app.persons[r.app.open!]!.name, '林二');
+    assert.equal((await r.workflow.verifyUnit('open_candidate', r.context({ candidate: ref }), opened.observation)).ok, true);
+    assert.equal(r.app.clicks.filter((c) => c.startsWith('row|')).length, 1, 'one click; the wait is reads only');
+  } finally {
+    await r.cleanup();
+  }
+  // A single read while the header is empty or name-only is ambiguous and is not accepted by the verifier.
+  const v = await rig({ headerDelayMs: 10_000 });
+  try {
+    const ref = listCandidates(await v.app.observe(), ACCOUNT).candidates[0]!;
+    v.app.open = 0;
+    v.app.headerReadyAt = Date.now() + 10_000;
+    const blank = await v.app.observe();
+    assert.equal(classifyPage(blank), 'conversation_detail');
+    assert.equal((await v.workflow.verifyUnit('open_candidate', v.context({ candidate: ref }), blank)).ok, false);
+    v.app.headerReadyAt = Date.now() + 1_000;
+    const nameOnly = await v.app.observe();
+    assert.equal((await v.workflow.verifyUnit('open_candidate', v.context({ candidate: ref }), nameOnly)).ok, false);
+  } finally {
+    await v.cleanup();
+  }
+  // A header that never fills in within the bound fails as incomplete, not as a match or a lasting ambiguity.
+  const slow = await rig({ headerDelayMs: 10_000 });
+  try {
+    const ref = listCandidates(await slow.app.observe(), ACCOUNT).candidates[0]!;
+    const result = await slow.workflow.runScripted('open_candidate', slow.context({ candidate: ref }))!;
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'identity_incomplete');
+  } finally {
+    await slow.cleanup();
+  }
+  // A genuine name and job collision is still refused at once, however the header loads.
+  const twins = people();
+  twins.push({ ...twins[0]!, time: '12:00', preview: '另一位' });
+  const c = await rig({ people: twins, headerDelayMs: 20 });
+  try {
+    const ref = listCandidates(await c.app.observe(), ACCOUNT).candidates.find((x) => x.name === '陈一' && x.sourceRef.includes('16:25'))!;
+    const result = await c.workflow.runScripted('open_candidate', c.context({ candidate: ref }))!;
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'identity_ambiguous');
+  } finally {
+    await c.cleanup();
+  }
+});
+
 test('verifying open_candidate rejects a different person than the work item already bound', async () => {
   const r = await rig();
   try {
@@ -1171,7 +1265,7 @@ test('resume text drops the lines a page shares with the one before', () => {
   assert.equal(text, 'a\nb\nc\nd\ne\nf\n');
 });
 
-test('the footer counts only as the last thing on the screen, and the logo only at the top', () => {
+test('the footer counts only as the last thing on the screen', () => {
   const ocr = (lines: string[], top = 0): OcrResult => ({
     lines: lines.map((text, i) => ({ text, box: { x: 0, y: top + i * 60, width: 10, height: 40 }, confidence: 1 })),
     imageSha256: '', widthPx: 10, heightPx: 1696,
@@ -1180,8 +1274,108 @@ test('the footer counts only as the last thing on the screen, and the logo only 
   assert.equal(footerVisible(ocr(['经历', '项目', ...footer])), true);
   assert.equal(footerVisible(ocr([...footer, '项目一', '项目二', '项目三', '项目四', '项目五'])), false, 'content below it: not the end');
   assert.equal(footerVisible(ocr(['经历', '项目'])), false);
-  assert.equal(topMarkerVisible(ocr(['BOSS', '直聘', '陈一'])), true);
-  assert.equal(topMarkerVisible(ocr(['经历', 'BOSS直聘'], 800)), false);
+});
+
+test('the top header is the listed name as the first text row near the top, never the name elsewhere', () => {
+  // P0 (BOSS 1.7.4) shape at 2 px/pt: no platform logo; avatar (no text), name and activity, then the summary.
+  type L = [text: string, y: number, x?: number];
+  const ocr = (lines: L[]): OcrResult => ({
+    lines: lines.map(([text, y, x = 100]) => ({ text, box: { x, y, width: 120, height: 40 }, confidence: 1 })),
+    imageSha256: '', widthPx: 1468, heightPx: 1696,
+  });
+  const band = { topPx: 2, maxYPx: 2 + 240, maxXPx: 880 };
+  const header: L[] = [['陈一', 36, 170], ['刚刚活跃', 36, 300], ['30岁|6年|本科', 110], ['第1行 经历', 220]];
+  assert.equal(headerShowsName(ocr(header), '陈一', band), true);
+  assert.equal(headerShowsName(ocr(header), ' 陈 一 ', band), true, 'compared normalized');
+  assert.equal(headerShowsName(ocr([['陈一 今日活跃', 36, 170], ['30岁|6年|本科', 110]]), '陈一', band), true, 'name and activity read as one line');
+  assert.equal(headerShowsName(ocr([['陈一', 30, 400], ['刚刚活跃', 36, 170]]), '陈一', band), true, 'same row: activity is not above the name');
+  // The parameter decides: another candidate's header does not show this name.
+  assert.equal(headerShowsName(ocr(header), '林二', band), false);
+  assert.equal(headerShowsName(ocr(header), '', band), false);
+  // Name only inside a longer line, or followed by something that is not an activity note.
+  assert.equal(headerShowsName(ocr([['陈一的项目经历', 36, 170], ['摘要', 110]]), '陈一', band), false);
+  assert.equal(headerShowsName(ocr([['陈一一', 36, 170], ['摘要', 110]]), '陈一', band), false);
+  assert.equal(headerShowsName(ocr([['陈一刚刚', 36, 170], ['摘要', 110]]), '陈一', band), false);
+  // Mid-page repeated mention: the exact name under other text, even near the top, is not the header.
+  assert.equal(headerShowsName(ocr([['林二', 36, 170], ['刚刚活跃', 36, 300], ['陈一', 110], ['经历', 220]]), '陈一', band), false);
+  assert.equal(headerShowsName(ocr([['项目经历', 10], ['陈一', 70, 170]]), '陈一', band), false);
+  // Name as the first text but below the header band, or not at the left after the avatar.
+  assert.equal(headerShowsName(ocr([['陈一', 800, 170], ['经历', 900]]), '陈一', band), false);
+  assert.equal(headerShowsName(ocr([['陈一', 36, 1000], ['经历', 110]]), '陈一', band), false);
+  // A line cut by the clipped border row above the content does not count as text above the name.
+  assert.equal(headerShowsName(ocr([['残行', -39], ['陈一', 36, 170], ['摘要', 110]]), '陈一', band), true);
+});
+
+test('a real-shaped resume without a logo is complete only from the header name, the start probe and the end', async () => {
+  // The listed name under the header on the first screen does not confirm the top.
+  const mention = people().map((p, i) => (i === 0 ? { ...p, headerName: '林二', bodyMention: true } : p));
+  const other = await rig({ people: mention }, { compose: true });
+  try {
+    const { result, staging } = await captured(other);
+    assert.equal(result.status, 'acquired', 'the overlay names the candidate, so the capture runs');
+    if (result.status !== 'acquired') return;
+    const evidence = evidenceOf(result.artifacts);
+    assert.equal(evidence.topConfirmed, false);
+    assert.equal(captureCompleteness(evidence), 'partial_capture');
+    const metadata = JSON.parse(await readFile(join(staging.dir, 'metadata.json'), 'utf8'));
+    assert.equal(metadata.top.headerName, false);
+    assert.equal(metadata.identity.resumeHeaderName, false);
+    assert.ok(metadata.problems.some((p: string) => p.startsWith('top_unconfirmed') && p.includes('header_name_not_first_row')));
+  } finally {
+    await other.cleanup();
+  }
+  // Without the overlay's name text (the workflow's open_resume refuses that), capture itself
+  // falls back to the header only: a body mention is no identity, the header name is.
+  const direct = async (persons: Person[]) => {
+    const r = await rig({ people: persons }, { compose: true });
+    const { ctx } = await openPerson(r, '陈一');
+    const shown = await r.workflow.runScripted('open_resume', ctx)!;
+    assert.equal(shown.ok, true, shown.reason);
+    r.app.opts.overlayName = false;
+    const result = await captureOnlineResume({
+      session: r.app, env: { clock: systemClock, vision: r.vision.vision, pollMs: 1 }, staging: await stagingFor(r), itemId: 'item-1',
+      candidateName: '陈一', trace: new Trace(), signal: new AbortController().signal, limits: { settleMs: 0, loadTimeoutMs: 200 },
+    });
+    await r.cleanup();
+    return result;
+  };
+  const blind = await direct(mention);
+  assert.equal(blind.status, 'failed');
+  if (blind.status === 'failed') assert.match(blind.reason, /^resume_identity_unconfirmed/);
+  const header = await direct(people());
+  assert.equal(header.status, 'acquired');
+  if (header.status === 'acquired') assert.equal(captureCompleteness(evidenceOf(header.artifacts)), 'complete');
+});
+
+test('the top is not confirmed when the up scroll stalled short of the start, even with the name at the top', async () => {
+  // Opened 20 px down with the first up scroll lost: the header row is still the first text, but the start probe goes further up.
+  const r = await rig({ startOffset: 20, upStuckFor: 1 }, { compose: true });
+  try {
+    const { result, staging } = await captured(r);
+    assert.equal(result.status, 'acquired');
+    if (result.status !== 'acquired') return;
+    const evidence = evidenceOf(result.artifacts);
+    assert.equal(evidence.topConfirmed, false);
+    assert.equal(captureCompleteness(evidence), 'partial_capture');
+    const metadata = JSON.parse(await readFile(join(staging.dir, 'metadata.json'), 'utf8'));
+    assert.deepEqual({ up: metadata.top.upScrollStable, probe: metadata.top.startProbe }, { up: true, probe: false });
+    // The two bottom signals are judged on their own and still hold.
+    assert.deepEqual([...evidence.bottomSignals].sort(), ['end_marker', 'scroll_position_end']);
+  } finally {
+    await r.cleanup();
+  }
+  // Opened mid-page with scrolling working: the capture finds the start and is complete.
+  const mid = await rig({ startOffset: 600 }, { compose: true });
+  try {
+    const { result } = await captured(mid);
+    assert.equal(result.status, 'acquired');
+    if (result.status === 'acquired') {
+      assert.equal(evidenceOf(result.artifacts).topConfirmed, true);
+      assert.equal(captureCompleteness(evidenceOf(result.artifacts)), 'complete');
+    }
+  } finally {
+    await mid.cleanup();
+  }
 });
 
 // ---------------------------------------------------------------------------
