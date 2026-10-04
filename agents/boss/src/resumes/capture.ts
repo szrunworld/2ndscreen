@@ -64,6 +64,12 @@ export interface CaptureLimits {
    * (BOSS 1.7.4, macOS) measured 4 pt; 8 pt keeps a margin.
    */
   gutterPt: number;
+  /**
+   * Points at the pane's top edge left out of comparing and stitching: the
+   * viewport clips the first row of content there, so it differs between
+   * overlapping screens (P0: all non-scrollbar differences in the first 1 pt).
+   */
+  topBorderPt: number;
 }
 
 export const DEFAULT_CAPTURE_LIMITS: CaptureLimits = {
@@ -76,16 +82,19 @@ export const DEFAULT_CAPTURE_LIMITS: CaptureLimits = {
   minOverlapPx: 48,
   maxExpansions: 12,
   gutterPt: 8,
+  topBorderPt: 1,
 };
 
 /**
  * The content part of a pane screenshot, in its own pixels: everything but
- * the scrollbar gutter on the right. Pixels per point come from the
- * measured covers, never from an assumed scale.
+ * the scrollbar gutter on the right and the clipped border row at the top.
+ * Pixels per point come from the measured covers, never from an assumed
+ * scale (P0 at 2x: x 0, y 2, 1452 x 1694 of a 1468 x 1696 screen).
  */
-export function contentRoi(shot: Pick<ScreenshotRef, 'widthPx' | 'heightPx' | 'covers'>, gutterPt: number): Rect {
-  const gutterPx = Math.ceil((gutterPt * shot.widthPx) / shot.covers.width);
-  return { x: 0, y: 0, width: Math.max(1, shot.widthPx - gutterPx), height: shot.heightPx };
+export function contentRoi(shot: Pick<ScreenshotRef, 'widthPx' | 'heightPx' | 'covers'>, insets: { gutterPt: number; topBorderPt: number }): Rect {
+  const gutterPx = Math.ceil((insets.gutterPt * shot.widthPx) / shot.covers.width);
+  const topPx = Math.ceil((insets.topBorderPt * shot.heightPx) / shot.covers.height);
+  return { x: 0, y: topPx, width: Math.max(1, shot.widthPx - gutterPx), height: Math.max(1, shot.heightPx - topPx) };
 }
 
 /**
@@ -192,7 +201,7 @@ export async function captureOnlineResume(input: CaptureInput): Promise<Acquisit
     // Comparing and stitching need screens of one size.
     size ??= { widthPx: shot.widthPx, heightPx: shot.heightPx };
     if (shot.widthPx !== size.widthPx || shot.heightPx !== size.heightPx) throw new CaptureStop('resume_pane_resized');
-    roi ??= contentRoi(shot, limits.gutterPt);
+    roi ??= contentRoi(shot, limits);
     return { observation, shot, overlay };
   };
   const ocr = async (path: string): Promise<OcrResult> => {
@@ -392,9 +401,10 @@ export async function captureOnlineResume(input: CaptureInput): Promise<Acquisit
     capture: evidence,
     pages: kept.map((k, i) => ({ index: i + 1, sha256: k.shot.sha256, widthPx: k.shot.widthPx, heightPx: k.shot.heightPx, shiftPx: k.shiftPx ?? null })),
     expansions: { clicked: expansions, allExpanded: !unexpanded },
-    // Pages are kept whole; comparison and the stitched image leave out the scrollbar gutter.
+    // Pages are kept whole; comparison and the stitched image leave out the scrollbar gutter and top border.
     contentRoi: roi ?? null,
     gutterPt: limits.gutterPt,
+    topBorderPt: limits.topBorderPt,
     identity: { overlayName: axName, resumeName: ocrText(kept[0]!.ocr.lines).includes(normalize(input.candidateName)) },
     composed: composed ?? null,
     problems,

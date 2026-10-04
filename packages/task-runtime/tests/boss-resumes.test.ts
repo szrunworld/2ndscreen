@@ -89,6 +89,8 @@ const WIN: Rect = { x: 3000, y: 25, width: 1440, height: 875 };
 const PANE: Rect = { x: WIN.x + 138, y: WIN.y, width: 734, height: 848 };
 /** P0: the resume pane's scrollbar is 4 pt wide and moves on every scroll. */
 const SCROLLBAR_PT = 4;
+/** P0: the viewport clips the first 1 pt row at the pane's top, so it differs between screens. */
+const TOP_BORDER_PT = 1;
 const LINE_STEP_PX = 40; // pixels one scroll line moves the resume
 const ROW_H = 78;
 
@@ -452,8 +454,13 @@ class FakeBoss implements Session {
   async close(): Promise<void> {}
 }
 
-/** Whether a region of interest still takes in the scrollbar columns at the pane's right edge. */
-const includesScrollbar = (s: Shot, roi: Rect | undefined) => !roi || roi.x + roi.width > s.widthPx - SCROLLBAR_PT * s.scale;
+/**
+ * Whether a region of interest still takes in the pixels that differ between
+ * overlapping real screens: the scrollbar columns at the right edge and the
+ * clipped first 1 pt row at the top.
+ */
+const includesScrollbar = (s: Shot, roi: Rect | undefined) =>
+  !roi || roi.x + roi.width > s.widthPx - SCROLLBAR_PT * s.scale || roi.y < TOP_BORDER_PT * s.scale;
 
 /** OCR and image comparison over the fake app's screenshots. */
 function fakeVision(app: FakeBoss, options: { compose?: boolean; composeGap?: boolean } = {}) {
@@ -974,7 +981,7 @@ test('captures a long resume completely: top, folded section, overlapping pages,
   }
 });
 
-test('the moving scrollbar is left out of comparing and stitching, by measured pixels per point', async () => {
+test('the moving scrollbar and the clipped top row are left out of comparing and stitching, by measured pixels per point', async () => {
   for (const scale of [2, 3]) {
     const r = await rig({ scale }, { compose: true });
     try {
@@ -983,7 +990,8 @@ test('the moving scrollbar is left out of comparing and stitching, by measured p
       if (result.status !== 'acquired') continue;
       assert.equal(captureCompleteness(evidenceOf(result.artifacts)), 'complete', `scale ${scale}`);
       const widthPx = PANE.width * scale;
-      const roi = { x: 0, y: 0, width: widthPx - 8 * scale, height: PANE.height * scale };
+      const roi = { x: 0, y: scale, width: widthPx - 8 * scale, height: PANE.height * scale - scale };
+      if (scale === 2) assert.deepEqual(roi, { x: 0, y: 2, width: 1452, height: 1694 }, 'the ROI P0 verified on real frames');
       assert.deepEqual(r.vision.calls.composeRoi, roi);
       assert.ok(r.vision.calls.rois.every((x) => JSON.stringify(x) === JSON.stringify(roi)));
       // Every line of the resume made it in, and the pages themselves were kept whole.
@@ -996,17 +1004,19 @@ test('the moving scrollbar is left out of comparing and stitching, by measured p
       await r.cleanup();
     }
   }
-  // With the gutter compared, a strict comparison finds no overlap and the capture says so.
-  const strict = await rig({}, { compose: true, capture: { gutterPt: 0 } });
-  try {
-    const { result } = await captured(strict);
-    assert.equal(result.status, 'acquired');
-    if (result.status === 'acquired') {
-      assert.equal(evidenceOf(result.artifacts).stop, 'stitch_gap');
-      assert.equal(captureCompleteness(evidenceOf(result.artifacts)), 'partial_capture');
+  // With the gutter or the clipped top row compared, a strict comparison finds no overlap and the capture says so.
+  for (const insets of [{ gutterPt: 0 }, { topBorderPt: 0 }]) {
+    const strict = await rig({}, { compose: true, capture: insets });
+    try {
+      const { result } = await captured(strict);
+      assert.equal(result.status, 'acquired');
+      if (result.status === 'acquired') {
+        assert.equal(evidenceOf(result.artifacts).stop, 'stitch_gap', JSON.stringify(insets));
+        assert.equal(captureCompleteness(evidenceOf(result.artifacts)), 'partial_capture');
+      }
+    } finally {
+      await strict.cleanup();
     }
-  } finally {
-    await strict.cleanup();
   }
 });
 
