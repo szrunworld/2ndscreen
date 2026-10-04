@@ -128,31 +128,65 @@ struct DisplaySleepTests {
         #expect(!ran && assertions.released == 0)
     }
 
+    /// A clock that only moves when the wait pauses; `onPause` runs at each pause with its number.
+    final class PollClock: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = Date(timeIntervalSince1970: 0)
+        private(set) var pauses = 0
+        var onPause: (Int) -> Void = { _ in }
+        func now() -> Date { lock.lock(); defer { lock.unlock() }; return value }
+        func pause(_ nanoseconds: UInt64) async {
+            onPause(advance(nanoseconds))
+        }
+        private func advance(_ nanoseconds: UInt64) -> Int {
+            lock.lock(); defer { lock.unlock() }
+            pauses += 1
+            value += TimeInterval(nanoseconds) / 1_000_000_000
+            return pauses
+        }
+    }
+
+    private func clocked(_ assertions: FakeAssertions, _ configurator: DisplayConfigurator, waitLimit: TimeInterval, _ clock: PollClock) -> DisplayWork {
+        DisplayWork(configurator: configurator, waitLimit: waitLimit, assertions: assertions, sleepState: { .awake },
+                    pollNanoseconds: 50_000_000, now: clock.now, pause: clock.pause)
+    }
+
     @Test func aPendingConfigurationIsWaitedForBrieflyThenRefused() async {
-        let configurator = DisplayConfigurator(queue: DispatchQueue(label: "test"))
+        // Real configurator queue, no real time: the wait's clock moves 50 ms per poll, and the
+        // test decides at which poll the outstanding transaction returns.
+        let queue = DispatchQueue(label: "test")
+        let configurator = DisplayConfigurator(queue: queue)
         let assertions = FakeAssertions()
-        // Returns within the wait: the work runs after it.
+
+        // Returns at the third poll, well within the 2 s limit: the work runs after it.
         let quick = Self.hang(configurator, "arrangement of 2 display(s)")
         defer { quick.signal() }
-        DispatchQueue.global().asyncAfter(deadline: .now() + 0.03) { quick.signal() }
+        let clock = PollClock()
+        clock.onPause = { count in
+            guard count == 3 else { return }
+            quick.signal()
+            queue.sync {} // the transaction has returned and the configurator is free
+        }
         var ran = false
-        let ok = await work(assertions, States([.awake]), configurator: configurator, waitLimit: 2).run("create", refused: { _ in false }) { () async -> Bool in
+        let ok = await clocked(assertions, configurator, waitLimit: 2, clock).run("create", refused: { _ in false }) { () async -> Bool in
             ran = configurator.pending == nil
             return true
         }
         #expect(ok && ran, "ran only once the earlier transaction had returned")
-        // Never returns within the wait: refused, with what is known.
+        #expect(clock.pauses == 3)
+
+        // Never returns: refused once the clock passes the limit. 0.12 s lies between poll steps,
+        // so exactly three 50 ms pauses happen, with no rounding at the boundary.
         let stuck = Self.hang(configurator, "mode 1440×900 HiDPI for display 356")
-        // A failed expectation below must not leave the queue blocked; an extra signal is harmless.
         defer { stuck.signal() }
-        let started = Date()
+        let stuckClock = PollClock()
         var ranStuck = false
-        let refusal = await work(assertions, States([.awake]), configurator: configurator, waitLimit: 0.1).run("create", refused: { $0 }) { () async -> DisplayWork.Refusal? in
+        let refusal = await clocked(assertions, configurator, waitLimit: 0.12, stuckClock).run("create", refused: { $0 }) { () async -> DisplayWork.Refusal? in
             ranStuck = true
             return nil
         }
         #expect(!ranStuck)
-        #expect(Date().timeIntervalSince(started) < 1, "bounded by the wait limit")
+        #expect(stuckClock.pauses == 3, "bounded by the wait limit on the injected clock")
         guard case .configurationPending(let pending)? = refusal else { Issue.record("expected configurationPending"); return }
         #expect(pending.label == "mode 1440×900 HiDPI for display 356")
         #expect(refusal!.message().contains("it cannot be cancelled"))

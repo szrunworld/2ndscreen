@@ -114,7 +114,10 @@ P0 的采样显示它阻塞在 `SLSCompleteDisplayConfigurationWithOption`。主
 
 ## 测试（合成，无显示器）
 
-`swift build` 通过；`swift test` 135 个全部通过，其中本任务新增 17 个（第 4 节的重入回归占 5 个）。睡眠判定修订后连跑 5 次完整测试，有 1 次 `aPendingConfigurationIsWaitedForBrieflyThenRefused` 失败，其余 4 次全部通过。这个测试依赖真实时间（30 ms 释放、0.1 s 等待上限），本次修订没有改动它，已作为间歇性问题记录，需后续改成不依赖时间。所有临时变异都已还原（源码中没有残留）。测试里卡住的信号量都用 `defer` 释放，断言失败也不会把队列留在阻塞状态。
+`swift build` 通过；`swift test` 135 个全部通过，其中本任务新增 17 个（第 4 节的重入回归占 5 个）。`aPendingConfigurationIsWaitedForBrieflyThenRefused` 曾间歇失败（5 次中 1 次），原因是它依赖真实时间：30 ms 后释放，等待上限 0.1 s。现已改为确定性测试：
+- `DisplayWork` 新增可注入的 `now` 和 `pause`（默认仍是 `Date()` 和 `Task.sleep`，产品行为不变）。
+- 测试用一个只在每次 pause 时前进 50 ms 的时钟。“很快返回”的事务在第 3 次 pause 时由测试释放，并同步排空 configurator 队列后才继续，断言工作在事务返回之后才运行，且恰好 3 次 pause。“一直不返回”的事务在上限 0.12 s 时被拒绝，断言恰好 3 次 pause。0.12 选在两个轮询步长之间，避免浮点数恰好落在边界上；之前取 0.1 时，累加 0.05+0.05 可能略小于 0.1，造成多一次 pause。
+- 测试里不再有真实 sleep 或时序竞争。修复后该测试套件连跑 10 次全部通过，完整测试 135 个通过。所有临时变异都已还原（源码中没有残留）。测试里卡住的信号量都用 `defer` 释放，断言失败也不会把队列留在阻塞状态。
 
 `DisplayConfiguratorTests`：
 - 卡住的事务（信号量模拟）不阻塞提交者。
