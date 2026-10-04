@@ -47,6 +47,7 @@ DEFAULT_ACTION_TIMEOUT = 20.0
 # 错误文案 → 分类。按顺序匹配，先命中先用。文案来自 CLI 源码与实测样例。
 _RULES: Sequence[tuple[re.Pattern[str], str]] = (
     (re.compile(r'no screen named "'), SCREEN_LOST),
+    (re.compile(r'no agent screen named "'), SCREEN_LOST),
     (re.compile(r"^no screen \S"), SCREEN_LOST),
     (re.compile(r"has no window on screen"), WINDOW_LOST),
     (re.compile(r"has no on-screen window"), WINDOW_LOST),

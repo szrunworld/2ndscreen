@@ -16,6 +16,8 @@ SAMPLES = Path(__file__).resolve().parents[2] / "fixtures" / "cli-samples"
 # 样例名 → 期望：成功样例写解析器名，失败样例写错误分类。
 EXPECTED = {
     "screen_create": "ok",
+    "screen_destroy": "ok",
+    "screen_destroy_missing": _cli.SCREEN_LOST,
     "screen_list": "screens",
     "app_launch_calc": "windows",
     "window_move_ok": "windows",

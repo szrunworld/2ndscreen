@@ -1,0 +1,14 @@
+{
+  "note": "销毁不存在的屏幕（文案与 state 的不同）",
+  "argv": [
+    "screen",
+    "destroy",
+    "monitor-c"
+  ],
+  "exit_code": 1,
+  "stdout": {
+    "error": "no agent screen named \"monitor-c\"",
+    "ok": false
+  },
+  "stderr": ""
+}

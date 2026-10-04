@@ -1,0 +1,13 @@
+{
+  "note": "销毁屏幕",
+  "argv": [
+    "screen",
+    "destroy",
+    "monitor-c"
+  ],
+  "exit_code": 0,
+  "stdout": {
+    "ok": true
+  },
+  "stderr": ""
+}
