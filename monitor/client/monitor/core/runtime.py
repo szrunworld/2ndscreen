@@ -8,10 +8,16 @@
 
 暂停 = 停止领取、停止启动新指令与观察；心跳、结果回传、事件补传照常进行（方案第十节第 2 条）。
 离线超过 24 小时：再次连上服务端后置 needs_baseline，先重建观察基线，再领取指令。
+
+窗口不归 Monitor（suspend_gui）：local 归还窗口或不在工作时段时，由窗口归属方（任务 J 的 LocalSession）
+调用 suspend_gui(reason) / resume_gui()。挂起期间不观察、不执行也不领取指令（指令都要用界面），
+由此产生的 window_lost 不记为 last_error；心跳照常，client_state 报 unknown（看不到界面）。
+与暂停是两回事：暂停是"不该做"，挂起是"做不了"，两者互不覆盖。
 """
 
 from __future__ import annotations
 
+import queue
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -120,7 +126,13 @@ class MonitorRuntime:
         self.gui_lock = gui_lock or GuiLock()
         self.backoff = backoff or Backoff()
         self.pipeline = Pipeline(
-            ledger=ledger, driver=driver, handlers=handlers, gui_lock=self.gui_lock, clock=clock, on_error=self.record_error
+            ledger=ledger,
+            driver=driver,
+            handlers=handlers,
+            gui_lock=self.gui_lock,
+            clock=clock,
+            on_error=self.record_error,
+            gui_available=lambda: not self._gui_blocked(),
         )
         self.policy: Policy | None = None
         self.policy_stale = True
@@ -143,6 +155,13 @@ class MonitorRuntime:
         self._parked_events: set[str] = set()
         self._started = False
         self._stop = threading.Event()
+        # 窗口挂起：任意线程经 suspend_gui / resume_gui 排队，运行时线程在 _apply_gui_requests 里生效。
+        # _gui_wanted 是最近一次请求（加锁读写），用于在请求尚未生效时也不把 window_lost 记成错误。
+        self._gui_requests: queue.SimpleQueue[tuple[bool, str | None]] = queue.SimpleQueue()
+        self._gui_req_lock = threading.Lock()
+        self._gui_wanted_suspended = False
+        self.gui_suspended = False
+        self.gui_suspend_reason: str | None = None
         self.state: MonitorState = ledger.load_state()
         if client.on_contact is None:
             client.on_contact = self.on_contact
@@ -210,9 +229,11 @@ class MonitorRuntime:
     def run_once(self) -> float:
         """跑一轮，返回建议的空闲等待秒数（0 表示马上再跑）。"""
         self.start()
+        self._apply_gui_requests()
         now = self.clock.now()
         self._server_round(now)
 
+        self._apply_gui_requests()
         if self._gui_allowed():
             if self._recovery_pending:
                 self.pipeline.recover(self.gate())
@@ -241,7 +262,8 @@ class MonitorRuntime:
 
     def _idle_seconds(self, now: datetime) -> float:
         candidates = [self.config.max_idle_seconds]
-        for t in (self._next_heartbeat, self.backoff.next_at, self.pipeline.wake_at):
+        wake_at = None if self.gui_suspended else self.pipeline.wake_at  # 挂起时不会执行，别为它醒来
+        for t in (self._next_heartbeat, self.backoff.next_at, wake_at):
             if t is not None:
                 candidates.append((t - now).total_seconds())
         if self.observer is not None and self._observe_allowed() and self._next_observe is not None:
@@ -327,7 +349,7 @@ class MonitorRuntime:
                 "sent_at": now.isoformat(),
                 "mode": self.mode,
                 "account_id": self.account_id,
-                "client_state": self.client_state,
+                "client_state": self._reported_client_state(),
                 "paused": self.state.paused,
                 "pause_reason": self.state.pause_reason,
                 "needs_baseline": self.state.needs_baseline,
@@ -426,6 +448,7 @@ class MonitorRuntime:
             and not self.policy_stale
             and self.account_confirmed is not False
             and not self.state.paused
+            and not self.gui_suspended
             and not self.state.needs_baseline
             and not self._recovery_pending
             and not self.pipeline.has_pending_work()
@@ -513,6 +536,8 @@ class MonitorRuntime:
     # 观察
     # ------------------------------------------------------------------
     def _observe_allowed(self) -> bool:
+        if self.gui_suspended:
+            return False
         if self.state.paused and self.state.pause_reason in _NO_OBSERVE_PAUSE_REASONS:
             return False
         return True
@@ -546,6 +571,8 @@ class MonitorRuntime:
             try:
                 events = self.observer.observe(guarded, baseline)
             except DriverError as exc:
+                if isinstance(exc, WindowLostError) and self._gui_blocked():
+                    return  # 窗口刚被归还（挂起请求已到、尚未生效）：不是故障
                 if isinstance(exc, (WindowLostError, ScreenLostError)):
                     self.client_state = "not_running"
                 self.record_error(exc.code, f"观察失败: {exc}")
@@ -581,7 +608,55 @@ class MonitorRuntime:
     # 暂停、恢复、绑定
     # ------------------------------------------------------------------
     def _gui_allowed(self) -> bool:
-        return not self.state.paused
+        return not self.state.paused and not self.gui_suspended
+
+    # ------------------------------------------------------------------
+    # 窗口挂起（窗口不归 Monitor）
+    # ------------------------------------------------------------------
+    def suspend_gui(self, reason: str) -> None:
+        """窗口不归 Monitor：停止观察、执行与领取。任何线程可调用，在运行时线程的下一轮生效。"""
+        self._request_gui(True, reason)
+
+    def resume_gui(self) -> None:
+        """窗口回到 Monitor：恢复观察（立即观察一次）、执行与领取。任何线程可调用。"""
+        self._request_gui(False, None)
+
+    def _request_gui(self, suspended: bool, reason: str | None) -> None:
+        with self._gui_req_lock:
+            self._gui_wanted_suspended = suspended
+            self._gui_requests.put((suspended, reason))
+        wake = getattr(self.clock, "wake", None)
+        if callable(wake):
+            wake()
+
+    def _gui_blocked(self) -> bool:
+        """已挂起，或挂起请求已到但尚未生效（任何线程可调用）。"""
+        with self._gui_req_lock:
+            return self.gui_suspended or self._gui_wanted_suspended
+
+    def _apply_gui_requests(self) -> None:
+        """运行时线程：按顺序处理排队的挂起 / 恢复请求。"""
+        while True:
+            try:
+                suspended, reason = self._gui_requests.get_nowait()
+            except queue.Empty:
+                return
+            if suspended:
+                if not self.gui_suspended:
+                    # 挂起前看到的界面状态不再可信，恢复后由下一次观察重新得出
+                    self.client_state = "unknown"
+                with self._gui_req_lock:
+                    self.gui_suspended = True
+                self.gui_suspend_reason = reason
+            elif self.gui_suspended:
+                with self._gui_req_lock:
+                    self.gui_suspended = False
+                self.gui_suspend_reason = None
+                self._next_observe = self.clock.now()
+
+    def _reported_client_state(self) -> ClientState:
+        # 契约的 client_state 没有"挂起"一值；挂起时看不到界面，如实报 unknown（D2c 报告接口请求 1）
+        return "unknown" if self.gui_suspended else self.client_state
 
     def pause(self, reason: str, *, by: Literal["user", "monitor", "server"], detail: str | None = None) -> None:
         """停止领取与启动新动作；已发生的动作照常记录与回传。重复暂停不覆盖首个原因。"""
@@ -636,24 +711,36 @@ class MonitorRuntime:
         self.ledger.append_event(ev, at=now)
 
     def record_error(self, code: str, message: str, scene: str | None = None) -> None:
+        if code == "window_lost" and self._gui_blocked():
+            return  # 窗口是有意归还的，不覆盖尚未发出的真实错误
         info = LastErrorInfo(code=code, message=message, at=self.clock.now(), scene=scene)
         self.last_error = info
         self._unsent_error = info
 
     def status(self) -> dict[str, Any]:
-        """给本机状态窗口（任务 J）的只读摘要；不含实现术语以外的个人信息。"""
+        """给本机状态窗口（任务 J）的只读摘要；不含实现术语以外的个人信息。在运行时线程调用（会读账本）。"""
         current = self.pipeline.current
+        err = self.last_error
         return {
+            "device_id": self.config.device_id,
+            "monitor_version": self.config.monitor_version,
             "mode": self.mode,
             "account_id": self.account_id,
-            "client_state": self.client_state,
+            "client_state": self._reported_client_state(),
             "paused": self.state.paused,
             "pause_reason": self.state.pause_reason,
             "needs_baseline": self.state.needs_baseline,
             "online": self.online,
             "revoked": self.revoked,
+            "gui_suspended": self.gui_suspended,
+            "gui_suspend_reason": self.gui_suspend_reason,
             "current_action": current[0].action if current else None,
+            "current_command_id": str(current[0].command_id) if current else None,
+            "current_started_at": current[1] if current else None,
             "queued": len(self.ledger.list_commands(states=[CommandState.QUEUED, CommandState.RUNNING])),
             "undelivered": len(self.ledger.pending_results(limit=10_000)),
-            "last_error": None if self.last_error is None else {"code": self.last_error.code, "at": self.last_error.at},
+            "outbox_events": len(self.ledger.pending_events(limit=10_000)),
+            "last_error": None
+            if err is None
+            else {"code": err.code, "message": err.message, "at": err.at, "scene": err.scene},
         }

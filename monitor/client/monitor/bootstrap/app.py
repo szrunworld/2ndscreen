@@ -133,12 +133,10 @@ class MonitorApp:
                 self.runtime.pipeline.cancel(arg)
 
     def publish(self) -> StatusSnapshot:
-        rt = self.runtime
-        st = rt.status()
-        current = rt.pipeline.current
-        err = rt.last_error
+        st = self.runtime.status()
+        err = st["last_error"]
         snap = StatusSnapshot(
-            device_id=rt.config.device_id,
+            device_id=st["device_id"],
             mode=st["mode"],
             account_id=st["account_id"],
             client_state=st["client_state"],
@@ -148,15 +146,15 @@ class MonitorApp:
             online=st["online"],
             revoked=st["revoked"],
             current_action=st["current_action"],
-            current_command_id=str(current[0].command_id) if current else None,
-            current_started_at=current[1] if current else None,
+            current_command_id=st["current_command_id"],
+            current_started_at=st["current_started_at"],
             queued=st["queued"],
             undelivered=st["undelivered"],
-            outbox=len(rt.ledger.pending_events(limit=10_000)),
-            last_error_code=err.code if err else None,
-            last_error_message=err.message if err else None,
-            last_error_at=err.at if err else None,
-            monitor_version=rt.config.monitor_version,
+            outbox=st["outbox_events"],
+            last_error_code=err["code"] if err else None,
+            last_error_message=err["message"] if err else None,
+            last_error_at=err["at"] if err else None,
+            monitor_version=st["monitor_version"],
             session=self.session.snapshot(),
             console_url=self.console_url,
             stopping=self.stopping,
@@ -377,6 +375,8 @@ def build_app(
         gui_lock=runtime.gui_lock,
         now=clock.now,
         sleep=clock.sleep,
+        suspend_gui=runtime.suspend_gui,
+        resume_gui=runtime.resume_gui,
     )
     ops_kwargs: dict[str, Any] = {}
     if pid_resolver is not None:
