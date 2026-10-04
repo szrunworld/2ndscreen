@@ -564,7 +564,7 @@ def make_command(
 class Env:
     clock: Any
     ledger: InMemoryLedger
-    driver: RecordingDriver
+    driver: Any  # RecordingDriver 或 monitor.driver.FakeDriver
     server: FakeServer
     handlers: dict[str, ScriptedHandler]
     observer: ScriptedObserver | None
@@ -620,6 +620,7 @@ def make_env(
     observer: ScriptedObserver | None = None,
     bind: bool = True,
     baseline_ready: bool = True,
+    driver: Any = None,
     **config: Any,
 ) -> Env:
     """标准测试环境：账户已绑定、基线已建立、策略已在服务端。"""
@@ -643,7 +644,7 @@ def make_env(
     env = Env(
         clock=clock,
         ledger=ledger,
-        driver=RecordingDriver(clock),
+        driver=driver if driver is not None else RecordingDriver(clock),
         server=FakeServer(device_id=DEVICE, token=TOKEN, clock=clock, policy=policy if policy is not None else make_policy()),
         handlers={h.action: h for h in hs},
         observer=observer,

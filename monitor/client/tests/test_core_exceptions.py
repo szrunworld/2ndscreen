@@ -542,3 +542,41 @@ def test_verify_only_ignores_limits_and_whitelist_and_never_writes():
     assert env.driver.writes == []
     assert env.handlers["send_greeting"].run_calls == []
     assert len(env.handlers["send_greeting"].verify_calls) == 3
+
+
+def test_kill9_with_fixture_fake_driver_clicks_once():
+    """同一验收用 C 的 FakeDriver 回放真实夹具：求简历按钮的 click 总共只发生一次。"""
+    from pathlib import Path
+
+    from monitor.driver import FakeDriver
+
+    fixture = Path(__file__).resolve().parents[2] / "fixtures/ax/conversation_detail/fixture.json"
+    button = Locator(text="求简历", role="AXStaticText")
+
+    def click_then_die(command, driver, ctx):
+        driver.state()
+        driver.click(button)
+        raise SimulatedKill()
+
+    def verify_reads_only(command, driver, ctx):
+        driver.state()
+        return ActionResult(status="unknown", reason="timeout", reason_detail="夹具里看不出请求是否发出")
+
+    handler = ScriptedHandler("request_resume", run=click_then_die, verify=verify_reads_only)
+    env = make_env(handlers=[handler], driver=None)
+    fake = FakeDriver(fixture, clock=env.clock.now)
+    fake.goto(1)
+    env.driver = fake
+    env.new_runtime()
+    c1 = env.cmd("request_resume")
+    env.server.enqueue(c1)
+    with pytest.raises(SimulatedKill):
+        env.run_until(lambda: False)
+    assert fake.count("click") == 1
+
+    env.new_runtime()  # 重启
+    env.run_until(lambda: c1["command_id"] in env.server.results)
+    assert fake.count("click") == 1
+    assert len(fake.writes) == 1
+    assert env.server.results[c1["command_id"]]["status"] == "unknown"
+    assert env.server.results[c1["command_id"]]["reason"] == "crash_recovery"

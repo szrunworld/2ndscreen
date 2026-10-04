@@ -42,6 +42,7 @@ from .clock import Clock
 from .gui_lock import ACTION, GuiLock
 from .guard import GuardedDriver
 from .limits import check_rate
+from . import write_flags
 
 # 处理器返回这些原因时，运行时需要暂停相应执行并上报（方案第七节"登录失效、验证码、未知弹窗"
 # 与"用户切换账户"）。target_ambiguous 只影响本条指令，不暂停设备。
@@ -175,7 +176,7 @@ class Pipeline:
                 cmd,
                 verified.model_copy(
                     update={
-                        "gui_write_performed": True,
+                        **write_flags.flags(True),
                         "executed_at": verified.executed_at or started,
                         "observed": Observed(
                             before=verified.observed.before, after=[*verified.observed.after, recovery_fact]
@@ -319,7 +320,7 @@ class Pipeline:
         if guarded.wrote and not verify:
             # 已经动过界面，结果不明：unknown，停止自动重试
             return ActionResult(
-                status="unknown", reason="driver_error", reason_detail=detail, gui_write_performed=True, executed_at=started
+                status="unknown", reason="driver_error", reason_detail=detail, executed_at=started, **write_flags.flags(True)
             )
         return ActionResult(status="failed", reason="driver_error", reason_detail=detail)
 
@@ -329,9 +330,7 @@ class Pipeline:
         不符合契约时返回 None（调用方用保守的兜底结果）。
         """
         now = self.clock.now()
-        update: dict = {"gui_write_performed": ar.gui_write_performed or wrote}
-        if cmd.execution_mode == "verify_only":
-            update["gui_write_performed"] = False  # 守卫保证没有写调用到达 Driver
+        update: dict = write_flags.merged(ar, guard_wrote=wrote, verify_only=cmd.execution_mode == "verify_only")
         if ar.status == "succeeded" and ar.executed_at is None:
             update["executed_at"] = now
         try:
@@ -355,8 +354,8 @@ class Pipeline:
             status=status,
             reason=reason,
             reason_detail=detail,
-            gui_write_performed=wrote,
             executed_at=executed_at,
+            **write_flags.flags(wrote),
             observed=observed or Observed(),
             evidence=evidence or [],
         )

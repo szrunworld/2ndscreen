@@ -18,6 +18,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from monitor_contracts import OUTWARD_ACTIONS, CommandState, LedgerCommand, Policy
 
+from . import write_flags
+
 HARD_DAILY_CAPS: MappingProxyType[str, int] = MappingProxyType(
     {
         "send_greeting": 100,
@@ -88,14 +90,14 @@ class RateDecision:
 def _counts_as_execution(rec: LedgerCommand) -> datetime | None:
     """一条账本记录是否计入上限；计入时返回执行时间。
 
-    只统计 execute 模式下真正碰过界面的执行：正在 running 的，或结果里 gui_write_performed=true 的。
+    只统计 execute 模式下真正碰过界面的执行：正在 running 的，或结果标记为发生过对外动作的（write_flags）。
     前置检查失败（白名单、限额、过期等）没有动界面，不计入。
     """
     if rec.command.execution_mode != "execute":
         return None
     if rec.state == CommandState.RUNNING:
         return rec.updated_at
-    if rec.result is not None and rec.result.gui_write_performed:
+    if rec.result is not None and write_flags.counts_toward_limit(rec.result):
         return rec.result.executed_at or rec.updated_at
     return None
 
