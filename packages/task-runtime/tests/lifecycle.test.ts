@@ -18,10 +18,20 @@ import { CONTROL_ITEM } from '../src/daemon.ts';
 
 const PACKAGE = join(import.meta.dirname, '..');
 let runtime: string;
+/** The Node that runs the command line (and so the worker it starts). */
+let node: string;
 const started: number[] = [];
 
 before(() => {
+  // TASK_RUNTIME_UNDER_TEST: an installed runtime (scripts/install-task-runtime.sh), run on its own bin/node.
+  const installed = process.env.TASK_RUNTIME_UNDER_TEST;
+  if (installed) {
+    runtime = installed;
+    node = join(installed, 'bin/node');
+    return;
+  }
   runtime = join(mkdtempSync(join(tmpdir(), 'a7-built-')), 'task-runtime');
+  node = process.execPath;
   const built = spawnSync(process.execPath, [join(PACKAGE, 'scripts/build.mjs'), runtime], { encoding: 'utf8' });
   assert.equal(built.status, 0, built.stderr);
 });
@@ -83,7 +93,7 @@ type World = ReturnType<typeof world>;
 
 async function cli(w: World, args: string[]): Promise<{ code: number | null; json: any; ms: number; stderr: string }> {
   const t0 = Date.now();
-  const child = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', join(runtime, 'main.mjs'), ...args], { env: w.env, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(node, ['--disable-warning=ExperimentalWarning', join(runtime, 'main.mjs'), ...args], { env: w.env, stdio: ['ignore', 'pipe', 'pipe'] });
   let stdout = '';
   let stderr = '';
   child.stdout.on('data', (c) => (stdout += c));

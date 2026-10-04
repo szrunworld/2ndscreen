@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { chmod, mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -241,4 +241,55 @@ test('MCP task tools run the same CLI and refuse loose arguments', { skip }, asy
   assert.match(text(10).error.message, /account must be a string/);
   assert.equal(text(11).error.code, 'capability_missing');
   assert.equal(text(11).command, 'run');
+});
+
+// The whole path with nothing synthetic but the ledger's folder: MCP → this
+// CLI → execv into the installed runtime's own node → a detached worker.
+// The socket names no running 2ndscreen and no app is given, so the worker
+// can only report that the desktop is unavailable; nothing touches a screen.
+const INSTALLED = process.env.TASK_RUNTIME_UNDER_TEST;
+const skipInstalled = skip || (INSTALLED ? false : 'set TASK_RUNTIME_UNDER_TEST to an installed runtime to run');
+
+test('MCP runs a task through the installed runtime and its background worker', { skip: skipInstalled }, async () => {
+  const root = await mkdtemp(join('/tmp', 'a7-mcp-'));
+  const env = {
+    SECONDSCREEN_TASK_RUNTIME: INSTALLED,
+    SECONDSCREEN_NODE: undefined,
+    SECONDSCREEN_TASKS_DIR: join(root, 'tasks'),
+    SECONDSCREEN_SOCKET: join(root, 'none.sock'),
+    SECONDSCREEN_APP: undefined,
+  };
+  const call = (id: number, name: string, args: object) => ({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } });
+  const text = (reply: Record<string, any>) => JSON.parse(reply.result.content[0].text.trim());
+  const [submitted] = await mcp([call(1, 'task_run', { skill_id: 'boss.collect-resumes', job: '前端工程师', limit: 2, output: join(root, 'out'), account: 'hr-zhang' })], env);
+  assert.equal(submitted!.result.isError, false, submitted!.result.content[0].text);
+  const taskId: string = text(submitted!).result.taskId;
+  // The worker finds no desktop and stops to wait: the task neither runs on blindly nor claims success.
+  let task: Record<string, any> = {};
+  for (let i = 0; i < 100; i++) {
+    const [s] = await mcp([call(2, 'task_status', { task_id: taskId })], env);
+    task = text(s!).result.task;
+    if (task.status !== 'queued' && task.status !== 'running') break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  assert.deepEqual(task.account, { platform: 'boss', accountKey: 'hr-zhang', binding: 'explicit' });
+  assert.ok(['waiting_user', 'paused'].includes(task.status), JSON.stringify(task));
+  assert.equal(task.counts.committed, 0);
+  const [cancelled] = await mcp([call(3, 'task_cancel', { task_id: taskId })], env);
+  assert.ok(['cancelling', 'cancelled'].includes(text(cancelled!).result.status));
+  for (let i = 0; i < 50 && task.status !== 'cancelled'; i++) {
+    await new Promise((r) => setTimeout(r, 100));
+    task = text((await mcp([call(5, 'task_status', { task_id: taskId })], env))[0]!).result.task;
+  }
+  assert.equal(task.status, 'cancelled');
+  const [artifacts] = await mcp([call(4, 'task_artifacts', { task_id: taskId })], env);
+  assert.deepEqual(text(artifacts!).result, []);
+  // Stop the worker it started.
+  const actors = await readdir(join(root, 'tasks', 'actors'));
+  for (const name of actors) {
+    const pid = Number(name.split('-')[0]);
+    try {
+      process.kill(pid, 'SIGTERM');
+    } catch {}
+  }
 });
