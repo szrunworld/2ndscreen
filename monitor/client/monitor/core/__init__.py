@@ -20,7 +20,7 @@ from .client import (
 from .clock import Clock, ManualClock, SystemClock
 from .events import make_event
 from .gui_lock import ACTION, OBSERVE, GuiLock
-from .guard import GuardedDriver, ReadOnlyViolation
+from .guard import CommandCancelled, ExecContext, GuardedDriver, ReadOnlyViolation
 from .limits import HARD_DAILY_CAPS, MIN_INTERVAL_FLOORS, ActionLimit, RateDecision, check_rate, effective_limit
 from .pipeline import ANOMALY_REASONS, ExecOutcome, Gate, Pipeline
 from .runtime import MonitorRuntime, RuntimeConfig
@@ -32,8 +32,10 @@ __all__ = [
     "Backoff",
     "ClaimResponse",
     "Clock",
+    "CommandCancelled",
     "CommandClient",
     "EventReport",
+    "ExecContext",
     "ExecOutcome",
     "Gate",
     "GuardedDriver",

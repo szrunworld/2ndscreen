@@ -90,7 +90,7 @@ class RateDecision:
 def _counts_as_execution(rec: LedgerCommand) -> datetime | None:
     """一条账本记录是否计入上限；计入时返回执行时间。
 
-    只统计 execute 模式下真正碰过界面的执行：正在 running 的，或结果标记为发生过对外动作的（write_flags）。
+    只统计 execute 模式下真正碰过界面的执行：正在 running 的，或结果按 write_flags.counts_toward_limit 计入的（对外动作；搜索看导航）。
     前置检查失败（白名单、限额、过期等）没有动界面，不计入。
     """
     if rec.command.execution_mode != "execute":

@@ -404,8 +404,8 @@ def test_handler_bad_result_falls_back_conservatively():
         from monitor_contracts import Locator
 
         driver.click(Locator(text="发送"))
-        # 违反契约：cancelled 却动过界面
-        return ActionResult(status="cancelled", gui_write_performed=True)
+        # 违反契约：cancelled 却声明了对外动作
+        return ActionResult(status="cancelled", outbound_action_performed=True, externally_visible_side_effect=True)
 
     env = make_env(handlers=[ScriptedHandler("send_greeting", run=wrong)])
     c1 = env.cmd()

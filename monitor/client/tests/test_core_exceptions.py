@@ -12,6 +12,7 @@ from uuid import UUID
 import pytest
 from monitor_contracts import ActionResult, CommandState, Locator
 
+from monitor.core.guard import ReadOnlyViolation
 from monitor.core.testing import (
     ACCOUNT,
     ScriptedHandler,
@@ -88,7 +89,8 @@ def test_result_network_error_backs_off_exponentially():
 
 
 def _crashing_run(command, driver, ctx):
-    driver.click(Locator(text="发送"))
+    with ctx.outbound():
+        driver.click(Locator(text="发送"))
     raise SimulatedKill()
 
 
@@ -114,7 +116,9 @@ def test_kill9_after_click_writes_once_and_ends_unknown():
     r1 = _rec(env, c1["command_id"])
     assert r1.state == CommandState.UNKNOWN
     assert r1.result.reason == "crash_recovery"
-    assert r1.result.gui_write_performed is True
+    # 复核不明：三个标志都取保守值
+    assert r1.result.outbound_action_performed is True
+    assert r1.result.navigation_performed is True and r1.result.externally_visible_side_effect is True
     assert greet.verify_calls == [UUID(c1["command_id"])]
     # 同一 command_id 的写方法总共只调用一次（崩溃前那一次）
     assert len(env.driver.writes) == 1
@@ -141,6 +145,7 @@ def test_kill9_recovery_confirms_success_without_redo():
     r1 = _rec(env, c1["command_id"])
     assert r1.state == CommandState.SUCCEEDED
     assert any(f.code == "crash_recovery" for f in r1.result.observed.after)
+    assert r1.result.outbound_action_performed is True and r1.result.externally_visible_side_effect is True
     assert len(env.driver.writes) == 1
     assert len(greet.run_calls) == 1
 
@@ -159,6 +164,9 @@ def test_kill9_recovery_confirms_not_happened_does_not_retry():
     env.run_until(lambda: c1["command_id"] in env.server.results)
     r1 = _rec(env, c1["command_id"])
     assert r1.state == CommandState.FAILED and r1.result.reason == "verification_failed"
+    # 确认对外动作未发生；导航与对方可见无从得知，取保守值
+    assert r1.result.outbound_action_performed is False
+    assert r1.result.navigation_performed is True and r1.result.externally_visible_side_effect is True
     assert len(greet.run_calls) == 1 and len(env.driver.writes) == 1
 
 
@@ -181,7 +189,9 @@ def test_handler_driver_error_after_write_is_unknown():
     from monitor_contracts import WindowLostError
 
     def click_then_lose(command, driver, ctx):
-        driver.click(Locator(text="发送"))
+        driver.click(Locator(text="会话"))
+        with ctx.outbound():
+            driver.click(Locator(text="发送"))
         raise WindowLostError("窗口没了")
 
     env = make_env(handlers=[ScriptedHandler("send_greeting", run=click_then_lose)])
@@ -189,7 +199,25 @@ def test_handler_driver_error_after_write_is_unknown():
     env.server.enqueue(c1)
     env.run_until(lambda: c1["command_id"] in env.server.results)
     res = env.server.results[c1["command_id"]]
-    assert res["status"] == "unknown" and res["reason"] == "driver_error" and res["gui_write_performed"] is True
+    assert res["status"] == "unknown" and res["reason"] == "driver_error"
+    assert res["navigation_performed"] is True
+    assert res["outbound_action_performed"] is True and res["externally_visible_side_effect"] is True
+
+
+def test_handler_driver_error_after_navigation_only_is_failed():
+    from monitor_contracts import WindowLostError
+
+    def navigate_then_lose(command, driver, ctx):
+        driver.click(Locator(text="会话"))  # 未声明 outbound → 导航
+        raise WindowLostError("窗口没了")
+
+    env = make_env(handlers=[ScriptedHandler("send_greeting", run=navigate_then_lose)])
+    c1 = env.cmd()
+    env.server.enqueue(c1)
+    env.run_until(lambda: c1["command_id"] in env.server.results)
+    res = env.server.results[c1["command_id"]]
+    assert res["status"] == "failed" and res["reason"] == "driver_error"
+    assert res["navigation_performed"] is True and res["outbound_action_performed"] is False
 
 
 def test_handler_driver_error_before_write_is_failed():
@@ -204,7 +232,8 @@ def test_handler_driver_error_before_write_is_failed():
     env.server.enqueue(c1)
     env.run_until(lambda: c1["command_id"] in env.server.results)
     res = env.server.results[c1["command_id"]]
-    assert res["status"] == "failed" and res["reason"] == "driver_error" and res["gui_write_performed"] is False
+    assert res["status"] == "failed" and res["reason"] == "driver_error"
+    assert not (res["navigation_performed"] or res["outbound_action_performed"] or res["externally_visible_side_effect"])
 
 
 # ---------------------------------------------------------------------------
@@ -301,7 +330,8 @@ def test_cancel_while_queued():
     env.clock.advance(31)
     env.run_until(lambda: c1["command_id"] in env.server.results)
     res = env.server.results[c1["command_id"]]
-    assert res["status"] == "cancelled" and res["executed_at"] is None and res["gui_write_performed"] is False
+    assert res["status"] == "cancelled" and res["executed_at"] is None
+    assert not (res["navigation_performed"] or res["outbound_action_performed"] or res["externally_visible_side_effect"])
     assert env.handlers["send_greeting"].run_calls == []
 
 
@@ -456,7 +486,8 @@ def test_daily_cap_returns_rate_limited_without_driver():
     env.run_until(lambda: c2["command_id"] in env.server.results)
     assert env.server.results[c1["command_id"]]["status"] == "succeeded"
     res2 = env.server.results[c2["command_id"]]
-    assert res2["status"] == "failed" and res2["reason"] == "rate_limited" and res2["gui_write_performed"] is False
+    assert res2["status"] == "failed" and res2["reason"] == "rate_limited"
+    assert not (res2["navigation_performed"] or res2["outbound_action_performed"] or res2["externally_visible_side_effect"])
     assert len(env.driver.writes) == 1
     assert len(env.handlers["send_greeting"].run_calls) == 1  # 第二条根本没进处理器
 
@@ -508,23 +539,34 @@ def test_whitelist_off_fails_without_calling_handler():
     c1 = env.cmd()
     env.server.enqueue(c1)
     env.run_until(lambda: c1["command_id"] in env.server.results)
-    assert env.server.results[c1["command_id"]]["reason"] == "action_not_allowed"
+    res = env.server.results[c1["command_id"]]
+    assert res["reason"] == "action_not_allowed"
+    assert not (res["navigation_performed"] or res["outbound_action_performed"] or res["externally_visible_side_effect"])
     assert env.handlers["send_greeting"].run_calls == [] and env.driver.calls == []
 
 
 # ---------------------------------------------------------------------------
-# 验收：verify_only 不受上限与白名单约束，且不调用写方法
+# 验收：verify_only 不受上限与白名单约束；允许导航，拦截输入与对外动作
 # ---------------------------------------------------------------------------
 
 
-def test_verify_only_ignores_limits_and_whitelist_and_never_writes():
+def test_verify_only_ignores_limits_and_whitelist_and_blocks_outbound():
+    blocked: list[str] = []
+
     def sneaky_verify(command, driver, ctx):
         driver.state()
-        try:
-            driver.click(Locator(text="发送"))  # 守卫必须拦下
-        except Exception:
-            pass
-        return ActionResult(status="succeeded", executed_at=ctx.clock())
+        driver.click(Locator(text="会话"))  # 导航：允许
+        driver.scroll(None, "down", 1)  # 导航：允许
+        for name, call in (
+            ("type_text", lambda: driver.type_text(None, "你好")),
+            ("key", lambda: driver.key("return")),
+            ("outbound", lambda: ctx.outbound().__enter__()),
+        ):
+            try:
+                call()  # 守卫必须拦下
+            except ReadOnlyViolation:
+                blocked.append(name)
+        return ActionResult(status="succeeded", executed_at=ctx.clock(), externally_visible_side_effect=True)
 
     limits = make_policy()["daily_limits"] | {"send_greeting": 0}
     env = make_env(
@@ -538,10 +580,114 @@ def test_verify_only_ignores_limits_and_whitelist_and_never_writes():
     for c in cmds:
         res = env.server.results[c["command_id"]]
         assert res["status"] == "succeeded" and res["execution_mode"] == "verify_only"
-        assert res["gui_write_performed"] is False
-    assert env.driver.writes == []
+        assert res["navigation_performed"] is True and res["outbound_action_performed"] is False
+        assert res["externally_visible_side_effect"] is True  # 打开未读会话的已读回执如实上报
+    assert blocked == ["type_text", "key", "outbound"] * 3
+    assert [c.method for c in env.driver.writes] == ["click", "scroll"] * 3
     assert env.handlers["send_greeting"].run_calls == []
     assert len(env.handlers["send_greeting"].verify_calls) == 3
+
+
+def test_verify_only_handler_declaring_outbound_is_cleared():
+    def lying_verify(command, driver, ctx):
+        return ActionResult(status="unknown", reason="timeout", outbound_action_performed=True, externally_visible_side_effect=True)
+
+    env = make_env(handlers=[ScriptedHandler("send_greeting", verify=lying_verify)])
+    c1 = env.cmd(execution_mode="verify_only")
+    env.server.enqueue(c1)
+    env.run_until(lambda: c1["command_id"] in env.server.results)
+    res = env.server.results[c1["command_id"]]
+    assert res["status"] == "unknown" and res["outbound_action_performed"] is False
+
+
+# ---------------------------------------------------------------------------
+# 契约 0.2.0：执行中取消
+# ---------------------------------------------------------------------------
+
+
+def test_cancel_while_running_after_navigation_reports_cancelled():
+    """导航（打开会话）之后、对外动作之前收到取消：回报 cancelled，导航与对方可见如实记录。"""
+    def navigate_then_send(command, driver, ctx):
+        driver.click(Locator(text="会话"))
+        # 模拟取消在执行中途到达（实际可能来自状态窗口或独立的心跳线程）
+        env.runtime.pipeline.cancel(command.command_id)
+        assert ctx.cancel_requested()
+        with ctx.outbound():  # 守卫在这里打断
+            driver.click(Locator(text="发送"))
+        raise AssertionError("不应执行到这里")
+
+    env = make_env(handlers=[ScriptedHandler("send_greeting", run=navigate_then_send), ScriptedHandler("request_resume")])
+    c1 = env.cmd()
+    env.server.enqueue(c1)
+    env.run_until(lambda: c1["command_id"] in env.server.results)
+    res = env.server.results[c1["command_id"]]
+    assert res["status"] == "cancelled" and res["executed_at"] is None and res["reason"] is None
+    assert res["navigation_performed"] is True and res["outbound_action_performed"] is False
+    assert [c.args["target"].text for c in env.driver.writes] == ["会话"]
+    assert _rec(env, c1["command_id"]).state == CommandState.CANCELLED
+    # 取消请求不残留：下一条指令正常执行（含对外动作）
+    c2 = env.cmd("request_resume")
+    env.server.enqueue(c2)
+    env.run_until(lambda: c2["command_id"] in env.server.results, advance=31)
+    assert env.server.results[c2["command_id"]]["status"] == "succeeded"
+
+
+def test_cancel_while_running_handler_swallows_and_returns_is_still_cancelled():
+    """处理器吞掉打断、自己声明读回执后返回：只要没有对外动作，仍回报 cancelled。"""
+    def stubborn(command, driver, ctx):
+        driver.click(Locator(text="会话"))
+        env.runtime.pipeline.cancel(command.command_id)
+        try:
+            driver.click(Locator(text="发送"))
+        except Exception:
+            pass
+        return ActionResult(status="failed", reason="timeout", navigation_performed=True, externally_visible_side_effect=True)
+
+    env = make_env(handlers=[ScriptedHandler("send_greeting", run=stubborn)])
+    c1 = env.cmd()
+    env.server.enqueue(c1)
+    env.run_until(lambda: c1["command_id"] in env.server.results)
+    res = env.server.results[c1["command_id"]]
+    assert res["status"] == "cancelled"
+    assert res["navigation_performed"] is True and res["externally_visible_side_effect"] is True
+    assert res["outbound_action_performed"] is False
+    assert len(env.driver.writes) == 1
+
+
+def test_cancel_while_running_after_outbound_reports_actual_result():
+    def send_then_cancelled(command, driver, ctx):
+        with ctx.outbound():
+            driver.type_text(None, "你好")
+            env.runtime.pipeline.cancel(command.command_id)
+            driver.key("return")  # 对外动作已开始，不再打断
+        return ActionResult(status="succeeded", executed_at=ctx.clock())
+
+    env = make_env(handlers=[ScriptedHandler("send_greeting", run=send_then_cancelled)])
+    c1 = env.cmd()
+    env.server.enqueue(c1)
+    env.run_until(lambda: c1["command_id"] in env.server.results)
+    res = env.server.results[c1["command_id"]]
+    assert res["status"] == "succeeded"
+    assert res["outbound_action_performed"] is True and res["externally_visible_side_effect"] is True
+    assert len(env.driver.writes) == 2
+
+
+def test_outbound_implies_externally_visible_in_reported_results():
+    """处理器漏报 externally_visible 时，core 按不变式补上。"""
+
+    def forgetful(command, driver, ctx):
+        with ctx.outbound():
+            driver.click(Locator(text="发送"))
+        return ActionResult(status="succeeded", executed_at=ctx.clock(), outbound_action_performed=True)
+
+    env = make_env(handlers=[ScriptedHandler("send_greeting", run=forgetful)])
+    c1 = env.cmd()
+    env.server.enqueue(c1)
+    env.run_until(lambda: c1["command_id"] in env.server.results)
+    res = env.server.results[c1["command_id"]]
+    assert res["outbound_action_performed"] is True and res["externally_visible_side_effect"] is True
+    for r in env.server.results.values():
+        assert not r["outbound_action_performed"] or r["externally_visible_side_effect"]
 
 
 def test_kill9_with_fixture_fake_driver_clicks_once():
