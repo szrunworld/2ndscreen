@@ -88,3 +88,10 @@
 协调者停止旧 P0 side instance，启动新版本的测试专用实例。Socket 可响应空屏幕列表，但随后 Session 的 `screen create` 再次在 15 秒超时。进程采样显示 `VirtualDisplay.selectSystemMode` 停留在 `SLSCompleteDisplayConfigurationWithOption`。停止新专用实例后，两次实例创建的显示器仍出现在系统在线显示列表中；到 12:48 仍未释放，相关 side instance 进程均已退出。未重启 WindowServer、系统或 BOSS，未向其他应用发送终止信号。
 
 因此本轮新产品路由尚未在真实页面完成复测，不能把原生探针成功替代 Session / workflow 的实际验收。主协调者继续代码审查、安装及合成进程测试；真实采集归档保持环境阻塞状态。原始进程采样与显示列表保存在本机 P0 私有目录。
+
+
+## 最终代码与保留证据复核（2026-10-04 13:00）
+
+A4 的 `8011998` 修复已由协调者审查并复跑采集测试 54/54，通过后合入。协调者仅在本机用保留的真实 AX 观察与 OCR 输出回放：拆分会话表头现在得到完整姓名且 identity=match；带 `◎` 装饰前缀的实际栅格表头校验为 true。两项回放均不依赖向 worker 提供原始个人信息，也没有放宽为任意正文包含姓名。
+
+到最后一次显示列表复核，先前两个虚拟显示器仍在线，测试专用实例均已退出。因而实时 Session / workflow 的岗位筛选和完整采集归档仍受环境阻塞。已完成的安装、原生测试、进程恢复与 MCP 回归结果见 [协调者验收记录](agent-reports/Coordinator-review.md)，不得解释为这条真实路径已经通过。

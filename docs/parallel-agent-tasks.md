@@ -65,3 +65,8 @@ A1–A5、A8 在实现文件上正交；A4 的图片能力通过 LocalVision 注
 报告放在各工作区 docs/agent-reports/A编号.md，包含目标、实际修改文件、commit SHA、实际测试命令与结果、未验证项、依赖和已知限制。报告文件为该任务独占，不修改其他人的报告。
 
 协调者审查顺序：检查文件归属和 diff → 核实测试覆盖失败路径 → 复跑相关测试 → 接口兼容检查 → 接受或派回修复 → 合并 → 记录合并后结果。worker_done 只表示该 agent 交付，不自动等于总体验收通过。
+
+
+## 本轮验收落点（2026-10-04 13:00）
+
+Orca Run 中 23 个实现与跟进任务均已交付，无未完成的开发 task，也没有等待清理决定的 reclaimable worker。A0–A8 及审查修复已合入 `szrunworld/ss-runtime-integration`，包括 MCP 任务资源链接；用户原分支保持不变。协调者独立复跑的全量、安装产物及真实记录离线检查详见 [验收记录](agent-reports/Coordinator-review.md)。P0 真实端到端采集归档尚受 macOS 显示配置阻塞，不能将开发 task 的完成等同于真实业务验收成功。
