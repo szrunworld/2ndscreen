@@ -39,7 +39,9 @@
 
 - **Monitor 负责（保留）**：本机端全部——观察、动作、Driver、本地账本与 outbox、状态窗口、本地硬上限、登录接力；以及一层**薄桥接服务**——设备注册与令牌、指令队列（领取 / 确认 / 回报，指令创建与状态更新同事务）、事件接收。
 - **ATS 负责（Monitor 不再扩展）**：候选人档案与去重、招聘流程（`application` + `application_event`）、简历存储与解析、通知、候选人流程页与总览、品牌化简历。Monitor 已合入的 `recruitment_cases`、策略、总览代码（任务 F2）冻结，不再扩展，对接 ATS 时替换为向 ATS 写 `application_event` 的映射。
-- **待定归属**：邮件收简历（任务 G，已完成）、设备/登录/执行记录管理页、BOSS 站内搜索、人工换微信。建议见状态表"用户待决事项"。
+- **交给服务器端**：邮件收简历（任务 G，见 handover-mail-ingestion.md）；设备、登录、执行记录管理页放在 ATS 门户（见 handover-device-console.md），Monitor 不自建控制台。
+- **时间路线 A**：Monitor 先独立运行（指令来自 Monitor 桥接服务），ATS 到 P2 定义执行器契约（channel_task）后切换指令来源。
+- **待定**：BOSS 站内搜索、人工换微信暂留在 Monitor 桥接服务，等 ATS 需要时作为渠道任务类型接入。
 
 ## 二、与既有工作的关系
 
@@ -248,7 +250,7 @@ GUI 调度锁：观察与动作共用一把锁，动作优先；观察按配置�
 
 本机 SQLite 三张表：`command_ledger`（指令、阶段、结果、回传状态）、`event_outbox`（未确认事件）、`monitor_state`（账户绑定、观察基线、读取进度、暂停状态）。
 
-## 十、控制台页面
+## 十、控制台页面（已撤销：管理页放服务器端，见 handover-device-console.md；以下保留作需求参考）
 
 五个服务端页面加一个本机状态窗口，结构见线框图。关键规则：
 

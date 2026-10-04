@@ -25,8 +25,8 @@
 | H1 | 动作公共层 + 问候 + 求简历 | 已释放 | monitor-H1 | 已合（合并时全量 963 tests） | — | 9 条界面假设待 N（H1.md 第五节）；接口请求：Driver 层过滤 PDF 子树、hints 稳定 |
 | H2 | 搜索动作 | — | — | 未派 | — | — |
 | H3 | 换联系方式 + 转发简历 | — | — | 未派 | — | — |
-| I1 | 控制台骨架、总览、连接与策略 | — | — | 未派 | — | — |
-| I2 | 控制台候选人流程、执行记录、搜索 | — | — | 未派 | — | — |
+| I1 | 控制台骨架、总览、连接与策略 | — | — | 撤销（2026-10-04：管理页放服务器端 / ATS 门户，见 handover-device-console.md） | — | — |
+| I2 | 控制台候选人流程、执行记录、搜索 | — | — | 撤销（同上） | — | — |
 | J | 安装、模式、launchd、状态窗口 | 已释放 | monitor-J | 已合（2420f09；其分支上 982 tests；合并后受 0.3.0 limits 影响由 X 修） | 3a33e4d | 真机验证步骤见 J.md 第七节；接口请求：CliFailure 冻结 bug、window release 分类（→ C2）、python -m monitor install 分发（→ X 之后） |
 | K | 登录接力 | — | — | 未派 | — | — |
 | M | 集成、混沌测试、运维手册 | — | — | 未派 | — | — |
@@ -78,6 +78,7 @@ Run：run_7d52e82ce7ed。分支 monitor-v1（a12a931，自 szrunworld/ss-runtime
 ## 与 ATS 的分工（2026-10-04）
 
 - 已确认：Monitor = 本机执行器 + 薄桥接服务（设备、指令队列、事件接收）。业务（候选人、流程、简历存储解析、通知、流程页与总览、品牌化简历）归 ATS。F2 的 cases/policy/overview 冻结；I1/I2 只做设备、登录、执行记录。
-- 待用户决定：(1) 时间路线 A（Monitor 先独立运行，简历经 ATS 现有导入接口推入，ATS 到 P2 再切换指令来源）或 B（等 ATS 定执行器契约再接）；(2) 给 ATS 的契约变更（channel_task 与执行器接口、任务类型含求简历/换微信/搜索、无联系方式的 BOSS 候选人入库、品牌化简历）由谁提出。
+- 已决定：时间路线 A（Monitor 先独立运行，ATS 到 P2 再切换指令来源）；设备、登录、执行记录管理页放服务器端（ATS 门户），I1/I2 撤销（交接 handover-device-console.md）。
+- 待用户决定： 给 ATS 的契约变更（channel_task 与执行器接口、任务类型含求简历/换微信/搜索、无联系方式的 BOSS 候选人入库、品牌化简历）由谁提出。
 
 - 邮件收简历（G）：用户决定交给服务器端（定时任务，与设备无关）。交接文档 docs/monitor/handover-mail-ingestion.md；接收方确认后从 Monitor 移除 monitor/mail 与相关端点。
