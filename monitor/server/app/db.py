@@ -437,6 +437,133 @@ MIGRATIONS: list[str] = [
         updated_at     TEXT NOT NULL
     );
     """,
+    # v3：F3 搜索任务、登录二维码与查看记录、人工输入请求、通知待办与投递记录、邮件记录、核对结果、简历文档
+    """
+    CREATE TABLE search_runs (
+        seq                INTEGER PRIMARY KEY AUTOINCREMENT,
+        search_id          TEXT NOT NULL UNIQUE,
+        account_id         TEXT NOT NULL,
+        query              TEXT NOT NULL,
+        max_results        INTEGER NOT NULL,
+        command_id         TEXT NOT NULL UNIQUE,
+        created_by         TEXT NOT NULL,
+        created_at         TEXT NOT NULL,
+        expires_at         TEXT NOT NULL,
+        snapshot_json      TEXT,
+        outcome            TEXT CHECK (outcome IN ('results', 'no_results', 'unreadable')),
+        snapshot_at        TEXT
+    );
+    CREATE INDEX search_runs_account ON search_runs (account_id, seq);
+    CREATE TABLE login_qrs (
+        device_id     TEXT PRIMARY KEY,
+        account_id    TEXT,
+        qr_payload    TEXT,
+        qr_seq        INTEGER NOT NULL,
+        captured_at   TEXT NOT NULL,
+        expires_at    TEXT NOT NULL,
+        decoder       TEXT NOT NULL,
+        uploaded_at   TEXT NOT NULL,
+        withdrawn_at  TEXT,
+        withdrawn_by  TEXT
+    );
+    CREATE TABLE login_qr_views (
+        seq        INTEGER PRIMARY KEY AUTOINCREMENT,
+        device_id  TEXT NOT NULL,
+        viewer     TEXT NOT NULL,
+        viewed_at  TEXT NOT NULL,
+        qr_seq     INTEGER NOT NULL
+    );
+    CREATE INDEX login_qr_views_device ON login_qr_views (device_id, seq);
+    CREATE TABLE input_requests (
+        input_request_id TEXT PRIMARY KEY,
+        device_id        TEXT NOT NULL,
+        account_id       TEXT,
+        event_id         TEXT NOT NULL,
+        input_kind       TEXT NOT NULL,
+        prompt_text      TEXT NOT NULL,
+        can_fill         INTEGER NOT NULL,
+        created_at       TEXT NOT NULL,
+        expires_at       TEXT NOT NULL,
+        command_id       TEXT,
+        responded_by     TEXT,
+        responded_at     TEXT
+    );
+    CREATE TABLE notifications (
+        seq             INTEGER PRIMARY KEY AUTOINCREMENT,
+        notification_id TEXT NOT NULL UNIQUE,
+        kind            TEXT NOT NULL,
+        severity        TEXT NOT NULL,
+        title           TEXT NOT NULL,
+        body            TEXT NOT NULL,
+        account_id      TEXT,
+        device_id       TEXT,
+        ref_kind        TEXT NOT NULL,
+        ref_id          TEXT NOT NULL,
+        created_at      TEXT NOT NULL,
+        resolved_at     TEXT,
+        resolved_by     TEXT
+    );
+    CREATE INDEX notifications_open ON notifications (resolved_at, seq);
+    CREATE TABLE notification_deliveries (
+        seq             INTEGER PRIMARY KEY AUTOINCREMENT,
+        notification_id TEXT NOT NULL,
+        channel         TEXT NOT NULL,
+        status          TEXT NOT NULL CHECK (status IN ('delivered', 'failed')),
+        attempts        INTEGER NOT NULL,
+        last_error      TEXT,
+        at              TEXT NOT NULL
+    );
+    CREATE INDEX notification_deliveries_id ON notification_deliveries (notification_id);
+    CREATE TABLE mail_messages (
+        seq             INTEGER PRIMARY KEY AUTOINCREMENT,
+        mail_message_id TEXT NOT NULL UNIQUE,
+        mailbox         TEXT NOT NULL,
+        message_id      TEXT,
+        received_at     TEXT NOT NULL,
+        status          TEXT NOT NULL,
+        record_json     TEXT NOT NULL,
+        created_at      TEXT NOT NULL,
+        updated_at      TEXT NOT NULL
+    );
+    CREATE INDEX mail_messages_received ON mail_messages (received_at, seq);
+    CREATE INDEX mail_messages_status ON mail_messages (status);
+    CREATE TABLE mail_verifications (
+        seq               INTEGER PRIMARY KEY AUTOINCREMENT,
+        verification_id   TEXT NOT NULL UNIQUE,
+        mailbox           TEXT NOT NULL,
+        outcome           TEXT NOT NULL,
+        finished_at       TEXT NOT NULL,
+        verification_json TEXT NOT NULL,
+        received_at       TEXT NOT NULL
+    );
+    CREATE INDEX mail_verifications_finished ON mail_verifications (finished_at, seq);
+    CREATE TABLE resume_documents (
+        seq             INTEGER PRIMARY KEY AUTOINCREMENT,
+        doc_id          TEXT NOT NULL UNIQUE,
+        variant         TEXT NOT NULL CHECK (variant IN ('original', 'branded')),
+        derived_from    TEXT,
+        mail_message_id TEXT,
+        case_id         TEXT,
+        link_status     TEXT NOT NULL CHECK (link_status IN ('linked', 'needs_manual', 'unlinked')),
+        link_method     TEXT NOT NULL,
+        link_json       TEXT,
+        version         INTEGER NOT NULL,
+        sha256          TEXT NOT NULL,
+        filename        TEXT NOT NULL,
+        message_id      TEXT,
+        mail_json       TEXT,
+        attachment_json TEXT NOT NULL,
+        parse_json      TEXT,
+        parse_status    TEXT NOT NULL,
+        created_at      TEXT NOT NULL,
+        updated_at      TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX resume_documents_original ON resume_documents (mail_message_id, sha256)
+        WHERE variant = 'original';
+    CREATE UNIQUE INDEX resume_documents_branded ON resume_documents (derived_from, sha256)
+        WHERE variant = 'branded';
+    CREATE INDEX resume_documents_case ON resume_documents (case_id);
+    """,
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)
