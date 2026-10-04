@@ -20,23 +20,25 @@ from monitor_contracts import OUTWARD_ACTIONS, CommandState, LedgerCommand, Poli
 
 from . import write_flags
 
+# 数值来源：用户 2026-10-04 确认；N 阶段拿到平台实测配额后再调。
 HARD_DAILY_CAPS: MappingProxyType[str, int] = MappingProxyType(
     {
-        "send_greeting": 100,
-        "request_resume": 100,
-        "request_contact_exchange": 50,
-        "forward_resume": 50,
-        "search_candidates": 100,
+        "send_greeting": 40,
+        "request_resume": 40,
+        "request_contact_exchange": 40,
+        "forward_resume": 40,
+        "search_candidates": 40,
     }
 )
 
+# 数值来源：用户 2026-10-04 确认；N 阶段实测后再调。单位：秒。
 MIN_INTERVAL_FLOORS: MappingProxyType[str, int] = MappingProxyType(
     {
-        "send_greeting": 30,
-        "request_resume": 30,
+        "send_greeting": 45,
+        "request_resume": 45,
         "request_contact_exchange": 60,
-        "forward_resume": 60,
-        "search_candidates": 15,
+        "forward_resume": 45,
+        "search_candidates": 30,
     }
 )
 
@@ -90,7 +92,7 @@ class RateDecision:
 def _counts_as_execution(rec: LedgerCommand) -> datetime | None:
     """一条账本记录是否计入上限；计入时返回执行时间。
 
-    只统计 execute 模式下真正碰过界面的执行：正在 running 的，或结果标记为发生过对外动作的（write_flags）。
+    只统计 execute 模式下真正碰过界面的执行：正在 running 的，或结果按 write_flags.counts_toward_limit 计入的（对外动作；搜索看导航）。
     前置检查失败（白名单、限额、过期等）没有动界面，不计入。
     """
     if rec.command.execution_mode != "execute":

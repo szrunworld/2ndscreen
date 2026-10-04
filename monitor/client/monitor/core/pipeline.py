@@ -6,9 +6,11 @@
 
 关键约束：
 - 先把 running 写进账本再调用处理器。进程在处理器里被杀，重启后看到 running，
-  只做 verify_only 复核（只读），绝不重做写操作；复核仍不明 → unknown(crash_recovery)。
+  只做 verify_only 复核（可导航，不做输入与对外动作），绝不重做；复核仍不明 → unknown(crash_recovery)。
 - execution_mode=verify_only 只调用 handler.verify_only，不受白名单与限额约束，
-  Driver 外包只读守卫，任何写调用直接被拒绝。
+  Driver 外包 verify 模式守卫：允许导航（click / scroll），拒绝输入（type_text / key）与对外动作。
+- 对外动作由处理器用 ctx.outbound() 显式声明（见 guard.py）；未声明的写调用记为导航。
+- running 中被取消：没有发生对外动作 → cancelled（导航与对方可见如实记录）；已发生 → 回报实际结果。
 - 前置检查失败（过期、账户不符、依赖未满足、白名单、限额）直接 queued → 终态，不碰 Driver。
 - 只捕获 Exception：KeyboardInterrupt / SystemExit 等照常向上抛，账本停在 running，交给恢复流程。
 """
@@ -16,6 +18,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+import threading
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
@@ -23,7 +26,6 @@ from uuid import UUID
 
 from monitor_contracts import (
     OUTWARD_ACTIONS,
-    ActionContext,
     ActionHandler,
     ActionResult,
     CommandModel,
@@ -40,7 +42,7 @@ from monitor_contracts import (
 
 from .clock import Clock
 from .gui_lock import ACTION, GuiLock
-from .guard import GuardedDriver
+from .guard import CommandCancelled, ExecContext, GuardedDriver
 from .limits import check_rate
 from . import write_flags
 
@@ -114,6 +116,9 @@ class Pipeline:
         self.wake_at: datetime | None = None
         # 正在执行的指令（供心跳 current_action 与状态窗口）
         self.current: tuple[CommandModel, datetime] | None = None
+        # 执行中收到的取消请求（可能来自其他线程，例如状态窗口或独立心跳线程）
+        self._cancel_lock = threading.Lock()
+        self._cancel_requested: set[UUID] = set()
 
     # ------------------------------------------------------------------
     # 入账与取消
@@ -123,7 +128,18 @@ class Pipeline:
         return self.ledger.put_command(command, received_at=received_at)
 
     def cancel(self, command_id: UUID) -> LedgerCommand | None:
-        """排队中的指令直接 cancelled；已开始或已结束的不动（回报实际结果）。返回迁移后的记录或 None。"""
+        """取消一条指令。返回迁移后的记录或 None。
+
+        - 排队中：直接 cancelled（三个标志都为 false）。
+        - 正在执行：登记取消请求，返回 None。守卫在下一次写调用或进入 outbound() 时打断处理器；
+          执行结束时若没有发生对外动作则落 cancelled，否则回报实际结果。
+        - 已结束：不动（回报实际结果）。
+        """
+        current = self.current
+        if current is not None and current[0].command_id == command_id:
+            with self._cancel_lock:
+                self._cancel_requested.add(command_id)
+            return None
         rec = self.ledger.get_command(command_id)
         if rec is None or rec.state != CommandState.QUEUED:
             return None
@@ -155,9 +171,9 @@ class Pipeline:
         handler = self.handlers.get(cmd.action)
         verified: ActionResult | None = None
         if handler is not None:
-            guarded = GuardedDriver(self.driver, read_only=True)
+            guarded = GuardedDriver(self.driver, mode="verify")
             try:
-                verified = handler.verify_only(cmd, guarded, self._ctx(cmd, gate))
+                verified = handler.verify_only(cmd, guarded, self._ctx(cmd, gate, guarded))
             except Exception as exc:  # 复核本身出错 → 仍不明
                 self._on_error("crash_recovery_failed", f"{cmd.command_id} 复核出错: {type(exc).__name__}")
                 verified = None
@@ -166,24 +182,29 @@ class Pipeline:
         if cmd.execution_mode == "verify_only":
             # 只读指令重做复核是安全的，直接采用复核结果
             if verified is not None:
-                built = self._build(cmd, verified, wrote=False)
+                built = self._build(cmd, verified, navigated=guarded.navigated, outbound_done=False)
                 if built is not None:
                     return built
             return self._result(cmd, status="unknown", reason="crash_recovery", detail="复核仍无法确认")
 
+        # 上次进程里是否做过对外动作已无从得知（守卫计数没有落账），按保守值：导航与对方可见都记 true；
+        # 复核确认动作已发生时对外动作为 true（搜索除外），确认未发生时为 false，不明时为 true。
         if verified is not None and verified.status == "succeeded":
             built = self._build(
                 cmd,
                 verified.model_copy(
                     update={
-                        **write_flags.flags(True),
+                        **write_flags.flags(
+                            navigation=True, outbound=write_flags.success_is_outbound(cmd.action), visible=True
+                        ),
                         "executed_at": verified.executed_at or started,
                         "observed": Observed(
                             before=verified.observed.before, after=[*verified.observed.after, recovery_fact]
                         ),
                     }
                 ),
-                wrote=True,
+                navigated=True,
+                outbound_done=write_flags.success_is_outbound(cmd.action),
             )
             if built is not None:
                 return built
@@ -193,7 +214,7 @@ class Pipeline:
                 status="failed",
                 reason="verification_failed",
                 detail="崩溃恢复：复核确认动作未发生；不自动重做",
-                wrote=True,
+                flags=write_flags.flags(navigation=True, visible=True),
                 executed_at=started,
                 observed=Observed(before=verified.observed.before, after=[*verified.observed.after, recovery_fact]),
                 evidence=verified.evidence,
@@ -203,7 +224,7 @@ class Pipeline:
             status="unknown",
             reason="crash_recovery",
             detail="崩溃恢复：复核仍无法确认动作是否发生；停止自动重试",
-            wrote=True,
+            flags=write_flags.flags(navigation=True, outbound=True, visible=True),
             executed_at=started,
             observed=Observed(after=[recovery_fact]),
             evidence=verified.evidence if verified is not None else [],
@@ -272,65 +293,114 @@ class Pipeline:
                 return _Defer(decision.retry_at)
         return _GO
 
-    def _ctx(self, cmd: CommandModel, gate: Gate) -> ActionContext:
-        return ActionContext(
+    def _ctx(self, cmd: CommandModel, gate: Gate, guard: GuardedDriver) -> ExecContext:
+        return ExecContext(
             account_id=cmd.account_id,
             device_id=gate.device_id,
             mode=gate.mode,
             allowed_actions=gate.allowed_actions(),
             deadline=cmd.expires_at,
             clock=self.clock.now,
+            guard=guard,
         )
 
     def _execute(self, rec: LedgerCommand, gate: Gate) -> ExecOutcome:
         cmd = rec.command
+        cid = cmd.command_id
         handler = self.handlers[cmd.action]
         verify = cmd.execution_mode == "verify_only"
         with self.gui_lock.hold(ACTION):
             started = self.clock.now()
-            self.ledger.transition_command(cmd.command_id, CommandState.RUNNING, at=started)
+            self.ledger.transition_command(cid, CommandState.RUNNING, at=started)
             self.current = (cmd, started)
-            guarded = GuardedDriver(self.driver, read_only=verify)
+            guarded = GuardedDriver(
+                self.driver, mode="verify" if verify else "execute", cancelled=lambda: self._is_cancel_requested(cid)
+            )
+            ctx = self._ctx(cmd, gate, guarded)
             try:
+                ar: ActionResult | None
                 try:
                     if verify:
-                        ar = handler.verify_only(cmd, guarded, self._ctx(cmd, gate))
+                        ar = handler.verify_only(cmd, guarded, ctx)
                     else:
-                        ar = handler.run(cmd, guarded, self._ctx(cmd, gate))
+                        ar = handler.run(cmd, guarded, ctx)
+                except CommandCancelled:
+                    ar = None
                 except DriverError as exc:
-                    ar = self._error_result(guarded, verify, started, f"{exc.code}: {exc}"[:500])
+                    ar = self._error_result(guarded, started, f"{exc.code}: {exc}"[:500])
                 except Exception as exc:  # 处理器缺陷：不让守护进程崩溃
                     self._on_error("handler_error", f"{cmd.action} 处理器异常: {type(exc).__name__}")
-                    ar = self._error_result(guarded, verify, started, f"处理器异常 {type(exc).__name__}")
-                result = self._build(cmd, ar, wrote=guarded.wrote and not verify)
-                if result is None:
-                    self._on_error("handler_contract", f"{cmd.action} 处理器返回的结果不符合契约")
-                    fallback = self._error_result(guarded, verify, started, "处理器返回的结果不符合契约")
-                    result = self._build(cmd, fallback, wrote=guarded.wrote and not verify)
-                    assert result is not None
-                done = self.ledger.transition_command(
-                    cmd.command_id, CommandState(result.status), at=self.clock.now(), result=result
-                )
+                    ar = self._error_result(guarded, started, f"处理器异常 {type(exc).__name__}")
+                result = self._finish(cmd, ar, guarded, started)
+                done = self.ledger.transition_command(cid, CommandState(result.status), at=self.clock.now(), result=result)
             finally:
                 self.current = None
+                with self._cancel_lock:
+                    self._cancel_requested.discard(cid)
         anomaly = result.reason if result.reason in ANOMALY_REASONS else None
         return ExecOutcome(done, executed=True, anomaly=anomaly)
 
-    def _error_result(self, guarded: GuardedDriver, verify: bool, started: datetime, detail: str) -> ActionResult:
-        if guarded.wrote and not verify:
-            # 已经动过界面，结果不明：unknown，停止自动重试
-            return ActionResult(
-                status="unknown", reason="driver_error", reason_detail=detail, executed_at=started, **write_flags.flags(True)
-            )
-        return ActionResult(status="failed", reason="driver_error", reason_detail=detail)
+    def _is_cancel_requested(self, command_id: UUID) -> bool:
+        with self._cancel_lock:
+            return command_id in self._cancel_requested
 
-    def _build(self, cmd: CommandModel, ar: ActionResult, *, wrote: bool) -> CommandResult | None:
-        """把处理器结果转成 CommandResult。gui_write_performed 取处理器声明与守卫计数的并集。
+    def _finish(
+        self, cmd: CommandModel, ar: ActionResult | None, guarded: GuardedDriver, started: datetime
+    ) -> CommandResult:
+        """处理器结束后定终态：取消优先（仅当没有对外动作），其次处理器结果，不合契约时保守兜底。"""
+        outbound_done = guarded.outbound_performed or (ar is not None and write_flags.outbound(ar))
+        if self._is_cancel_requested(cmd.command_id) and not outbound_done:
+            return self._result(
+                cmd,
+                status="cancelled",
+                reason=None,
+                detail="执行中被取消，未发生对外动作",
+                flags=write_flags.flags(
+                    navigation=guarded.navigated or (ar is not None and ar.navigation_performed),
+                    visible=ar is not None and ar.externally_visible_side_effect,
+                ),
+                observed=ar.observed if ar is not None else None,
+                evidence=ar.evidence if ar is not None else None,
+            )
+        if ar is None:  # CommandCancelled 却查不到取消请求：不应发生，按处理器缺陷兜底
+            ar = self._error_result(guarded, started, "处理器在没有取消请求时被打断")
+        result = self._build(cmd, ar, navigated=guarded.navigated, outbound_done=guarded.outbound_performed)
+        if result is None:
+            self._on_error("handler_contract", f"{cmd.action} 处理器返回的结果不符合契约")
+            # 处理器自己声明过对外动作的，也按"可能已发生"兜底
+            fallback = self._error_result(guarded, started, "处理器返回的结果不符合契约", declared_outbound=outbound_done)
+            result = self._build(cmd, fallback, navigated=guarded.navigated, outbound_done=guarded.outbound_performed)
+            assert result is not None
+        return result
+
+    def _error_result(
+        self, guarded: GuardedDriver, started: datetime, detail: str, *, declared_outbound: bool = False
+    ) -> ActionResult:
+        if guarded.outbound_performed or declared_outbound:
+            # 已经开始对外动作，结果不明：unknown，停止自动重试
+            return ActionResult(
+                status="unknown",
+                reason="driver_error",
+                reason_detail=detail,
+                executed_at=started,
+                **write_flags.flags(navigation=guarded.navigated, outbound=True),
+            )
+        # 只导航过（或什么都没做）：对外动作肯定没发生，失败即可
+        return ActionResult(
+            status="failed", reason="driver_error", reason_detail=detail, **write_flags.flags(navigation=guarded.navigated)
+        )
+
+    def _build(
+        self, cmd: CommandModel, ar: ActionResult, *, navigated: bool, outbound_done: bool
+    ) -> CommandResult | None:
+        """把处理器结果转成 CommandResult。三个标志取处理器声明与守卫记录的并集（write_flags.merged）。
 
         不符合契约时返回 None（调用方用保守的兜底结果）。
         """
         now = self.clock.now()
-        update: dict = write_flags.merged(ar, guard_wrote=wrote, verify_only=cmd.execution_mode == "verify_only")
+        update: dict = write_flags.merged(
+            ar, navigated=navigated, outbound_done=outbound_done, verify_only=cmd.execution_mode == "verify_only"
+        )
         if ar.status == "succeeded" and ar.executed_at is None:
             update["executed_at"] = now
         try:
@@ -345,7 +415,7 @@ class Pipeline:
         status: str,
         reason: str | None,
         detail: str | None = None,
-        wrote: bool = False,
+        flags: dict | None = None,
         executed_at: datetime | None = None,
         observed: Observed | None = None,
         evidence: list | None = None,
@@ -355,7 +425,7 @@ class Pipeline:
             reason=reason,
             reason_detail=detail,
             executed_at=executed_at,
-            **write_flags.flags(wrote),
+            **(flags or write_flags.none()),
             observed=observed or Observed(),
             evidence=evidence or [],
         )

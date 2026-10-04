@@ -65,7 +65,9 @@ def _result(cmd, clock):
             "reason": None,
             "observed": {"before": [], "after": []},
             "evidence": [],
-            "gui_write_performed": True,
+            "navigation_performed": True,
+            "outbound_action_performed": True,
+            "externally_visible_side_effect": True,
             "executed_at": clock.now().isoformat(),
             "reported_at": clock.now().isoformat(),
         }

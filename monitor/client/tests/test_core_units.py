@@ -24,7 +24,7 @@ from monitor_contracts import (
 from monitor.core import write_flags
 from monitor.core.clock import ManualClock, SystemClock
 from monitor.core.events import make_event
-from monitor.core.guard import GuardedDriver, ReadOnlyViolation
+from monitor.core.guard import CommandCancelled, ExecContext, GuardedDriver, ReadOnlyViolation
 from monitor.core.gui_lock import ACTION, OBSERVE, GuiLock
 from monitor.core.limits import HARD_DAILY_CAPS, MIN_INTERVAL_FLOORS, check_rate, effective_limit, policy_timezone
 from monitor.core.testing import ACCOUNT, DEVICE, InMemoryLedger, RecordingDriver, make_command, make_policy
@@ -82,12 +82,26 @@ def _executed(clock, at, *, action="send_greeting", wrote=True, mode="execute"):
             "reason": None,
             "observed": {"before": [], "after": []},
             "evidence": [],
-            "gui_write_performed": wrote,
+            "navigation_performed": wrote,
+            "outbound_action_performed": wrote and action != "search_candidates",
+            "externally_visible_side_effect": wrote and action != "search_candidates",
             "executed_at": at.isoformat(),
             "reported_at": at.isoformat(),
         }
     )
     return LedgerCommand(command=cmd, state="succeeded", result=res, delivery="pending", received_at=at, updated_at=at)
+
+
+def test_hard_limits_values_confirmed_by_user():
+    # 用户 2026-10-04 确认的数值；改动需要用户同意
+    assert dict(HARD_DAILY_CAPS) == {k: 40 for k in HARD_DAILY_CAPS} and len(HARD_DAILY_CAPS) == 5
+    assert dict(MIN_INTERVAL_FLOORS) == {
+        "send_greeting": 45,
+        "request_resume": 45,
+        "forward_resume": 45,
+        "request_contact_exchange": 60,
+        "search_candidates": 30,
+    }
 
 
 def test_check_rate_daily_cap_and_interval():
@@ -107,7 +121,51 @@ def test_check_rate_daily_cap_and_interval():
     ]
     assert check_rate("send_greeting", now=now, history=hist2, policy=policy).allowed
     d = check_rate("send_greeting", now=now, history=[_executed(clock, now - timedelta(seconds=5))], policy=policy)
-    assert d.kind == "min_interval" and d.retry_at == now + timedelta(seconds=25)
+    floor = MIN_INTERVAL_FLOORS["send_greeting"]
+    assert d.kind == "min_interval" and d.retry_at == now + timedelta(seconds=floor - 5)
+
+
+def _failed_result(cid, at, *, action, navigation, outbound):
+    return validate_command_result(
+        {
+            "command_id": cid,
+            "action": action,
+            "execution_mode": "execute",
+            "status": "failed",
+            "reason": "timeout",
+            "observed": {"before": [], "after": []},
+            "evidence": [],
+            "navigation_performed": navigation,
+            "outbound_action_performed": outbound,
+            "externally_visible_side_effect": outbound,
+            "executed_at": None,
+            "reported_at": at.isoformat(),
+        }
+    )
+
+
+def _failed(clock, at, *, action, navigation, outbound):
+    cmd = validate_command(make_command(action, clock=clock))
+    res = _failed_result(str(cmd.command_id), at, action=action, navigation=navigation, outbound=outbound)
+    return LedgerCommand(command=cmd, state="failed", result=res, delivery="pending", received_at=at, updated_at=at)
+
+
+def test_check_rate_counts_outbound_only_except_search():
+    clock = ManualClock(datetime(2026, 10, 4, 10, 0, tzinfo=UTC))
+    policy = validate_policy(make_policy(daily_limits={k: 1 for k in HARD_DAILY_CAPS}))
+    now = clock.now()
+    earlier = now - timedelta(hours=1)
+    # 只导航过的失败不计入对外动作的上限
+    nav_only = [_failed(clock, earlier, action="send_greeting", navigation=True, outbound=False)]
+    assert check_rate("send_greeting", now=now, history=nav_only, policy=policy).allowed
+    sent = [_failed(clock, earlier, action="send_greeting", navigation=True, outbound=True)]
+    assert check_rate("send_greeting", now=now, history=sent, policy=policy).kind == "daily_cap"
+    # 搜索没有对外动作，动过界面就计入
+    cid = "00000000-0000-4000-8000-00000000abcd"
+    searched = _failed_result(cid, earlier, action="search_candidates", navigation=True, outbound=False)
+    assert write_flags.counts_toward_limit(searched)
+    untouched = _failed_result(cid, earlier, action="search_candidates", navigation=False, outbound=False)
+    assert not write_flags.counts_toward_limit(untouched)
 
 
 def test_check_rate_day_boundary_uses_policy_timezone():
@@ -205,23 +263,41 @@ def test_gui_lock_release_by_other_thread_refused():
 # ---------------------------------------------------------------------------
 
 
-def test_guard_counts_writes_and_passes_reads():
+def test_guard_execute_splits_navigation_and_outbound():
     clock = ManualClock()
     inner = RecordingDriver(clock)
-    g = GuardedDriver(inner, read_only=False)
+    g = GuardedDriver(inner, mode="execute")
     g.state()
     g.bind_window()
-    assert g.screen_ok() and not g.wrote
-    g.click(Locator(text="发送"))
-    g.type_text(None, "x")
-    g.key("return")
+    assert g.screen_ok() and not g.navigated and not g.outbound_performed
+    g.click(Locator(text="会话"))
     g.scroll(None, "down", 1)
-    assert g.write_calls == 4 and len(inner.writes) == 4
+    g.type_text(None, "搜索词")  # 块外输入（如搜索框）记为导航
+    assert g.navigation_calls == 3 and not g.outbound_performed
+    with g.outbound():
+        g.type_text(None, "你好")
+        g.key("return")
+    assert g.outbound_calls == 2 and g.navigation_calls == 3 and len(inner.writes) == 5
+
+
+def test_guard_verify_allows_navigation_blocks_input_and_outbound():
+    inner = RecordingDriver(ManualClock())
+    g = GuardedDriver(inner, mode="verify")
+    g.click(Locator(text="会话"))
+    g.scroll(None, "down", 1)
+    for call in (lambda: g.type_text(None, "x"), lambda: g.key("return")):
+        with pytest.raises(ReadOnlyViolation):
+            call()
+    with pytest.raises(ReadOnlyViolation):
+        with g.outbound():
+            g.click(Locator(text="发送"))
+    assert [c.method for c in inner.writes] == ["click", "scroll"]
+    assert g.navigation_calls == 2 and g.outbound_calls == 0
 
 
 def test_guard_read_only_blocks_all_writes_and_screenshot(tmp_path: Path):
     inner = RecordingDriver(ManualClock())
-    g = GuardedDriver(inner, read_only=True)
+    g = GuardedDriver(inner, mode="read_only")
     for call in (
         lambda: g.click(Locator(text="发送")),
         lambda: g.type_text(None, "x"),
@@ -231,8 +307,47 @@ def test_guard_read_only_blocks_all_writes_and_screenshot(tmp_path: Path):
         with pytest.raises(ReadOnlyViolation):
             call()
     with pytest.raises(ReadOnlyViolation):
-        GuardedDriver(inner, read_only=False).screenshot_region(Frame(x=0, y=0, w=1, h=1), tmp_path / "a.png")
-    assert inner.writes == [] and g.write_calls == 0
+        GuardedDriver(inner, mode="execute").screenshot_region(Frame(x=0, y=0, w=1, h=1), tmp_path / "a.png")
+    assert inner.writes == [] and g.navigation_calls == 0 and g.outbound_calls == 0
+
+
+def test_guard_cancel_interrupts_until_first_outbound():
+    inner = RecordingDriver(ManualClock())
+    cancelled = False
+    g = GuardedDriver(inner, mode="execute", cancelled=lambda: cancelled)
+    g.click(Locator(text="会话"))
+    cancelled = True
+    with pytest.raises(CommandCancelled):
+        g.click(Locator(text="另一个会话"))
+    with pytest.raises(CommandCancelled):
+        with g.outbound():
+            pass
+    assert len(inner.writes) == 1
+    # 对外动作已经发生后不再打断（回报实际结果）
+    g2 = GuardedDriver(inner, mode="execute", cancelled=lambda: cancelled)
+    cancelled = False
+    with g2.outbound():
+        g2.click(Locator(text="发送"))
+        cancelled = True
+        g2.key("return")
+    g2.scroll(None, "down", 1)
+    assert g2.outbound_calls == 2 and g2.navigation_calls == 1
+
+
+def test_exec_context_outbound_and_cancel_flag():
+    clock = ManualClock()
+    g = GuardedDriver(RecordingDriver(clock), mode="execute", cancelled=lambda: True)
+    ctx = ExecContext(
+        account_id=ACCOUNT, device_id=DEVICE, mode="local", allowed_actions=frozenset(), deadline=clock.now(), guard=g
+    )
+    assert ctx.cancel_requested()
+    with pytest.raises(CommandCancelled):
+        with ctx.outbound():
+            pass
+    bare = ExecContext(account_id=ACCOUNT, device_id=DEVICE, mode="local", allowed_actions=frozenset(), deadline=clock.now())
+    assert not bare.cancel_requested()
+    with pytest.raises(RuntimeError):
+        bare.outbound()
 
 
 # ---------------------------------------------------------------------------
@@ -274,12 +389,38 @@ def test_make_event_valid_and_deduplicates_by_bucket():
 
 
 def test_write_flags():
-    ar = ActionResult(status="failed", reason="timeout", gui_write_performed=False)
-    assert write_flags.merged(ar, guard_wrote=True, verify_only=False) == {"gui_write_performed": True}
-    assert write_flags.merged(ar.model_copy(update=write_flags.flags(True)), guard_wrote=False, verify_only=True) == {
-        "gui_write_performed": False
+    ar = ActionResult(status="failed", reason="timeout")
+    nav_only = {"navigation_performed": True, "outbound_action_performed": False, "externally_visible_side_effect": False}
+    assert write_flags.merged(ar, navigated=True, outbound_done=False, verify_only=False) == nav_only
+    assert write_flags.merged(ar, navigated=False, outbound_done=True, verify_only=False) == {
+        "navigation_performed": False,
+        "outbound_action_performed": True,
+        "externally_visible_side_effect": True,
     }
-    assert write_flags.declared(ar) is False
+    # verify_only：处理器错报对外动作也被清掉；导航与对方可见如实保留
+    declared = ar.model_copy(update=write_flags.flags(navigation=True, outbound=True))
+    assert write_flags.merged(declared, navigated=False, outbound_done=False, verify_only=True) == {
+        "navigation_performed": True,
+        "outbound_action_performed": False,
+        "externally_visible_side_effect": True,
+    }
+    assert write_flags.outbound(ar) is False and write_flags.outbound(declared) is True
+    assert write_flags.none() == write_flags.flags() == {
+        "navigation_performed": False,
+        "outbound_action_performed": False,
+        "externally_visible_side_effect": False,
+    }
+
+
+def test_write_flags_outbound_implies_visible():
+    for nav in (False, True):
+        for out in (False, True):
+            for vis in (False, True):
+                f = write_flags.flags(navigation=nav, outbound=out, visible=vis)
+                assert not f["outbound_action_performed"] or f["externally_visible_side_effect"]
+                ar = ActionResult(status="failed", reason="timeout", **f)
+                m = write_flags.merged(ar, navigated=nav, outbound_done=out, verify_only=False)
+                assert not m["outbound_action_performed"] or m["externally_visible_side_effect"]
 
 
 # ---------------------------------------------------------------------------

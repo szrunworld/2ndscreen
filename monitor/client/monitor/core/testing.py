@@ -237,9 +237,10 @@ HandlerFn = Callable[[CommandModel, Driver, ActionContext], ActionResult]
 
 
 def click_and_succeed(command: CommandModel, driver: Driver, ctx: ActionContext) -> ActionResult:
-    """默认的 run：点一次"发送"，回报成功。"""
-    driver.click(Locator(text="发送"))
-    return ActionResult(status="succeeded", gui_write_performed=True, executed_at=ctx.clock())
+    """默认的 run：声明对外动作后点一次"发送"，回报成功（三个标志由守卫记录并入）。"""
+    with ctx.outbound():  # type: ignore[attr-defined]  # core 注入的是 ExecContext
+        driver.click(Locator(text="发送"))
+    return ActionResult(status="succeeded", executed_at=ctx.clock())
 
 
 def verify_unknown(command: CommandModel, driver: Driver, ctx: ActionContext) -> ActionResult:

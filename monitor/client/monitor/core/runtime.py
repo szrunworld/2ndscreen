@@ -533,7 +533,7 @@ class MonitorRuntime:
         with self.gui_lock.hold(OBSERVE, timeout=0) as ok:
             if not ok:
                 return
-            guarded = GuardedDriver(self.driver, read_only=True)
+            guarded = GuardedDriver(self.driver, mode="read_only")
             try:
                 events = self.observer.observe(guarded, baseline)
             except DriverError as exc:
