@@ -29,7 +29,7 @@
 | A6 调度与恢复 | packages/task-runtime/src/runner.ts、src/daemon.ts、src/telemetry.ts、tests/runner.test.ts、tests/daemon.test.ts | 批次循环、状态机、暂停取消、等待用户、重启续跑、调用计量；20 位稳定夹具零模型调用 | A1–A5 |
 | A7 产品入口与集成 | Sources/ScreenCLI/TaskCommand.swift、Sources/ScreenCLI/main.swift、MCP 接入文件、packages/task-runtime/src/cli.ts、src/index.ts、skills/boss-resumes/**、安装脚本和集成测试 | 一次命令创建任务，status/resume/cancel/artifacts 可用；Skill/MCP 接通，干净环境安装、旧功能回归 | A6 |
 
-A7 是串行集成任务，可在协调者批准后修改依赖清单和公共装配文件。A5/A8 不自行修改 main.swift；交付可调用入口，由 A7 统一注册。A4 复用旧 BOSS 解析器但不改旧聊天助手；共享会话租约的旧入口接入由 A7 统一完成。A7 启动前另由协调者检查 A8 已完成；运行记录中 A7 的原有依赖是 A6，这一新增条件由协调者执行。
+A7 的最终装配在 A6 验收后进行，可在协调者批准后修改依赖清单和公共装配文件。2026-10-04 起，A7 的入口准备（CLI 参数解析、Swift/MCP 注册、Skill 文件）提前作为独立准备任务，与 A6 并行；仍由同一个 A7 工作区独占相应文件。准备任务不实现假的运行器，不宣称端到端完成；A6 验收后同一负责人再接最终装配任务。A5/A8 不自行修改 main.swift；交付可调用入口，由 A7 统一注册。A4 复用旧 BOSS 解析器但不改旧聊天助手；共享会话租约的旧入口接入由 A7 统一完成。A7 启动前另由协调者检查 A8 已完成；运行记录中 A7 的原有依赖是 A6，这一新增条件由协调者执行。
 
 A8 来自 P0 的实测发现：在线简历正文只暴露 AXImage，需要本地 OCR。A8 唯一获准在 contracts.ts 的 LocalVision 部分追加可选拼接接口并补对应测试，变更经协调者审核后通知 A4；不得修改其他契约。这一局部增量不阻塞 A1–A3。
 
