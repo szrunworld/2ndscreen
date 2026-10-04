@@ -47,7 +47,7 @@ import {
 } from '../../../../packages/task-runtime/src/contracts.ts';
 import { centerOf, clickElement, clickPoint, delivered, look, pollFor, scrollOver, sleep, type Env, type Trace } from './actions.ts';
 import { normalize } from './candidates.ts';
-import { attachmentPreview, openChat, requestDialog, resumeOverlay, text, type ResumeOverlay } from './pages.ts';
+import { ACTIVITY_NOTE, attachmentPreview, openChat, requestDialog, resumeOverlay, text, type ResumeOverlay } from './pages.ts';
 
 export interface CaptureLimits {
   /** Screens kept before stopping with page_limit. */
@@ -125,7 +125,7 @@ const FOOTER_LINES = 4;
  * The activity note BOSS prints after the name in the header row, in case
  * OCR reads the two as one line. Matched against what follows the name.
  */
-export const HEADER_ACTIVITY = /^(刚刚活跃|今日活跃|昨日活跃|本周活跃|本月活跃|半年内活跃|\d+(日|天|周|月)内活跃|在线)$/;
+export const HEADER_ACTIVITY = ACTIVITY_NOTE;
 
 interface Frame {
   observation: Observation;
@@ -183,14 +183,23 @@ export function headerBand(shot: Pick<ScreenshotRef, 'widthPx' | 'heightPx' | 'c
   return { topPx, maxYPx: topPx + Math.floor(limits.headerMaxPt * pxPerPt), maxXPx: Math.floor(shot.widthPx * 0.6) };
 }
 
+/**
+ * The one decorative mark OCR reads before the name in the BOSS 1.7.4
+ * header (P0: the first line reads "◎ <name> 刚刚活跃"), with the spaces
+ * around it. Only this mark, only once and only at the start is dropped;
+ * any other text before the name still makes the line not a header.
+ */
+export const HEADER_MARK = /^\s*◎\s*/;
+
 const isHeaderName = (line: string, want: string) => {
-  const t = normalize(line);
+  const t = normalize(line.replace(HEADER_MARK, ''));
   return t === want || (t.startsWith(want) && HEADER_ACTIVITY.test(t.slice(want.length)));
 };
 
 /**
  * Whether `name` is the resume's header on this screen: one OCR line that
- * reads exactly the name (or the name and its activity note), starting in
+ * reads exactly the name (or the name and its activity note), optionally
+ * after the header's decorative mark (HEADER_MARK), starting in
  * the band near the top and left, with no other text above it. The name
  * anywhere else, inside a longer line, or under other text is not a header.
  */
