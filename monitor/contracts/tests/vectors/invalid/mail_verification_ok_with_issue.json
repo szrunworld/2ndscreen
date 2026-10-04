@@ -1,54 +1,67 @@
 {
   "contract": "mail_verification",
-  "description": "有积压却报 ok（语义）",
+  "description": "有失败投递却报 ok（语义）",
   "data": {
     "verification_id": "verify-20261004T1100",
-    "mailbox": "hr@example.com",
+    "mailbox": "zhaopin@remotedesk.io",
     "started_at": "2026-10-04T11:00:00+08:00",
     "finished_at": "2026-10-04T11:00:12+08:00",
     "outcome": "ok",
     "error": null,
     "checks": [
       {
-        "code": "inbox_backlog",
-        "count": 2,
-        "refs": [
-          "mail:9c59c0a2ba05acc7bcff0c0a1d228e19",
-          "mail:b5071b0f709ed9b8fa7cd0508abb3411"
-        ]
-      },
-      {
-        "code": "processed_without_record",
+        "code": "pending_backlog",
         "count": 0,
+        "unavailable_reason": null,
         "refs": []
       },
       {
-        "code": "original_missing",
+        "code": "copy_missing",
         "count": 0,
+        "unavailable_reason": null,
         "refs": []
       },
       {
         "code": "hash_mismatch",
         "count": 0,
+        "unavailable_reason": null,
         "refs": []
       },
       {
-        "code": "document_without_original",
+        "code": "document_without_copy",
         "count": 0,
+        "unavailable_reason": null,
         "refs": []
       },
       {
         "code": "needs_review_mismatch",
         "count": 0,
+        "unavailable_reason": null,
         "refs": []
       },
       {
         "code": "failed_mismatch",
         "count": 0,
+        "unavailable_reason": null,
+        "refs": []
+      },
+      {
+        "code": "webhook_delivery_failed",
+        "count": 2,
+        "unavailable_reason": null,
+        "refs": [
+          "6f1c9d2e-0a7b-4c3e-8f21-5b9a4d7e1c30"
+        ]
+      },
+      {
+        "code": "upstream_missing",
+        "count": null,
+        "unavailable_reason": "mail 尚无 GET /v1/integration/messages?since= 接口（任务 G0）",
         "refs": []
       }
     ],
-    "overdue_resume_requests": []
+    "overdue_resume_requests": [],
+    "purged_copies": 0
   },
   "expected_error_paths": [
     "outcome"

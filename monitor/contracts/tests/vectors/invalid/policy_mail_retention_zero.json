@@ -1,6 +1,6 @@
 {
   "contract": "policy",
-  "description": "异常暂停不可关闭",
+  "description": "副本保留期至少 1 天",
   "data": {
     "account_id": "acct_demo",
     "policy_version": 3,
@@ -21,11 +21,11 @@
     "auto_request_resume": true,
     "after_resume_received": {
       "action": "none",
-      "wait_for_parse": false
+      "wait_for_parse": true
     },
     "resume_mail_timeout_days": 3,
     "company_mailbox": "zhaopin@remotedesk.io",
-    "mail_retention_days": 30,
+    "mail_retention_days": 0,
     "work_hours": {
       "timezone": "Asia/Shanghai",
       "windows": [
@@ -54,12 +54,12 @@
       "request_contact_exchange": 60,
       "search_candidates": 60
     },
-    "pause_on_anomaly": false,
+    "pause_on_anomaly": true,
     "paused": false,
     "updated_at": "2026-10-04T09:30:00+08:00",
     "updated_by": "recruiter@example.com"
   },
   "expected_error_paths": [
-    "pause_on_anomaly"
+    "mail_retention_days"
   ]
 }

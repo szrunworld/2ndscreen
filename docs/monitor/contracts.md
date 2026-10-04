@@ -1,6 +1,6 @@
 # 招聘 Monitor 契约说明
 
-契约版本：`monitor_contracts.__version__ = "0.3.0"`（2026-10-04）。本文说明 `monitor/contracts/` 的产物，是[方案](monitor-spec.md)第六、七节的落地版本。HTTP 接口见 [api.md](api.md)。
+契约版本：`monitor_contracts.__version__ = "0.3.1"`（2026-10-04）。本文说明 `monitor/contracts/` 的产物，是[方案](monitor-spec.md)第六、七节的落地版本。HTTP 接口见 [api.md](api.md)。
 
 本文中"已验证"只表示 `uv run pytest contracts` 通过的契约层行为，不代表 BOSS 客户端上的任何能力。
 
@@ -12,7 +12,7 @@
 | `monitor_contracts` 包 | `monitor/contracts/monitor_contracts/` | pydantic v2 模型、`validate_*`、状态机、`compute_event_id`、Protocol |
 | 夹具格式 | `monitor/fixtures/schema/ax-fixture.schema.json` | B 录制、C 回放、E/H 测试的脱敏元素树格式 |
 | OpenAPI | `monitor/contracts/openapi.yaml` | 服务端 HTTP 接口；消息体直接 `$ref` 上面的 schema |
-| 测试向量 | `monitor/contracts/tests/vectors/{valid,invalid}/` | 合法 42 个、非法 59 个，其他任务可直接拿来做 fake 数据 |
+| 测试向量 | `monitor/contracts/tests/vectors/{valid,invalid}/` | 合法 45 个、非法 66 个，其他任务可直接拿来做 fake 数据 |
 
 ```sh
 cd monitor && uv sync && uv run pytest contracts
@@ -169,44 +169,53 @@ cd monitor && uv sync && uv run pytest contracts
 - **policy**：账户级策略。字段包括 `policy_version`（PUT 用 If-Match 做乐观锁）、`allowed_actions`（对外动作白名单，默认空即全部关闭；provide_input 和 verify_only 不受它控制）、`job_scope`、`greeting{enabled, template}`、`auto_request_resume`、`after_resume_received{action, wait_for_parse}`、`resume_mail_timeout_days`、`company_mailbox`、`work_hours`（IANA 时区 + 窗口，空窗口表示任何时段都不生成对外指令）、`daily_limits` 与 `min_interval_seconds`（四个对外动作各一项：send_greeting、request_resume、request_contact_exchange、search_candidates）、`pause_on_anomaly`（只能为 true）、`paused`。Monitor 本地另有写死的硬上限和最小间隔下限，策略只能收紧、不能放宽。这些常量由 D2 定义，不在契约里。
   - `after_resume_received.action` 0.3.0 起只能是 `none`（也是默认值）：收到并关联简历后不做任何自动动作。换微信只能人工触发（`POST /cases/{case_id}:request-wechat`），服务端不得在任何自动流程中生成 `request_contact_exchange`。对象保留以便以后扩展；`wait_for_parse` 默认 true，目前不起作用。线上仍必须写全。`request_contact_exchange` 仍在 `allowed_actions` 白名单与上限里：人工触发的指令到了 Monitor 也要白名单开启才执行。
   - `resume_mail_timeout_days`（默认 3，范围 1–30）：求简历成功后超过该天数仍未收到并关联简历邮件，服务端把流程转 `needs_human`（`needs_human_reason=resume_mail_timeout`），核对任务也会把它列为提醒。
-  - `company_mailbox`：BOSS 账户设置里预留的公司邮箱，只读展示，以服务端配置为准；PUT 时服务端忽略请求里的值。未配置时为 null。不加 `resume_route`：v1 只有这一条简历路线。
+  - `company_mailbox`：BOSS 账户设置里预留的公司邮箱（zhaopin@remotedesk.io），只读展示，以服务端配置为准；PUT 时服务端忽略请求里的值。未配置时为 null。
+  - `mail_retention_days`（0.3.1，默认 30，范围 1–365）：我方邮件副本的保留天数，到期由我方清理任务删除副本、只留元数据。mail 服务里的邮件不归它管（见下文"公司邮箱"）。不加 `resume_route`：v1 只有这一条简历路线。
 - **device_registration**：`POST /devices` 的请求体。字段包括 `enrollment_code`、`device_name`、`mode`、`platform`、`monitor_version`、`contracts_version`、`capabilities`。local 模式不能声明 `login_relay`。
 - **device_heartbeat**：默认 30 秒一次。字段包括 `mode`、`account_id`（绑定账户，见下文"账户来源"）、`client_state`、`paused` + `pause_reason`（paused 时必填）、`needs_baseline`、`current_action`、`queue{queued_commands, undelivered_results, outbox_events}`、`last_error`、`monitor_version`。
 - **login_qr**：`POST /login-qr` 的请求体。字段包括 `device_id`、`account_id?`、`qr_payload`（本地解码出的文本，不是图片）、`qr_seq`（内容每变一次 +1）、`captured_at`、`expires_at`（必须晚于 captured_at）、`decoder`。
 
-### 公司邮箱 mail_message / mail_verification（0.3.0）
+### 公司邮箱 mail_message / mail_verification（0.3.0，0.3.1 改为 mail 服务订阅方）
 
-简历路线（用户 2026-10-04 二次决定）：新投递 →（可选）问候 → 求简历 → 候选人同意 → BOSS 按账户设置把附件简历自动发到公司预留邮箱 → 邮件接入（G）读取、关联、解析。Monitor 不参与这一段。
+简历路线（用户 2026-10-04 二次决定）：新投递 →（可选）问候 → 求简历 → 候选人同意 → BOSS 按账户设置把附件简历自动发到公司邮箱 → 邮件接入（G）读取、关联、解析。Monitor 不参与这一段。
 
-**mail_message**：公司邮箱里的一封邮件，邮件接入先把原始 .eml 落盘，再以 `pending` 写入（`PUT /mail-messages/{mail_message_id}`），处理后更新状态。
+收件邮箱是 `zhaopin@remotedesk.io`（用户 2026-10-04 决定，不是 cv@），它是公司邮件服务 **mail**（仓库 `amplifistudio/remotedesk-resend`）里的公共邮箱。邮件接入**不直接接 Resend**，而是 mail 的订阅方（方案 8.2，0.3.1）：订阅 zhaopin@ 的 `mail.ready` webhook（附件扫描完、可下载时才推；推送体只有标识），用 mail 为 zhaopin@ 签发的 `mail.read` integration API key 回取邮件与附件（`GET /v1/integration/messages/{id}`）。
+
+**mail_message**：zhaopin@ 里的一封邮件在我方的记录。收到推送即以 `pending` 写入（`PUT /mail-messages/{mail_message_id}`，此时只有标识），回取并写我方副本后补齐副本字段，处理后更新状态。
 
 | 字段 | 说明 |
 | --- | --- |
-| `mail_message_id` | 记录主键，`mail:` + 32 位十六进制，由 `compute_mail_message_id` 确定性生成（见下）。不是邮件头 Message-ID |
-| `mailbox` | 收件邮箱 |
-| `message_id` | 邮件头 Message-ID 原文，缺失时为 null |
-| `uidvalidity`、`uid` | IMAP 游标；同时给出或同时为 null。`message_id` 为 null 时必须给出 |
-| `received_at`、`sha256`（原始 .eml）、`raw_storage_uri?`、`from_address?`、`subject?` | 原件信息。sha256 只用于去重与核对，不是候选人身份 |
-| `status` | `pending` 已落盘待消费；`processed` 已提交并移到 `Monitor/Processed`；`needs_review` 关联歧义或找不到流程，移到 `Monitor/NeedsReview`；`failed` 连续失败达到上限，移到 `Monitor/Failed`；`ignored` 非 BOSS 发件人，移到 `Monitor/Ignored` |
+| `mail_message_id` | 记录主键 = `"mail:" + provider_message_id`（小写 UUID），用 `compute_mail_message_id(provider_message_id)` 生成。同一封邮件的 webhook 重复投递得到同一个主键 |
+| `provider` | 只能是 `remotedesk-mail` |
+| `provider_message_id` | mail 的 message_id（推送体里的 `message_id`，UUID），回取邮件用它 |
+| `webhook_delivery_id?` | 首次收到的推送投递 id，用于和 mail 的投递台账对账 |
+| `mailbox` | 收件邮箱（zhaopin@remotedesk.io） |
+| `message_id` | 邮件头 Message-ID 原文，保留用于展示和排查，**不参与主键**；推送阶段未知或邮件缺失时为 null |
+| `received_at` | mail 收到邮件的时间 |
+| `sha256`、`raw_storage_uri`、`copy_purged_at?` | 我方副本（原始邮件）的哈希与位置。回取前 sha256 为 null；`processed` / `needs_review` 必须有 sha256 和位置（已清理的除外）。副本按 `policy.mail_retention_days` 清理后 `copy_purged_at` 非空、`raw_storage_uri` 为 null，只留元数据。sha256 只用于核对，不是候选人身份 |
+| `from_address?`、`subject?` | 展示用 |
+| `status` | 我方处理状态，不对应 mail 里的文件夹：`pending` 已登记待消费；`processed` 已提交；`needs_review` 关联歧义或找不到流程；`failed` 连续失败达到上限；`ignored` 非 BOSS 发件人 |
 | `attempts` | 消费失败次数。未达上限的失败仍为 `pending`，attempts +1 |
-| `error` | `failed` 必填；`needs_review` / `ignored` 可写原因；`pending` / `processed` 必须为 null |
+| `error` | `failed` 必填；`pending` 可记最近一次失败原因；`needs_review` / `ignored` 可写原因；`processed` 必须为 null |
 | `updated_at` | 不早于 `received_at` |
 
-`mail_message_id` 的两种来源（协调者 2026-10-04 裁决）：
+**Monitor 不删除 mail 里的邮件**，也不移动它们。mail 的设计是"只有留存任务才真正销毁内容"：受 legal hold 约束，删除内容时保留信封与 sha256。zhaopin@ 在 mail 侧设 `retention_days=30`，由 mail 的 purge 任务统一清理。我方的副本按 `policy.mail_retention_days`（默认 30）由我方清理任务删除，只留元数据。
 
-```
-有 Message-ID： "mail:" + sha256_hex(邮箱 + "\n" + 规范化 Message-ID)[:32]
-没有 Message-ID："mail:" + sha256_hex(邮箱 + "\n\n" + UIDVALIDITY + ":" + UID)[:32]
-邮箱 = 去首尾空白后转小写；规范化 Message-ID = NFC、去首尾空白、去外层尖括号（空串视为缺失）
-```
+**mail_verification**：核对任务（方案 8.2 第 6 条）一次的结果，`POST /mail-verifications` 提交。
 
-有 Message-ID 时只用它，即使同时有 UID，这样换文件夹（UID 改变）后主键不变。校验器会重新计算并比对。
+- `outcome`：`ok` 已执行的检查项 count 都为 0（未执行的项不算问题）；`issues_found` 至少一项 count>0；`failed` 核对本身没跑完，必须给出 `error`，`checks` 可以为空。只有 failed 能带 error。
+- `checks[]`：`{code, count, unavailable_reason?, refs[≤20]}`。outcome 为 ok / issues_found 时，8 个检查项必须各出现一次：
+  - `pending_backlog`：pending 超过 30 分钟。
+  - `copy_missing`：我方副本不存在（已按保留期清理的不算）。
+  - `hash_mismatch`：副本哈希不一致。
+  - `document_without_copy`：resume_document 找不到副本。
+  - `needs_review_mismatch`、`failed_mismatch`：与人工队列不一致。
+  - `webhook_delivery_failed`：mail 投递台账里失败或落死的 mail.ready 投递。
+  - `upstream_missing`：mail 里有、我方没有的邮件（0.3.0 草案里叫 provider_missing）。
 
-**mail_verification**：核对任务（方案 8.2 第 5 条）一次的结果，`POST /mail-verifications` 提交。
-
-- `outcome`：`ok` 全部检查项 count=0；`issues_found` 至少一项 count>0；`failed` 核对本身没跑完，必须给出 `error`，`checks` 可以为空。只有 failed 能带 error。
-- `checks[]`：`{code, count, refs[≤20]}`，outcome 为 ok / issues_found 时 7 个检查项必须各出现一次：`inbox_backlog`（INBOX 中超过 30 分钟未处理）、`processed_without_record`（Processed 中的邮件在数据库无记录）、`original_missing`（原件不存在）、`hash_mismatch`（原件哈希不一致）、`document_without_original`（resume_document 找不到原件）、`needs_review_mismatch`、`failed_mismatch`（文件夹数量与人工队列不一致）。`refs` 放抽样的 mail_message_id 或 doc_id。
+  某项本次做不了时 `count=null`，并写 `unavailable_reason`，不能报 0 冒充"没问题"。例如 mail 还没有给 integration key 的"列出邮件"接口（任务 G0），`upstream_missing` 暂时只能这样报。`refs` 放抽样的 mail_message_id、doc_id 或投递 id。
 - `overdue_resume_requests[]`：`{case_id, command_id, requested_at, days_waiting}`，求简历成功但超过 `resume_mail_timeout_days` 仍未收到邮件的流程。只是提醒，不影响 outcome；流程是否转 needs_human 由服务端判定。
+- `purged_copies`：本次按保留期清理的我方副本数量。
 
 **resume_document**（只在 openapi 中定义，0.3.0 新增字段）：`variant`（`original` 邮件原件 | `branded` 套用公司模板的派生版本）、`derived_from`（branded 时为原件 doc_id，original 时为 null）、`mail_message_id`（来源邮件记录，branded 继承原件）。原件始终保留，品牌化只新增派生版本。关联方式 `link_method` 的 `forward_record` 改为 `resume_request`：在该账户 request_resume 已成功的流程里，按执行时间窗结合账户 + 岗位 + 姓名唯一命中；不能唯一命中进入人工关联队列。
 
@@ -229,6 +238,10 @@ P0 与任务 B 都确认：BOSS 客户端窗口里读不到当前登录的是哪
 stateDiagram-v2
     [*] --> new_application
     new_application --> greeted
+    new_application --> contact_requested: 人工换微信
+    greeted --> contact_requested: 人工换微信
+    resume_requested --> contact_requested: 人工换微信
+    resume_received --> contact_requested: 人工换微信
     new_application --> resume_requested: 问候关闭
     new_application --> resume_received: 候选人主动发简历
     greeted --> resume_requested
@@ -257,7 +270,11 @@ stateDiagram-v2
 
 除 `contact_available` 外，每个非终态都可以直接进入 `closed`（停止流程、明确拒绝），图中省略这些边。
 
-简历的**主路径**是 `resume_requested → resume_linked`：邮件到达公司邮箱并唯一关联到本流程（0.3.0）。`resume_received` 指界面上看到了附件简历，只是可选观察，不是必经阶段。求简历成功后超过 `policy.resume_mail_timeout_days` 未收到邮件，或邮件关联歧义时，`resume_requested → needs_human`；人工关联后 `needs_human → resume_linked`。`resume_linked` 之后不做自动动作；换微信只能由人工在控制台触发，流程从 `resume_linked`（或 `needs_human`）进入 `contact_requested`。迁移表本身 0.3.0 没有增删边。
+简历的**主路径**是 `resume_requested → resume_linked`：邮件到达公司邮箱并唯一关联到本流程（0.3.0）。`resume_received` 指界面上看到了附件简历，只是可选观察，不是必经阶段。求简历成功后超过 `policy.resume_mail_timeout_days` 未收到邮件，或邮件关联歧义时，`resume_requested → needs_human`；人工关联后 `needs_human → resume_linked`。`resume_linked` 之后不做自动动作。
+
+**人工换微信（0.3.1）**：换微信只能由人工在控制台触发（`POST /cases/{case_id}:request-wechat`），除 `closed` 外任何阶段都可以调用。`new_application`、`greeted`、`resume_requested`、`resume_received`、`resume_linked`、`needs_human` 都有一条 `→ contact_requested` 的边；`closed` 返回 409 `stage_not_allowed`。已在 `contact_requested` / `contact_available` 时调用（例如上一次请求失败），阶段不变。
+
+**换微信之后简历邮件才到**：关联照常成功，但**阶段不回退**（`contact_requested → resume_linked` 不是合法迁移）。`resume_document` 的关联独立于阶段：文档照常写入并关联到本流程，时间线记一条 `resume_linked` 记录（TimelineEntry.type=`resume_linked`，stage_from / stage_to 为 null）。服务端判断"是否已收到简历"时应看是否有已关联的 resume_document，不看阶段。0.3.0 没有增删边；0.3.1 为人工换微信增加了 4 条边（见下）。
 
 ### 8.2 指令执行（Monitor command_ledger）
 
@@ -389,7 +406,9 @@ Locator 的文本匹配（0.2.0 追认任务 C 的实现）：`text` 在规范�
 | 账户读不到 | 0.2.0：account_id 来自安装时绑定，不从界面读取；`account_mismatch` 只在有证据时使用，见第七节"账户来源" |
 | Locator 文本匹配面 | 0.2.0 追认 C 的实现：text / text_contains 匹配 text、label、value 任一（规范化后），仍要求唯一命中 |
 | 简历路线 | 0.3.0（用户 2026-10-04）：求简历 → 候选人同意 → BOSS 自动发到公司邮箱；Monitor 不转发，`forward_resume` 移除，名字保留 |
-| mail_messages 由谁写 | 0.3.0（协调者裁决）：邮件接入用 `PUT /mail-messages/{mail_message_id}` 幂等 upsert；主键确定性生成，Message-ID 缺失时用 (邮箱, UIDVALIDITY, UID) 兜底；状态迁移表进 `states.py` |
+| mail_messages 由谁写 | 0.3.0（协调者裁决）：邮件接入用 `PUT /mail-messages/{mail_message_id}` 幂等 upsert；状态迁移表进 `states.py`。0.3.1：主键改为 `"mail:" + mail 的 message_id`，不再按 Message-ID / IMAP UID 计算 |
+| 收信方式 | 0.3.1（协调者裁决）：不直接接 Resend，作为公司邮件服务 mail 的订阅方（zhaopin@ 的 mail.ready webhook + integration API key 回取）。`provider=remotedesk-mail`；保留邮件头 message_id；核对项 provider_missing 改名 upstream_missing；Monitor 不删除 mail 里的邮件，我方副本按 `policy.mail_retention_days` 清理 |
+| 人工换微信的阶段 | 0.3.1（协调者裁决）：除 closed 外全部允许，迁移表加 4 条 `→ contact_requested`；之后邮件才到时关联成功、阶段不回退，时间线记 resume_linked |
 | 搜索结果是否识别身份 | 0.3.0（用户 2026-10-04）：不识别。卡片只原样返回可读文本与道具卡文案；搜索结果不能作为指令目标（删除会话目标的 `result_ref`） |
 | 交换联系方式 | 0.3.0（用户 2026-10-04 确认）：只换微信（`exchange_type` 只有 `wechat`，依据 B 观察到的『请求交换微信已发送』）；只能人工触发，新增 `POST /cases/{case_id}:request-wechat`，`after_resume_received.action` 只能为 none |
 | 已读回执 | 0.3.0（用户 2026-10-04）：打开会话产生的已读回执可以接受，`externally_visible_side_effect` 如实记录 |
@@ -403,3 +422,4 @@ Locator 的文本匹配（0.2.0 追认任务 C 的实现）：`text` 在规范�
 | 0.1.1 | 2026-10-04 | Driver 协议两处修正：`Element.enabled` 改为 `bool \| None = None`（None 表示来源不提供；FixtureElement 与 ax-fixture schema 同步允许 null 或省略）；`Element.text` 改为 label 非空取 label，否则取 value，不再拼接。8.1 中推断的三条迁移经审查全部接受，未改 | C、E、H1–H3、B（夹具） |
 | 0.2.0 | 2026-10-04 | ① command_result / ActionResult 的 `gui_write_performed` 拆成 `navigation_performed`、`outbound_action_performed`、`externally_visible_side_effect`（线上必填）：verify_only 只禁对外动作、允许导航；cancelled 禁对外动作；expired 三个全 false；对外动作 ⇒ 对方可见；`running → cancelled` 仅限无对外动作；`ActionHandler.verify_only` 文档同步。② 账户来源：account_id 来自安装时绑定，heartbeat.account_id 是绑定账户而非观察到的账户；`account_mismatch` 保留但 v1 只在有证据时使用，列入 N 待验证。③ Locator 的 text / text_contains 匹配 Element.text、label、value 任一（规范化后），追认 C 的实现。forward_resume 与搜索字段未改 | D1、D2、E、H1–H3、F1（结果入库）、I1（展示）、C（文档追认，无代码变更） |
 | 0.3.0 | 2026-10-04 | ① 移除 `forward_resume`：action 枚举、payload / output、结果规则、策略白名单与 daily_limits / min_interval_seconds、设备能力；`attachment_available` 只作可选观察。② policy 增加 `company_mailbox`（只读）与 `resume_mail_timeout_days`（默认 3）；`after_resume_received` 默认 `{action: none, wait_for_parse: true}`。③ case 主路径 `resume_requested → resume_linked`，`resume_received` 为可选观察，`resume_requested → needs_human` 用于超时或关联歧义（迁移表未增删边，只改说明）。④ 新增 `mail_message`、`mail_verification` 两个契约与 `MAIL_TRANSITIONS`、`compute_mail_message_id`、`mail_message_key`、`mail_verification_key`；`resume_document_key` 的第一个参数改为来源标识。⑤ 搜索快照卡片改为 `{result_ref, position, fields[], masked_name?, prop_card_texts[]}`，删除 `display_name / summary / stable_candidate_id`；会话目标删除 `result_ref`，v1 搜索结果不能作为指令目标。⑥ openapi：新增 `/mail-messages`、`/mail-verifications`；resume_document 增加 `variant / derived_from / mail_message_id`，`link_method` 的 `forward_record` 改为 `resume_request`；补齐 F1 报告列出的 401 / 403 / 422。⑦ 交换联系方式只换微信：`exchange_type` 枚举改为 `["wechat"]`（指令、结果、`contact_exchange_updated` 事件同步）；只能人工触发：`after_resume_received.action` 只允许 none，新增 `POST /cases/{case_id}:request-wechat`（ManualAction 类型 `request_wechat`，响应 `{manual_action, command}`）。⑧ 已读回执可接受，`externally_visible_side_effect` 说明补充 | D2（限额常量、testing 夹具）、D1（testing 夹具）、F1（一致性白名单清空）、F2（策略默认值、超时转人工、关联方式）、F3（搜索快照存储）、G（mail_messages、核对、关联方式）、H2（卡片形状）、H3（只换微信）、E（contact_exchange_updated 只报 wechat）、I1/I2（策略页邮箱与超时、去掉自动交换选项、流程详情"换微信"按钮、搜索页、邮件队列）、R（branded 版本写入） |
+| 0.3.1 | 2026-10-04 | ① case 迁移表：new_application、greeted、resume_requested、resume_received 各加 `→ contact_requested`（resume_linked、needs_human 原已有），人工换微信除 closed 外都允许；`contact_requested` 之后邮件才到时阶段不回退，关联独立于阶段，openapi TimelineEntry.type 增加 `resume_linked`。② 邮件接入改为公司邮件服务 mail 的订阅方：`mail_message` 增加 `provider`（`remotedesk-mail`）、`provider_message_id`、`webhook_delivery_id`、`copy_purged_at`，删除 `uidvalidity` / `uid`；`mail_message_id = "mail:" + provider_message_id`，`compute_mail_message_id` 签名改为只接收 mail 的 message_id；推送阶段 sha256 可为 null，processed / needs_review 必须有副本；pending 可记录最近一次失败原因。③ `mail_verification` 检查项改为 pending_backlog、copy_missing、hash_mismatch、document_without_copy、needs_review_mismatch、failed_mismatch、webhook_delivery_failed、upstream_missing（即草案中的 provider_missing），`count` 可为 null 加 `unavailable_reason`，新增 `purged_copies`。④ policy 增加 `mail_retention_days`（默认 30）。⑤ openapi：PUT /mail-messages 与 request-wechat 描述更新，ResumeDocumentCreate.mail 去掉 IMAP uid、message_id 可空 | F2（迁移表、request-wechat 阶段、关联不回退、时间线）、F1（ManualAction 枚举，见 A3 报告）、G（订阅方模型、主键、核对项、副本清理）、I1/I2（策略页保留期、时间线、核对展示）、D2（testing 夹具 policy 增加 mail_retention_days） |

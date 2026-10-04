@@ -157,7 +157,7 @@ def test_f1_response_code_gaps_are_filled():
 def _doc_create(**overrides):
     body = {
         "variant": "original",
-        "mail_message_id": "mail:" + "1" * 32,
+        "mail_message_id": "mail:3f6c2a9e-1b4d-4e8a-9c7f-2d5e8b1a0c44",
         "mail": {"mailbox": "hr@example.com", "message_id": "<a@b>", "received_at": "2026-10-04T10:00:00+08:00"},
         "attachment": {
             "filename": "resume.pdf",
@@ -213,3 +213,8 @@ def test_request_wechat_is_manual_console_endpoint():
     assert {"201", "401", "404", "409", "422"} <= set(op["responses"])
     enum = _spec()["components"]["schemas"]["ManualAction"]["properties"]["type"]["enum"]
     assert "request_wechat" in enum
+
+
+def test_timeline_records_resume_linked_independent_of_stage():
+    enum = _spec()["components"]["schemas"]["TimelineEntry"]["properties"]["type"]["enum"]
+    assert "resume_linked" in enum

@@ -19,6 +19,10 @@ class CaseStage(StrEnum):
     简历主路径（0.3.0）：resume_requested → resume_linked（简历邮件到达公司邮箱并唯一关联）。
     resume_received 只是可选观察（界面上看到附件），不是必经阶段。超时未收到邮件或关联歧义时
     resume_requested → needs_human。
+
+    人工换微信（0.3.1）：除 closed 外任何阶段都可以进入 contact_requested。进入 contact_requested
+    之后简历邮件才到达时，关联照常成功但阶段不回退：resume_document 的关联独立于阶段，
+    时间线记一条 resume_linked 事件。
     """
 
     NEW_APPLICATION = "new_application"
@@ -65,14 +69,19 @@ class MailState(StrEnum):
 _C = CaseStage
 # 中途任何阶段都可以转人工或关闭；needs_human 经人工处理后回到对应阶段。
 CASE_TRANSITIONS: Mapping[CaseStage, frozenset[CaseStage]] = {
+    # 人工换微信（0.3.1）：除 closed 外任何阶段都可以进入 contact_requested。
     _C.NEW_APPLICATION: frozenset(
-        {_C.GREETED, _C.RESUME_REQUESTED, _C.RESUME_RECEIVED, _C.CLOSED, _C.NEEDS_HUMAN}
+        {_C.GREETED, _C.RESUME_REQUESTED, _C.RESUME_RECEIVED, _C.CONTACT_REQUESTED, _C.CLOSED, _C.NEEDS_HUMAN}
     ),
-    _C.GREETED: frozenset({_C.RESUME_REQUESTED, _C.RESUME_RECEIVED, _C.CLOSED, _C.NEEDS_HUMAN}),
+    _C.GREETED: frozenset(
+        {_C.RESUME_REQUESTED, _C.RESUME_RECEIVED, _C.CONTACT_REQUESTED, _C.CLOSED, _C.NEEDS_HUMAN}
+    ),
     # 主路径：邮件到达并唯一关联 → resume_linked；resume_received（界面看到附件）只是可选观察；
     # 超过 policy.resume_mail_timeout_days 未收到邮件，或关联歧义 → needs_human。
-    _C.RESUME_REQUESTED: frozenset({_C.RESUME_LINKED, _C.RESUME_RECEIVED, _C.CLOSED, _C.NEEDS_HUMAN}),
-    _C.RESUME_RECEIVED: frozenset({_C.RESUME_LINKED, _C.CLOSED, _C.NEEDS_HUMAN}),
+    _C.RESUME_REQUESTED: frozenset(
+        {_C.RESUME_LINKED, _C.RESUME_RECEIVED, _C.CONTACT_REQUESTED, _C.CLOSED, _C.NEEDS_HUMAN}
+    ),
+    _C.RESUME_RECEIVED: frozenset({_C.RESUME_LINKED, _C.CONTACT_REQUESTED, _C.CLOSED, _C.NEEDS_HUMAN}),
     _C.RESUME_LINKED: frozenset({_C.CONTACT_REQUESTED, _C.CLOSED, _C.NEEDS_HUMAN}),
     _C.CONTACT_REQUESTED: frozenset({_C.CONTACT_AVAILABLE, _C.CLOSED, _C.NEEDS_HUMAN}),
     _C.CONTACT_AVAILABLE: frozenset({_C.CLOSED}),

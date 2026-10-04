@@ -67,6 +67,11 @@ EXPECTED_CASE = {
     ("resume_received", "closed"),
     ("resume_received", "needs_human"),
     ("resume_linked", "contact_requested"),
+    # 0.3.1：人工换微信，除 closed 外任何阶段都可以进入 contact_requested
+    ("new_application", "contact_requested"),
+    ("greeted", "contact_requested"),
+    ("resume_requested", "contact_requested"),
+    ("resume_received", "contact_requested"),
     ("resume_linked", "closed"),
     ("resume_linked", "needs_human"),
     ("contact_requested", "contact_available"),

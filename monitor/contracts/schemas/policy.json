@@ -13,6 +13,7 @@
     "after_resume_received",
     "resume_mail_timeout_days",
     "company_mailbox",
+    "mail_retention_days",
     "work_hours",
     "daily_limits",
     "min_interval_seconds",
@@ -178,7 +179,14 @@
       ],
       "default": null,
       "readOnly": true,
-      "description": "BOSS 账户设置里预留的公司邮箱（候选人同意后 BOSS 把附件简历自动发到这里）。只读展示：以服务端配置为准，PUT 时忽略请求中的值；未配置为 null。"
+      "description": "公司收件邮箱（zhaopin@remotedesk.io，mail 服务里的公共邮箱；BOSS 账户设置里预留的就是它，候选人同意后 BOSS 把附件简历自动发到这里）。只读展示：以服务端配置为准，PUT 时忽略请求中的值；未配置为 null。"
+    },
+    "mail_retention_days": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 365,
+      "default": 30,
+      "description": "我方邮件副本的保留天数（默认 30）：到期由我方清理任务删除副本、只留元数据。Monitor 不删除 mail 服务里的邮件；mail 里的邮件只由 mail 的留存任务销毁（受 legal hold 约束），zhaopin@ 在 mail 侧设 retention_days=30。"
     },
     "work_hours": {
       "type": "object",

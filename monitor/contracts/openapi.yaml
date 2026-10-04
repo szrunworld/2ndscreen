@@ -1,10 +1,10 @@
 openapi: 3.1.0
 info:
   title: 招聘 Monitor 服务端 API
-  version: 0.3.0
+  version: 0.3.1
   summary: Monitor 设备、指令、事件、简历文档、搜索、人工处理、登录接力与策略接口
   description: |
-    与 monitor_contracts 0.3.0 对应（info.version 与契约版本同步）。说明见 docs/monitor/api.md。
+    与 monitor_contracts 0.3.1 对应（info.version 与契约版本同步）。说明见 docs/monitor/api.md。
 
     - 传输：只暴露 HTTPS。第一版用轮询，领取指令为长轮询（最长 30 秒），不使用 WebSocket。
     - 认证：设备接口用设备令牌（deviceToken）；控制台接口用控制台会话（consoleSession）；
@@ -917,11 +917,14 @@ paths:
       operationId: putMailMessage
       summary: 邮件接入写入或更新一封邮件的记录（幂等 upsert）
       description: |
-        邮件接入先把原始 .eml 落盘，再以 status=pending 写入；之后按 states.MAIL_TRANSITIONS 更新
+        邮件接入是公司邮件服务 mail 的订阅方：收到 zhaopin@ 的 mail.ready webhook（验签、按投递 id 幂等）后
+        立即以 status=pending 写入（只有标识，sha256 / raw_storage_uri 为 null），再用 mail 的 integration
+        API key 回取邮件与附件、写我方副本，之后按 states.MAIL_TRANSITIONS 更新
         （pending → processed | needs_review | failed | ignored；needs_review → processed；failed → pending）。
-        路径中的 mail_message_id 必须与请求体一致，且等于 compute_mail_message_id(mailbox, message_id, uidvalidity, uid)。
-        同状态写入（例如未达上限的失败：仍为 pending、attempts +1）是更新，不是迁移。mailbox、message_id、
-        uidvalidity、uid、received_at、sha256 写入后不可变，不一致返回 409 mail_message_conflict；
+        路径中的 mail_message_id 必须与请求体一致，且等于 'mail:' + provider_message_id（compute_mail_message_id）。
+        同一封邮件的 webhook 重复投递得到同一个主键。同状态写入（例如补齐副本字段，或未达上限的失败：
+        仍为 pending、attempts +1）是更新，不是迁移。provider、provider_message_id、mailbox、received_at
+        写入后不可变，sha256 一旦非空也不可变，不一致返回 409 mail_message_conflict；
         不在迁移表内的状态变化返回 409 illegal_mail_transition。两种 409 都在 existing 中附上当前记录。
         Idempotency-Key 用 mail_message_key(mail_message_id, status, attempts)。
       security:
@@ -1227,8 +1230,9 @@ paths:
         （type=request_wechat，actor、时间、说明），生成一条 request_contact_exchange 指令
         （payload.exchange_type=wechat，workflow_id=该流程），流程进入 contact_requested。
         服务端不得在任何自动流程中生成 request_contact_exchange。
-        仅当流程处于 resume_linked 或 needs_human 时可调用（迁移表中只有这两个阶段能进入
-        contact_requested），否则返回 409 stage_not_allowed。策略白名单未开启
+        0.3.1：除 closed 外任何阶段都可调用；closed 返回 409 stage_not_allowed。流程已在
+        contact_requested / contact_available 时阶段不变（例如上一次请求失败后再次请求）。
+        换微信之后简历邮件才到达时，关联照常成功但阶段不回退（见 contracts.md 8.1）。策略白名单未开启
         request_contact_exchange、账户或设备暂停、超出每日上限时返回 409（policy_blocked）。
         已有未完成的换微信指令时返回 409 already_requested，existing 中附上该指令。
       parameters:
@@ -1941,15 +1945,13 @@ components:
           type: object
           required: [mailbox, message_id, received_at]
           additionalProperties: false
+          description: 来源邮件的展示信息（权威记录是 mail_message_id 指向的 mail_message）
           properties:
             mailbox:
               type: string
             message_id:
-              type: string
-              description: 邮件 Message-ID
-            uid:
-              type: [integer, 'null']
-              description: IMAP UID（如有）
+              type: [string, 'null']
+              description: 邮件头 Message-ID（缺失时为 null；关联与去重用 mail_message_id）
             received_at:
               type: string
               format: date-time
@@ -1960,7 +1962,7 @@ components:
               type: [string, 'null']
             raw_storage_uri:
               type: [string, 'null']
-              description: 原始 .eml 的存储位置（本地路径或对象存储 URI）
+              description: 我方原始邮件副本的存储位置（按 policy.mail_retention_days 清理）
         attachment:
           type: object
           required: [filename, sha256, size_bytes, content_type, storage_uri]
@@ -2209,7 +2211,8 @@ components:
           format: date-time
         type:
           type: string
-          enum: [event, command, command_result, resume_document, manual_action, stage_change]
+          enum: [event, command, command_result, resume_document, resume_linked, manual_action, stage_change]
+          description: resume_linked 在简历关联到本流程时记录，与阶段是否变化无关（例如已在 contact_requested 时邮件才到，阶段不回退，只记这一条；stage_from / stage_to 为 null）
         ref_id:
           type: string
         stage_from:
