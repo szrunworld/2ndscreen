@@ -57,6 +57,7 @@ from monitor_contracts import (
 
 from . import _cli
 from .locator import find_one
+from .pdf_preview import strip_pdf_preview
 
 DEFAULT_BINARY = os.environ.get("MONITOR_2NDSCREEN_CLI", "2ndscreen")
 
@@ -137,11 +138,22 @@ def to_frame(raw: _cli.RawFrame | None) -> Frame:
     return Frame(x=raw.x, y=raw.y, w=max(raw.width, 0.0), h=max(raw.height, 0.0))
 
 
-def snapshot_from_state(
-    state: _cli.RawState, *, snapshot_id: str, taken_at: datetime, include_tree: bool = False
-) -> Snapshot:
-    """把 CLI state 转成契约 Snapshot。CLI 不带 --query 时元素编号从 0 连续，与位置一致。"""
-    tree = parse_tree(state.tree) if include_tree else {}
+def convert_state(
+    state: _cli.RawState,
+    *,
+    snapshot_id: str,
+    taken_at: datetime,
+    include_tree: bool = False,
+    hide_pdf_preview: bool = True,
+) -> tuple[Snapshot, tuple[int, ...]]:
+    """把 CLI state 转成契约 Snapshot，并返回每个元素对应的 CLI index。
+
+    CLI 不带 --query 时元素编号从 0 连续，与位置一致。hide_pdf_preview 为 True 时剔除附件
+    PDF 预览的子树（见 pdf_preview.py）并重新编号，此后 Snapshot 的 index 与 CLI 的 index
+    不再相同，写方法必须经返回的映射换回 CLI index。树信息总会解析（剔除要用），只在
+    include_tree 时写进元素。
+    """
+    tree = parse_tree(state.tree) if (include_tree or hide_pdf_preview) else {}
     elements = []
     for pos, raw in enumerate(state.elements):
         if raw.index != pos:
@@ -160,6 +172,14 @@ def snapshot_from_state(
                 depth=depth,
             )
         )
+    cli_indexes = tuple(range(len(elements)))
+    if hide_pdf_preview:
+        # 不在 tree 文本里的元素没有树信息，按几何规则判定。
+        parents = {i: p for i, (p, _) in tree.items()}
+        elements, mapping = strip_pdf_preview(elements, parents)
+        cli_indexes = tuple(old for old, _ in sorted(mapping.items(), key=lambda kv: kv[1]))
+    if not include_tree:
+        elements = [e.model_copy(update={"parent_index": None, "depth": None}) for e in elements]
     title = ""
     if state.elements and state.elements[0].role.startswith("AXWindow"):
         title = state.elements[0].label or ""
@@ -170,7 +190,22 @@ def snapshot_from_state(
         title=title,
         app_name=state.app,
     )
-    return Snapshot(snapshot_id=snapshot_id, taken_at=taken_at, window=window, elements=tuple(elements))
+    snapshot = Snapshot(snapshot_id=snapshot_id, taken_at=taken_at, window=window, elements=tuple(elements))
+    return snapshot, cli_indexes
+
+
+def snapshot_from_state(
+    state: _cli.RawState,
+    *,
+    snapshot_id: str,
+    taken_at: datetime,
+    include_tree: bool = False,
+    hide_pdf_preview: bool = True,
+) -> Snapshot:
+    """convert_state 的快照部分。"""
+    return convert_state(
+        state, snapshot_id=snapshot_id, taken_at=taken_at, include_tree=include_tree, hide_pdf_preview=hide_pdf_preview
+    )[0]
 
 
 def split_keys(keys: str | Sequence[str]) -> tuple[str, list[str]]:
@@ -235,6 +270,7 @@ class CliDriver:
         clock: Callable[[], datetime] = _now,
         id_factory: Callable[[], str] = _new_id,
         tool_runner: ToolRunner = _run_tool,
+        hide_pdf_preview: bool = True,
     ):
         self.screen = screen
         self.cli = runner or _cli.CliRunner(binary)
@@ -244,10 +280,14 @@ class CliDriver:
         self.clock = clock
         self.id_factory = id_factory
         self.tool_runner = tool_runner
+        # 默认剔除附件 PDF 预览子树；关闭只供测试与排查，录制（record_step）始终剔除。
+        self.hide_pdf_preview = hide_pdf_preview
         self.window: WindowInfo | None = None
         self.last_problem: str | None = None
         self._latest: Snapshot | None = None
         self._latest_actions: dict[int, tuple[str, ...]] = {}
+        self._latest_cli_indexes: tuple[int, ...] = ()
+        self._latest_hidden = hide_pdf_preview
 
     # ---- 调用与目标参数 ----
 
@@ -276,7 +316,10 @@ class CliDriver:
             except WindowLostError:
                 continue  # 这个进程在本屏没有窗口
             snapshot = snapshot_from_state(
-                _cli.parse_state(payload), snapshot_id=self.id_factory(), taken_at=self.clock()
+                _cli.parse_state(payload),
+                snapshot_id=self.id_factory(),
+                taken_at=self.clock(),
+                hide_pdf_preview=self.hide_pdf_preview,
             )
             window = snapshot.window
             assert window is not None
@@ -293,24 +336,38 @@ class CliDriver:
         self.window = found[0]
         self._latest = None
         self._latest_actions = {}
+        self._latest_cli_indexes = ()
         return self.window
 
     # ---- 读 ----
 
-    def _capture(self, include_tree: bool = False) -> tuple[Snapshot, _cli.RawState]:
+    def _capture(
+        self, include_tree: bool = False, hide_pdf_preview: bool | None = None
+    ) -> tuple[Snapshot, _cli.RawState, tuple[int, ...]]:
+        """读一次 state。返回 (快照, CLI 原始输出, 快照位置 → CLI index)。"""
         raw = _cli.parse_state(self._run(["state", *self._target_args()]))
-        snapshot = snapshot_from_state(
-            raw, snapshot_id=self.id_factory(), taken_at=self.clock(), include_tree=include_tree
+        snapshot, cli_indexes = convert_state(
+            raw,
+            snapshot_id=self.id_factory(),
+            taken_at=self.clock(),
+            include_tree=include_tree,
+            hide_pdf_preview=self.hide_pdf_preview if hide_pdf_preview is None else hide_pdf_preview,
         )
-        return snapshot, raw
+        return snapshot, raw, cli_indexes
 
-    def state(self, include_tree: bool = False) -> Snapshot:
-        snapshot, raw = self._capture(include_tree)
+    def _state(self, include_tree: bool, hide_pdf_preview: bool | None = None) -> Snapshot:
+        snapshot, raw, cli_indexes = self._capture(include_tree, hide_pdf_preview)
         if snapshot.window is not None:
             self.window = snapshot.window
         self._latest = snapshot
-        self._latest_actions = {e.index: e.actions for e in raw.elements}
+        self._latest_cli_indexes = cli_indexes
+        self._latest_hidden = self.hide_pdf_preview if hide_pdf_preview is None else hide_pdf_preview
+        actions = {e.index: e.actions for e in raw.elements}
+        self._latest_actions = {pos: actions.get(cli, ()) for pos, cli in enumerate(cli_indexes)}
         return snapshot
+
+    def state(self, include_tree: bool = False) -> Snapshot:
+        return self._state(include_tree)
 
     # ---- 目标解析与过期检测 ----
 
@@ -319,9 +376,11 @@ class CliDriver:
         # value 可能因输入而变（文本框），不参与比较。
         return a.index == b.index and a.role == b.role and a.label == b.label and a.frame == b.frame
 
-    def _resolve(self, target: Target) -> Element:
+    def _resolve(self, target: Target) -> tuple[Element, int]:
+        """解析写方法的目标。返回 (元素, 该元素的 CLI index)。"""
         if isinstance(target, Locator):
-            return find_one(self.state().elements, target)
+            element = find_one(self.state().elements, target)
+            return element, self._latest_cli_indexes[element.index]
         latest = self._latest
         if target.snapshot_id is None or latest is None or target.snapshot_id != latest.snapshot_id:
             raise StaleSnapshotError(
@@ -330,20 +389,24 @@ class CliDriver:
             )
         if target.index >= len(latest.elements) or not self._same_element(latest.elements[target.index], target):
             raise StaleSnapshotError(f"元素 {target.index} 与所属快照里的不一致")
+        cli_index = self._latest_cli_indexes[target.index]
         if self.verify_before_write:
-            fresh, _ = self._capture()
+            # 这次读取刷新了 CLI 的缓存，所以 CLI index 以它为准。
+            # 用与最近快照相同的剔除方式，位置才可比。
+            fresh, _, fresh_indexes = self._capture(hide_pdf_preview=self._latest_hidden)
             if target.index >= len(fresh.elements) or not self._same_element(fresh.elements[target.index], target):
                 raise StaleSnapshotError(f"界面已变化：元素 {target.index}（{target.role} {target.label!r}）不在原处")
-        return target
+            cli_index = fresh_indexes[target.index]
+        return target, cli_index
 
-    def _check_delivered(self, payload: Mapping[str, Any], expected: Element) -> None:
+    def _check_delivered(self, payload: Mapping[str, Any], expected: Element, cli_index: int) -> None:
         raw = payload.get("element")
         if not isinstance(raw, Mapping):
             return
         got = _cli.parse_element(raw)
-        if got.index != expected.index or got.role != expected.role or to_frame(got.frame) != expected.frame:
+        if got.index != cli_index or got.role != expected.role or to_frame(got.frame) != expected.frame:
             error = StaleSnapshotError(
-                f"CLI 作用在了 index {got.index}（{got.role}），预期 {expected.index}（{expected.role}）"
+                f"CLI 作用在了 index {got.index}（{got.role}），预期 {cli_index}（{expected.role}）"
             )
             error.delivered = True  # type: ignore[attr-defined]
             raise error
@@ -362,24 +425,24 @@ class CliDriver:
     # ---- 写 ----
 
     def click(self, target: Target, mode: ClickMode = "auto") -> ActionReceipt:
-        element = self._resolve(target)
+        element, cli_index = self._resolve(target)
         if mode == "event":
             cx, cy = element.frame.center()
             payload = self._run(["click", *self._target_args(), "--x", f"{cx:g}", "--y", f"{cy:g}"])
             return self._receipt("click", payload, element)
         if mode == "ax_press" and "AXPress" not in self._latest_actions.get(element.index, ()):
             raise CliFailedError(None, message=f"元素 {element.index}（{element.role}）不支持 AXPress")
-        payload = self._run(["click", *self._target_args(), "--index", element.index])
-        self._check_delivered(payload, element)
+        payload = self._run(["click", *self._target_args(), "--index", cli_index])
+        self._check_delivered(payload, element, cli_index)
         return self._receipt("click", payload, element)
 
     def type_text(self, target: Target | None, text: str) -> ActionReceipt:
         if target is None:
             payload = self._run(["type", *self._target_args(), "--value", text])
             return self._receipt("type_text", payload, None)
-        element = self._resolve(target)
-        payload = self._run(["type", *self._target_args(), "--index", element.index, "--value", text])
-        self._check_delivered(payload, element)
+        element, cli_index = self._resolve(target)
+        payload = self._run(["type", *self._target_args(), "--index", cli_index, "--value", text])
+        self._check_delivered(payload, element, cli_index)
         return self._receipt("type_text", payload, element)
 
     def key(self, keys: str | Sequence[str]) -> ActionReceipt:
@@ -393,9 +456,9 @@ class CliDriver:
         args: list[Any] = ["scroll", *self._target_args(), "--direction", direction, "--amount", amount]
         if target is None:
             return self._receipt("scroll", self._run(args), None)
-        element = self._resolve(target)
-        payload = self._run([*args, "--index", element.index])
-        self._check_delivered(payload, element)
+        element, cli_index = self._resolve(target)
+        payload = self._run([*args, "--index", cli_index])
+        self._check_delivered(payload, element, cli_index)
         return self._receipt("scroll", payload, element)
 
     # ---- 健康检查 ----
@@ -459,7 +522,10 @@ class CliDriver:
     # ---- 录制模式 ----
 
     def record_step(self, recorder: Any, label: str, annotations: Any = None, include_tree: bool = False) -> Snapshot:
-        """读一次 state 并交给 FixtureRecorder（见 record.py）脱敏后记为一步。"""
-        snapshot = self.state(include_tree=include_tree)
+        """读一次 state 并交给 FixtureRecorder（见 record.py）脱敏后记为一步。
+
+        不论构造时 hide_pdf_preview 是否关闭，录制都剔除 PDF 预览子树，免得把 PII 写进夹具。
+        """
+        snapshot = self._state(include_tree, hide_pdf_preview=True)
         recorder.add_step(snapshot, label, annotations)
         return snapshot
