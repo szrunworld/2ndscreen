@@ -23,7 +23,7 @@
 | F3 | 服务端扩展（搜索、登录接力、通知 + 邮件相关端点） | 已释放 | monitor-F3 | 已合（6ec91ae；全量 1602） | — | 通知只保留设备运维类（login_required、blocked_by_dialog、login_qr、邮件 failed），case_needs_human 与 mail_verification 通知冻结；搜索受工作时段约束（搜索算对外动作）；scrub/purge 定时调用归 M 与部署；契约缺口见 F3.md |
 | G | 邮件接入（mail 服务订阅方） | 已释放 | monitor-G | 已合（mail 入工作区；全量 1313） | f29f5a9 | 交接给服务器端（docs/monitor/handover-mail-ingestion.md），Monitor 内冻结 |
 | H1 | 动作公共层 + 问候 + 求简历 | 已释放 | monitor-H1 | 已合（合并时全量 963 tests） | — | 9 条界面假设待 N（H1.md 第五节）；接口请求：Driver 层过滤 PDF 子树、hints 稳定 |
-| H2 | 搜索动作 | ctx_6a47ff3c529e / monitor-H2 | monitor-H2 | 进行 | — | — |
+| H2 | 搜索动作 | 已释放 | monitor-H2 | 已合（a6cd2e4；全量 1639 + 1 xfail（search 计为对外动作，待 D2d）） | — | 11 条真机假设待 N（H2.md 第五节） |
 | H3 | 换微信（人工触发） | 已释放 | monitor-H3 | 已合（de10737；全量 1477） | — | 8 条真机假设待 N（H3.md 第五节）；『已交换』界面未观察到，遇到时返回 unknown 不点击 |
 | I1 | 控制台骨架、总览、连接与策略 | — | — | 撤销（2026-10-04：管理页放服务器端 / ATS 门户，见 handover-device-console.md） | — | — |
 | I2 | 控制台候选人流程、执行记录、搜索 | — | — | 撤销（同上） | — | — |
