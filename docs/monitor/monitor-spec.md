@@ -178,13 +178,13 @@ GUI 调度锁：观察与动作共用一把锁，动作优先；观察按配置�
 
 前提（用户 2026-10-04 说明）：BOSS 账户设置里预留了公司邮箱，候选人同意发送简历后，附件简历会自动发到该邮箱。待 N 实测：邮件发件人、主题与正文里有哪些字段（姓名、岗位、招聘账户）、附件格式。
 
-收件邮箱是 **`cv@remotedesk.io`**，建成公司邮件服务 **mail**（仓库 `amplifistudio/remotedesk-resend`）里的公共邮箱（kind=shared）。`remotedesk.io` 的 MX 已指向 Resend 的收信链路；mail 服务是邮箱、附件扫描、留存与审计的权威，Resend 只负责收发（用户 2026-10-04 确认；无 MQ；保留 30 天）。所以 Monitor **不直接接 Resend**，而是 mail 服务的订阅方：
+收件邮箱是 **`zhaopin@remotedesk.io`**，建成公司邮件服务 **mail**（仓库 `amplifistudio/remotedesk-resend`）里的公共邮箱（kind=shared）。`remotedesk.io` 的 MX 已指向 Resend 的收信链路；mail 服务是邮箱、附件扫描、留存与审计的权威，Resend 只负责收发（用户 2026-10-04 确认；无 MQ；保留 30 天）。所以 Monitor **不直接接 Resend**，而是 mail 服务的订阅方：
 
-1. **订阅**：平台管理员在 mail 为 cv@ 建一个 webhook 订阅，事件只订 **`mail.ready`**（附件扫描完成、可下载时才推；`mail.received` 时附件可能还在扫，下不到），不含垃圾邮件与接管邮件；URL 必须在 mail 的 `MAIL_WEBHOOK_ALLOWED_HOSTS` 白名单内。再为 cv@ 签发一把 `mail.read` 的 integration API key（一把 key 一个邮箱）。
+1. **订阅**：平台管理员在 mail 为 zhaopin@ 建一个 webhook 订阅，事件只订 **`mail.ready`**（附件扫描完成、可下载时才推；`mail.received` 时附件可能还在扫，下不到），不含垃圾邮件与接管邮件；URL 必须在 mail 的 `MAIL_WEBHOOK_ALLOWED_HOSTS` 白名单内。再为 zhaopin@ 签发一把 `mail.read` 的 integration API key（一把 key 一个邮箱）。
 2. **接收**：`POST /webhooks/mail` 用原始请求体校验 HMAC-SHA256 签名（`X-RemoteDesk-Webhook-Id/-Timestamp/-Signature`，覆盖 `{id}.{timestamp}.{原始字节}`）；推送体只有 `message_id` 等标识，没有内容。按投递 `id` 与 `message_id` 幂等写入 `mail_messages`（pending），立即返回 2xx。mail 的重试约 46 小时（10s→24h 九档），连续失败 20 次会停用订阅。
 3. **任务表代替 MQ**：消费者从我方数据库按租约领取 pending 记录。
 4. **消费**：用 `X-Mail-Api-Key` 调 `GET /v1/integration/messages/{id}` 取邮件，再取附件下载链接并下载；写我方存储与 sha256 → 只处理 BOSS 发件人（白名单），其他标记 ignored → 按（message_id，附件 sha256）去重 → 关联 → 写 `resume_document` → 提交后标记 processed；歧义 → needs_review；连续失败 3 次 → failed 并告警。
-5. **保留 30 天、不由 Monitor 删除**：mail 服务的设计是"只有留存任务才真正销毁内容"（受 legal hold 约束，删内容留信封与 sha256），所以 Monitor 不逐封删除，而是由管理员把 cv@ 邮箱的 `retention_days` 设为 30，由 mail 的 purge 任务统一清理。我方存储的副本同样 30 天清理，只留元数据。
+5. **保留 30 天、不由 Monitor 删除**：mail 服务的设计是"只有留存任务才真正销毁内容"（受 legal hold 约束，删内容留信封与 sha256），所以 Monitor 不逐封删除，而是由管理员把 zhaopin@ 邮箱的 `retention_days` 设为 30，由 mail 的 purge 任务统一清理。我方存储的副本同样 30 天清理，只留元数据。
 6. **核对（verify）**：每小时检查 pending 超过 30 分钟为 0、processed 的副本存在且哈希一致、needs_review/failed 与人工队列一致、"求简历成功但超过 3 天未收到"的流程提醒、本次清理数量；并对账 mail 的 webhook 投递台账（失败/落死的投递，必要时按窗口重放）。mail 目前没有给 integration key 的"列出邮件"接口，要做到"mail 有、我方没有"的完整对账，需要在 mail 增加 `GET /v1/integration/messages?since=`（接口请求，见任务 G0）。
 6. **关联**：账户（邮箱或主题中的招聘账户）+ 岗位 + 候选人姓名，在该账户"求简历已成功"的流程里查找，结合 `request_resume` 的执行时间窗。只有唯一命中才自动关联；同名、多岗位或找不到时进入人工关联队列，不按姓名硬匹配。
 7. 关联成功后建立 `resume_document` 版本（同一候选人多份简历保留版本，不覆盖），流程进入 `resume_linked`，再解析 PDF 文本；扫描版第一版不做 OCR。收到并正确关联即可按策略触发联系方式请求。
