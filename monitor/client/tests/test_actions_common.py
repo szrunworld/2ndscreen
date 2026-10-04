@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from monitor_contracts import Conversation, Snapshot, validate_command
+from monitor_contracts import ActionHandler, Conversation, Snapshot, validate_command
 
 from monitor.actions import EXTENSION_MODULES, RequestResumeHandler, SendGreetingHandler, create_handlers
 from monitor.actions.common import (
@@ -452,15 +452,20 @@ def test_session_outbound_goes_through_guard():
 # ---------------------------------------------------------------------------
 
 
-def test_create_handlers_registers_greeting_and_resume_only():
+def test_create_handlers_registers_greeting_and_resume():
+    # 不写死总数与顺序：H2 / H3 的扩展模块存在时也会注册进来
     handlers = create_handlers(clock=ManualClock(START))
-    assert [h.action for h in handlers] == ["send_greeting", "request_resume"]
-    assert isinstance(handlers[0], SendGreetingHandler) and isinstance(handlers[1], RequestResumeHandler)
+    by_action = {h.action: h for h in handlers}
+    assert len(by_action) == len(handlers)
+    assert isinstance(by_action["send_greeting"], SendGreetingHandler)
+    assert isinstance(by_action["request_resume"], RequestResumeHandler)
+    assert all(isinstance(h, ActionHandler) for h in handlers)
     assert EXTENSION_MODULES == ("search", "contact_exchange")
 
 
 def test_create_handlers_without_clock_uses_system_clock():
-    assert len(create_handlers()) == 2
+    actions = [h.action for h in create_handlers()]
+    assert {"send_greeting", "request_resume"} <= set(actions) and len(set(actions)) == len(actions)
 
 
 class _Stub:
@@ -484,7 +489,7 @@ def test_create_handlers_picks_up_extension_modules(monkeypatch):
     mod.create_handlers = factory
     monkeypatch.setitem(sys.modules, "monitor.actions.search", mod)
     clock = ManualClock(START)
-    assert [h.action for h in create_handlers(clock=clock)][-1] == "search_candidates"
+    assert "search_candidates" in [h.action for h in create_handlers(clock=clock)]
     assert seen["clock"] is clock
 
 
