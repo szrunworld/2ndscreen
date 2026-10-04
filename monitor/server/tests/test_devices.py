@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 
 import pytest
-from conftest import ACCOUNT, CONSOLE_TOKEN, SERVICE_TOKEN, Harness, assert_problem, assert_shape
+from server_testkit import ACCOUNT, CONSOLE_TOKEN, SERVICE_TOKEN, Harness, assert_problem, assert_shape
 
 from app.db import MIGRATIONS, SqliteStore, migrate
 from app.devices import contracts_compatible, new_enrollment_code
@@ -92,7 +92,7 @@ def test_register_rejects_mode_mismatch(h: Harness):
 def test_register_rejects_incompatible_contracts_without_consuming_code(h: Harness):
     code = h.enroll()
     assert_problem(
-        h.post("/devices", h.registration(code, contracts_version="0.2.0"), token=None),
+        h.post("/devices", h.registration(code, contracts_version="9.9.0"), token=None),
         409,
         "contracts_version_unsupported",
     )

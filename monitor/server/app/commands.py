@@ -499,7 +499,7 @@ def _query_time(name: str, value: str | None) -> str | None:
     operation_id="getCommand",
     summary="指令详情（含结果、人工处理记录）",
     response_model=CommandRecord,
-    responses=problem_responses(404),
+    responses=problem_responses(401, 404),
 )
 def get_command(ctx: Ctx, _actor: ConsoleActor, command_id: uuid.UUID):
     record = ctx.commands.get(str(command_id))
@@ -513,7 +513,7 @@ def get_command(ctx: Ctx, _actor: ConsoleActor, command_id: uuid.UUID):
     operation_id="ackCommand",
     summary="Monitor 确认已把指令写入本地账本",
     response_model=CommandRecord,
-    responses=problem_responses(401, 404, 409),
+    responses=problem_responses(401, 403, 404, 409),
 )
 def ack_command(
     request: Request,
@@ -524,7 +524,7 @@ def ack_command(
     body: Annotated[AckRequest, Body()],
 ):
     if body.device_id != device.device_id:
-        raise ApiError(409, "command_not_owned", "请求体 device_id 与设备令牌不符")
+        raise ApiError(403, "device_mismatch", "请求体 device_id 与设备令牌不符")
     return run_idempotent(
         ctx,
         request,
@@ -562,7 +562,7 @@ def report_result(
     operation_id="cancelCommand",
     summary="取消指令",
     response_model=CommandRecord,
-    responses=problem_responses(404, 409),
+    responses=problem_responses(401, 404, 409),
 )
 def cancel_command(
     request: Request,

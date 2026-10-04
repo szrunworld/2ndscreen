@@ -245,7 +245,7 @@ def post_events(
     operation_id="listEvents",
     summary="事件列表（控制台最近活动）",
     response_model=EventList,
-    # 运行时未认证仍返回 401；yaml 未列出，已在交付报告提接口请求，这里与 yaml 保持一致
+    responses=problem_responses(401),
 )
 def list_events(
     ctx: Ctx,
