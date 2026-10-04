@@ -195,6 +195,7 @@
         "windows"
       ],
       "additionalProperties": false,
+      "description": "工作时段。服务端只在窗口内生成对外动作指令：send_greeting、request_resume、search_candidates（0.3.2 起搜索算对外动作），窗口外不生成；人工换微信在窗口外顺延到下一窗口开始（command.issued_at）。空窗口表示任何时段都不生成对外指令。provide_input 与 verify_only 不受它约束。",
       "properties": {
         "timezone": {
           "type": "string",

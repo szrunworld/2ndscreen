@@ -1,6 +1,6 @@
 # 招聘 Monitor 契约说明
 
-契约版本：`monitor_contracts.__version__ = "0.3.1"`（2026-10-04）。本文说明 `monitor/contracts/` 的产物，是[方案](monitor-spec.md)第六、七节的落地版本。HTTP 接口见 [api.md](api.md)。
+契约版本：`monitor_contracts.__version__ = "0.3.2"`（2026-10-04）。本文说明 `monitor/contracts/` 的产物，是[方案](monitor-spec.md)第六、七节的落地版本。HTTP 接口见 [api.md](api.md)。
 
 本文中"已验证"只表示 `uv run pytest contracts` 通过的契约层行为，不代表 BOSS 客户端上的任何能力。
 
@@ -12,7 +12,7 @@
 | `monitor_contracts` 包 | `monitor/contracts/monitor_contracts/` | pydantic v2 模型、`validate_*`、状态机、`compute_event_id`、Protocol |
 | 夹具格式 | `monitor/fixtures/schema/ax-fixture.schema.json` | B 录制、C 回放、E/H 测试的脱敏元素树格式 |
 | OpenAPI | `monitor/contracts/openapi.yaml` | 服务端 HTTP 接口；消息体直接 `$ref` 上面的 schema |
-| 测试向量 | `monitor/contracts/tests/vectors/{valid,invalid}/` | 合法 45 个、非法 66 个，其他任务可直接拿来做 fake 数据 |
+| 测试向量 | `monitor/contracts/tests/vectors/{valid,invalid}/` | 合法 46 个、非法 68 个，其他任务可直接拿来做 fake 数据 |
 
 ```sh
 cd monitor && uv sync && uv run pytest contracts
@@ -40,6 +40,8 @@ cd monitor && uv sync && uv run pytest contracts
 
 公共字段：`command_id`（UUID）、`workflow_id`（case_id，会话类动作必填，其余必须为 null）、`account_id`、`action`、`execution_mode`（`execute` | `verify_only`，默认 execute）、`target`、`payload`、`issued_at`、`expires_at`（必须晚于 issued_at）、`depends_on`（前置指令，可空，不能指向自己）。
 
+**下发时间（0.3.2 写明）**：`issued_at` 晚于当前时间的指令，服务端在 `issued_at` 之前不下发（领取接口不返回）。目前只有一种情况：不在工作时段内人工换微信，指令的 `issued_at` 设为下一个工作时段的开始时间（`expires_at` 相应顺延），见 api.md 第四节"换微信"。Monitor 领取到的指令 `issued_at` 都不晚于领取时间，客户端不需要处理。
+
 `execution_mode=verify_only`：对应控制台的"重新检查界面状态"。这类指令只调用 `ActionHandler.verify_only`，不受每日上限、最小间隔和白名单开关约束。它允许导航（打开会话、切页签、滚动），不允许任何对外动作，结果的 `outbound_action_performed` 必须为 false（见第四节）。它只用于会话类动作，`search_candidates` 和 `provide_input` 必须是 `execute`。
 
 | action | target | payload | output（结果中） |
@@ -61,7 +63,7 @@ cd monitor && uv sync && uv run pytest contracts
 - **send_greeting**：问候。服务端已按策略模板渲染好 `text`，Monitor 不再拼接。执行前要核对目标会话，执行后要读到聊天区出现该文本才算 succeeded。结果为 `unknown` 时，服务端不自动推进求简历（方案 8.1 第 5 条）。
 - **request_resume**：请求简历。界面已有"已请求"标记时返回 `skipped_precondition`（`reason=precondition_already_done`）。执行后要读到请求消息出现才算成功。只允许点击 N 阶段记录的那一个确认按钮。成功结果的 `executed_at` 是邮件关联的时间窗起点：候选人同意后，BOSS 会把附件简历自动发到公司邮箱（第七节"公司邮箱"）。
 - **request_contact_exchange**：交换联系方式，0.3.0 起**只换微信**、**只能人工触发**（用户 2026-10-04 确认）。依据：任务 B 在真机观察到换微信后的系统提示『请求交换微信已发送』，同时『换微信』置灰（capabilities.md 1.7，`contact_exchange_state#1`）；换电话的提示没有观察到。服务端只在控制台调用 `POST /cases/{case_id}:request-wechat` 时生成这条指令，任何自动流程都不得生成。界面已是 `available` 或 `pending_acceptance` 时返回 `skipped_precondition` 并在 output 中给出当前状态。点击并确认请求已发出时返回 succeeded，`exchange_state=requested`。succeeded 和 skipped_precondition 都必须带 output。"请求已发送"是指令结果，"联系方式可用"是业务事件 `contact_exchange_updated`，两者不要混用。v1 契约不传微信号原文，是否回传仍未决定。
-- **search_candidates**：在当前页搜索，不翻页，`workflow_id` 为 null。见第五节。
+- **search_candidates**：在当前页搜索，不翻页，`workflow_id` 为 null。见第五节。**搜索算对外动作**（用户 2026-10-04 决定，0.3.2 写入契约，更正此前"搜索属于导航"的说法）：在搜索框输入并提交关键词算对外动作，与问候、求简历一样受白名单、每日上限、最小间隔和 `policy.work_hours` 约束；成功结果三个执行标志都为 true（第四节）。
 - **provide_input**：把控制台人工输入的值（如短信验证码）代填到 `human_input_required` 所指的输入框。值不得写入日志或 evidence。
 
 ## 四、结果 command_result（Monitor → 服务端）
@@ -79,7 +81,7 @@ cd monitor && uv sync && uv run pytest contracts
 | `status=expired` | 三个标志都为 false |
 | `execution_mode=verify_only` | `outbound_action_performed=false`（允许导航） |
 | `outbound_action_performed=true` | `externally_visible_side_effect=true` |
-| `search_candidates` + succeeded | 必须带 `output.snapshot`，且 coverage 不能是 unreadable |
+| `search_candidates` + succeeded | 必须带 `output.snapshot`，且 coverage 不能是 unreadable；三个执行标志都必须为 true（0.3.2，搜索算对外动作） |
 | `request_contact_exchange` + succeeded/skipped_precondition | 必须带 `output.exchange_state` |
 | greeting / resume / provide_input | output 必须为 null |
 
@@ -111,9 +113,11 @@ cd monitor && uv sync && uv run pytest contracts
 
 | 标志 | 含义 | 例子 |
 | --- | --- | --- |
-| `navigation_performed` | 发生过只改变本机界面的 GUI 操作 | 点击打开会话、切换页签或筛选、滚动、关闭弹层、在搜索框输入关键词 |
-| `outbound_action_performed` | 发生过对候选人或第三方可见的动作 | 发送消息、点击确认、点击求简历 / 换微信、代填并提交验证码 |
+| `navigation_performed` | 发生过只改变本机界面的 GUI 操作 | 点击打开会话、切换页签或筛选、滚动、关闭弹层 |
+| `outbound_action_performed` | 发生过对候选人或第三方可见的动作 | 发送消息、点击确认、点击求简历 / 换微信、代填并提交验证码、在搜索框输入并提交关键词（0.3.2） |
 | `externally_visible_side_effect` | 本次执行可能产生了对方可见的副作用 | 对外动作一定算；只打开未读会话也可能产生已读回执，此时没有对外动作但为 true。用户已接受打开会话产生的已读回执（2026-10-04），它是可接受的副作用，如实记录即可 |
+
+**搜索算对外动作（0.3.2）**：用户 2026-10-04 决定，在搜索框输入并提交关键词是对外动作（0.2.0–0.3.1 的表里把它列为导航，已更正）。成功的搜索一定输入并提交过关键词，所以 `search_candidates` + succeeded 时三个标志都必须为 true，schema 与模型两层都检查。失败的搜索如实填写：已输入关键词后读不出结果（`reason=unreadable`）三个标志为 true；白名单关闭、限额等未调用 driver 时全为 false。core 的崩溃恢复同样按对外动作处理 search（复核成功时 outbound 为 true），由 core 跟进。
 
 服务端用 `outbound_action_performed` 区分"取消前确实没有对外动作"和"做了但结果不明"，用 `externally_visible_side_effect` 判断候选人是否可能已经察觉（例如已读）。白名单关闭、限额、暂停、依赖未满足时 handler 不调用 driver，三个标志都为 false。
 
@@ -158,7 +162,7 @@ cd monitor && uv sync && uv run pytest contracts
 | `login_required` | null | `{reason, mode}` | 登录失效或回到登录页。Monitor 暂停对外动作。local 模式只通知用户在本机登录 |
 | `login_qr` | null | `{qr_seq, expires_at}` | 仅 remote 模式。只通知二维码已更新，二维码内容只经 `POST /login-qr` 上传，过期即删，不进事件表 |
 | `login_ok` | null | `{mode, account_display?}` | 登录完成。服务端撤下二维码卡片 |
-| `human_input_required` | 可空 | `{input_request_id, input_kind, prompt_text, can_fill}` | 需要人工输入（短信验证码等）。slider、confirm_on_phone、unknown 时 `can_fill` 必须为 false，只上报并等待人工 |
+| `human_input_required` | 可空 | `{input_request_id, input_kind, prompt_text, can_fill, expires_at?}` | 需要人工输入（短信验证码等）。slider、confirm_on_phone、unknown 时 `can_fill` 必须为 false，只上报并等待人工。`expires_at`（0.3.2，可空）是请求有效期，必须晚于 `observed_at`；为 null 时服务端取 `observed_at` + 10 分钟（`INPUT_REQUEST_TTL_SECONDS = 600`）。控制台提交生成的 `provide_input` 指令 `expires_at` 等于它，过期后提交返回 409 |
 | `blocked_by_dialog` | 可空 | `{dialog_kind, dialog_text, buttons[], command_id?}` | 验证码、风控、配额或未知弹窗阻断。Monitor 暂停相应执行，不点任何未知控件 |
 | `device_paused` | null | `{reason, by, detail?}` | 设备进入暂停（用户、登录、换账户、异常、服务端要求、重建基线） |
 
@@ -166,7 +170,7 @@ cd monitor && uv sync && uv run pytest contracts
 
 ## 七、其他消息
 
-- **policy**：账户级策略。字段包括 `policy_version`（PUT 用 If-Match 做乐观锁）、`allowed_actions`（对外动作白名单，默认空即全部关闭；provide_input 和 verify_only 不受它控制）、`job_scope`、`greeting{enabled, template}`、`auto_request_resume`、`after_resume_received{action, wait_for_parse}`、`resume_mail_timeout_days`、`company_mailbox`、`work_hours`（IANA 时区 + 窗口，空窗口表示任何时段都不生成对外指令）、`daily_limits` 与 `min_interval_seconds`（四个对外动作各一项：send_greeting、request_resume、request_contact_exchange、search_candidates）、`pause_on_anomaly`（只能为 true）、`paused`。Monitor 本地另有写死的硬上限和最小间隔下限，策略只能收紧、不能放宽。这些常量由 D2 定义，不在契约里。
+- **policy**：账户级策略。字段包括 `policy_version`（PUT 用 If-Match 做乐观锁）、`allowed_actions`（对外动作白名单，默认空即全部关闭；provide_input 和 verify_only 不受它控制）、`job_scope`、`greeting{enabled, template}`、`auto_request_resume`、`after_resume_received{action, wait_for_parse}`、`resume_mail_timeout_days`、`company_mailbox`、`work_hours`（IANA 时区 + 窗口，空窗口表示任何时段都不生成对外指令；0.3.2 起搜索也受它约束，窗口外 `POST /search-runs` 返回 409 `policy_blocked`；人工换微信在窗口外顺延到下一窗口开始，见第三节"下发时间"）、`daily_limits` 与 `min_interval_seconds`（四个对外动作各一项：send_greeting、request_resume、request_contact_exchange、search_candidates）、`pause_on_anomaly`（只能为 true）、`paused`。Monitor 本地另有写死的硬上限和最小间隔下限，策略只能收紧、不能放宽。这些常量由 D2 定义，不在契约里。
   - `after_resume_received.action` 0.3.0 起只能是 `none`（也是默认值）：收到并关联简历后不做任何自动动作。换微信只能人工触发（`POST /cases/{case_id}:request-wechat`），服务端不得在任何自动流程中生成 `request_contact_exchange`。对象保留以便以后扩展；`wait_for_parse` 默认 true，目前不起作用。线上仍必须写全。`request_contact_exchange` 仍在 `allowed_actions` 白名单与上限里：人工触发的指令到了 Monitor 也要白名单开启才执行。
   - `resume_mail_timeout_days`（默认 3，范围 1–30）：求简历成功后超过该天数仍未收到并关联简历邮件，服务端把流程转 `needs_human`（`needs_human_reason=resume_mail_timeout`），核对任务也会把它列为提醒。
   - `company_mailbox`：BOSS 账户设置里预留的公司邮箱（zhaopin@remotedesk.io），只读展示，以服务端配置为准；PUT 时服务端忽略请求里的值。未配置时为 null。
@@ -217,7 +221,7 @@ cd monitor && uv sync && uv run pytest contracts
 - `overdue_resume_requests[]`：`{case_id, command_id, requested_at, days_waiting}`，求简历成功但超过 `resume_mail_timeout_days` 仍未收到邮件的流程。只是提醒，不影响 outcome；流程是否转 needs_human 由服务端判定。
 - `purged_copies`：本次按保留期清理的我方副本数量。
 
-**resume_document**（只在 openapi 中定义，0.3.0 新增字段）：`variant`（`original` 邮件原件 | `branded` 套用公司模板的派生版本）、`derived_from`（branded 时为原件 doc_id，original 时为 null）、`mail_message_id`（来源邮件记录，branded 继承原件）。原件始终保留，品牌化只新增派生版本。关联方式 `link_method` 的 `forward_record` 改为 `resume_request`：在该账户 request_resume 已成功的流程里，按执行时间窗结合账户 + 岗位 + 姓名唯一命中；不能唯一命中进入人工关联队列。
+**resume_document**（只在 openapi 中定义，0.3.0 新增字段）：`variant`（`original` 邮件原件 | `branded` 套用公司模板的派生版本）、`derived_from`（branded 时为原件 doc_id，original 时为 null）、`mail_message_id`（来源邮件记录，branded 继承原件）。原件始终保留，品牌化只新增派生版本。关联方式 `link_method` 的 `forward_record` 改为 `resume_request`：在该账户 request_resume 已成功的流程里，按执行时间窗结合账户 + 岗位 + 姓名唯一命中；不能唯一命中进入人工关联队列。0.3.2 增加 `candidate_case_ids`（可选，默认空列表）：人工关联队列里的候选流程，只是提示，人工关联仍要指定 case_id。
 
 ### 账户来源（0.2.0）
 
@@ -352,7 +356,7 @@ event_id = sha256_hex( JSON( ["monitor-event-v1", account_id or "", kind, 会话
 | `POST /events` | `events_batch_key(event_ids)` | 与顺序无关，相同集合得到相同键 |
 | `POST /login-qr` | `login_qr_key(device_id, qr_seq)` | |
 | `POST /resume-documents` | `resume_document_key(source_id, sha256)` | 原件 source_id = mail_message_id；品牌化版本 = `"branded:" + derived_from` |
-| `PUT /mail-messages/{id}` | `mail_message_key(mail_message_id, status, attempts)` | 同状态的多次失败靠 attempts 区分 |
+| `PUT /mail-messages/{id}` | `mail_message_key(mail_message_id, status, attempts, revision=None)` | 同状态的多次失败靠 attempts 区分。副本清理后的再写入（status、attempts 都没变，只填 `copy_purged_at`）用 `revision="purged"`，状态段变为 `<status>-purged`，形如 `mail:<uuid>:processed-purged:0`（0.3.2，与任务 G 的 `retention.purge_key` 逐字节一致） |
 | `POST /mail-verifications` | `mail_verification_key(verification_id)` | |
 | 控制台写接口 | 每次用户点击生成一个 UUID | 双击、刷新重放不会重复执行 |
 
@@ -413,6 +417,12 @@ Locator 的文本匹配（0.2.0 追认任务 C 的实现）：`text` 在规范�
 | 交换联系方式 | 0.3.0（用户 2026-10-04 确认）：只换微信（`exchange_type` 只有 `wechat`，依据 B 观察到的『请求交换微信已发送』）；只能人工触发，新增 `POST /cases/{case_id}:request-wechat`，`after_resume_received.action` 只能为 none |
 | 已读回执 | 0.3.0（用户 2026-10-04）：打开会话产生的已读回执可以接受，`externally_visible_side_effect` 如实记录 |
 | 邮件关联依据 | 0.3.0：`link_method` 的 `forward_record` 改为 `resume_request`（按 request_resume 执行时间窗），`command_id` 指向 request_resume 指令 |
+| 搜索是导航还是对外动作 | 0.3.2（用户 2026-10-04）：对外动作。成功结果三标志均为 true；受 `policy.work_hours` 约束，窗口外 409 不顺延 |
+| 工作时段外人工换微信 | 0.3.2（F2b，协调者裁决 + 契约请求）：201 照常记录，指令 `issued_at` 顺延到下一窗口开始；`ManualCommandCreated.scheduled_for` 给出该时间；`issued_at` 未到不下发 |
+| yaml 缺少的响应码与 serviceToken | 0.3.2（F2、F3 报告）：按 server 一致性测试的 `KNOWN_YAML_GAPS` 逐项补齐 401 / 403 / 404 / 422；`listResumeDocuments`、`getPolicy` 允许 serviceToken 只读。多账户时邮件接入取哪个账户的策略值仍未裁决（G 现在由装配方回调决定） |
+| 人工关联队列看不到候选流程 | 0.3.2（F3）：`ResumeDocument` 增加 `candidate_case_ids`（可选，默认空列表） |
+| 人工输入请求有效期 | 0.3.2（F3）：`human_input_required.payload.expires_at` 可空，默认 observed_at + 10 分钟；provide_input 指令的 expires_at 等于它 |
+| 副本清理后的 mail_message 写入撞键 | 0.3.2（G）：`mail_message_key` 增加 `revision="purged"`，追认 G 的实现 |
 
 ### 变更记录
 
@@ -423,3 +433,4 @@ Locator 的文本匹配（0.2.0 追认任务 C 的实现）：`text` 在规范�
 | 0.2.0 | 2026-10-04 | ① command_result / ActionResult 的 `gui_write_performed` 拆成 `navigation_performed`、`outbound_action_performed`、`externally_visible_side_effect`（线上必填）：verify_only 只禁对外动作、允许导航；cancelled 禁对外动作；expired 三个全 false；对外动作 ⇒ 对方可见；`running → cancelled` 仅限无对外动作；`ActionHandler.verify_only` 文档同步。② 账户来源：account_id 来自安装时绑定，heartbeat.account_id 是绑定账户而非观察到的账户；`account_mismatch` 保留但 v1 只在有证据时使用，列入 N 待验证。③ Locator 的 text / text_contains 匹配 Element.text、label、value 任一（规范化后），追认 C 的实现。forward_resume 与搜索字段未改 | D1、D2、E、H1–H3、F1（结果入库）、I1（展示）、C（文档追认，无代码变更） |
 | 0.3.0 | 2026-10-04 | ① 移除 `forward_resume`：action 枚举、payload / output、结果规则、策略白名单与 daily_limits / min_interval_seconds、设备能力；`attachment_available` 只作可选观察。② policy 增加 `company_mailbox`（只读）与 `resume_mail_timeout_days`（默认 3）；`after_resume_received` 默认 `{action: none, wait_for_parse: true}`。③ case 主路径 `resume_requested → resume_linked`，`resume_received` 为可选观察，`resume_requested → needs_human` 用于超时或关联歧义（迁移表未增删边，只改说明）。④ 新增 `mail_message`、`mail_verification` 两个契约与 `MAIL_TRANSITIONS`、`compute_mail_message_id`、`mail_message_key`、`mail_verification_key`；`resume_document_key` 的第一个参数改为来源标识。⑤ 搜索快照卡片改为 `{result_ref, position, fields[], masked_name?, prop_card_texts[]}`，删除 `display_name / summary / stable_candidate_id`；会话目标删除 `result_ref`，v1 搜索结果不能作为指令目标。⑥ openapi：新增 `/mail-messages`、`/mail-verifications`；resume_document 增加 `variant / derived_from / mail_message_id`，`link_method` 的 `forward_record` 改为 `resume_request`；补齐 F1 报告列出的 401 / 403 / 422。⑦ 交换联系方式只换微信：`exchange_type` 枚举改为 `["wechat"]`（指令、结果、`contact_exchange_updated` 事件同步）；只能人工触发：`after_resume_received.action` 只允许 none，新增 `POST /cases/{case_id}:request-wechat`（ManualAction 类型 `request_wechat`，响应 `{manual_action, command}`）。⑧ 已读回执可接受，`externally_visible_side_effect` 说明补充 | D2（限额常量、testing 夹具）、D1（testing 夹具）、F1（一致性白名单清空）、F2（策略默认值、超时转人工、关联方式）、F3（搜索快照存储）、G（mail_messages、核对、关联方式）、H2（卡片形状）、H3（只换微信）、E（contact_exchange_updated 只报 wechat）、I1/I2（策略页邮箱与超时、去掉自动交换选项、流程详情"换微信"按钮、搜索页、邮件队列）、R（branded 版本写入） |
 | 0.3.1 | 2026-10-04 | ① case 迁移表：new_application、greeted、resume_requested、resume_received 各加 `→ contact_requested`（resume_linked、needs_human 原已有），人工换微信除 closed 外都允许；`contact_requested` 之后邮件才到时阶段不回退，关联独立于阶段，openapi TimelineEntry.type 增加 `resume_linked`。② 邮件接入改为公司邮件服务 mail 的订阅方：`mail_message` 增加 `provider`（`remotedesk-mail`）、`provider_message_id`、`webhook_delivery_id`、`copy_purged_at`，删除 `uidvalidity` / `uid`；`mail_message_id = "mail:" + provider_message_id`，`compute_mail_message_id` 签名改为只接收 mail 的 message_id；推送阶段 sha256 可为 null，processed / needs_review 必须有副本；pending 可记录最近一次失败原因。③ `mail_verification` 检查项改为 pending_backlog、copy_missing、hash_mismatch、document_without_copy、needs_review_mismatch、failed_mismatch、webhook_delivery_failed、upstream_missing（即草案中的 provider_missing），`count` 可为 null 加 `unavailable_reason`，新增 `purged_copies`。④ policy 增加 `mail_retention_days`（默认 30）。⑤ openapi：PUT /mail-messages 与 request-wechat 描述更新，ResumeDocumentCreate.mail 去掉 IMAP uid、message_id 可空 | F2（迁移表、request-wechat 阶段、关联不回退、时间线）、F1（ManualAction 枚举，见 A3 报告）、G（订阅方模型、主键、核对项、副本清理）、I1/I2（策略页保留期、时间线、核对展示）、D2（testing 夹具 policy 增加 mail_retention_days） |
+| 0.3.2 | 2026-10-04 | 汇总补丁（协调者指定为修订号；新增字段都是可选的，0.3.x 设备与服务端互相兼容）。① 搜索算对外动作（用户 2026-10-04）：第四节执行标志表把"在搜索框输入关键词"改为对外动作；`search_candidates` + succeeded 三个标志都必须为 true（schema 与模型两层，合法向量 result_search_complete / empty_confirmed 改为全 true，新增非法向量 result_search_success_not_outbound）；搜索受 `policy.work_hours` 约束（policy.json work_hours 补说明，openapi createSearchRun 409 说明更新）。② F2：openapi `ManualCommandCreated` 增加 `scheduled_for`（可空），工作时段外人工换微信时为下一时段开始；写明"`issued_at` 未到不下发"（第三节、claimCommands 说明）。③ F3：openapi 补齐 server 一致性测试 `KNOWN_YAML_GAPS` 列出的 19 个操作的 401 / 403 / 404 / 422；`listResumeDocuments`、`getPolicy` 允许 serviceToken（只读）；`ResumeDocument` 增加 `candidate_case_ids`；`human_input_required.payload` 增加 `expires_at`（可空，默认 observed_at + 10 分钟，导出常量 `INPUT_REQUEST_TTL_SECONDS`），respondInputRequest 说明有效期。④ G：`mail_message_key` 增加 `revision="purged"`（9.2）。⑤ 版本号三处同步为 0.3.2 | server（一致性测试清空 KNOWN_YAML_GAPS / KNOWN_SECURITY_GAPS；ResumeDocument 加 candidate_case_ids；ManualCommandCreated 加 scheduled_for；getPolicy 依赖改 require_policy_reader；搜索门槛加工作时段）、client core（D2d：search 按对外动作计数、崩溃恢复不再强制 outbound=false，解除 H2 的 xfail）、mail（可改用 `mail_message_key(..., revision="purged")`，键不变）、E/D2（human_input_required 可带 expires_at） |

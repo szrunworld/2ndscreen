@@ -147,7 +147,7 @@ def test_coverage_mode_exchange_enums_match_models():
 
 
 def test_version_is_consistent():
-    assert mc.__version__ == "0.3.1"
+    assert mc.__version__ == "0.3.2"
     pyproject = tomllib.loads((CONTRACTS_DIR / "pyproject.toml").read_text(encoding="utf-8"))
     assert pyproject["project"]["version"] == mc.__version__
 

@@ -311,6 +311,39 @@
       }
     },
     {
+      "$comment": "0.3.2：搜索算对外动作（用户 2026-10-04）。成功的搜索一定在搜索框输入并提交过关键词，三个标志都为 true。",
+      "if": {
+        "properties": {
+          "action": {
+            "const": "search_candidates"
+          },
+          "status": {
+            "const": "succeeded"
+          }
+        },
+        "required": [
+          "action",
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "navigation_performed": {
+            "const": true,
+            "x-message": "search_candidates 成功时 navigation_performed 必须为 true（搜索算对外动作，0.3.2）"
+          },
+          "outbound_action_performed": {
+            "const": true,
+            "x-message": "search_candidates 成功时 outbound_action_performed 必须为 true（搜索算对外动作，0.3.2）"
+          },
+          "externally_visible_side_effect": {
+            "const": true,
+            "x-message": "search_candidates 成功时 externally_visible_side_effect 必须为 true（搜索算对外动作，0.3.2）"
+          }
+        }
+      }
+    },
+    {
       "if": {
         "properties": {
           "action": {

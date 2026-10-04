@@ -517,6 +517,18 @@
         "can_fill": {
           "type": "boolean",
           "description": "Monitor 能否代填。slider / confirm_on_phone / unknown 必须为 false。"
+        },
+        "expires_at": {
+          "oneOf": [
+            {
+              "$ref": "common.json#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "请求有效期（0.3.2）。为 null 时服务端取 observed_at + 600 秒；provide_input 指令的 expires_at 等于它。必须晚于 observed_at（模型层检查）。"
         }
       },
       "allOf": [

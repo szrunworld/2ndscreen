@@ -198,6 +198,13 @@ def test_mail_keys():
     assert k1 == mail_message_key(mid, "pending", 0)
     assert k1 != mail_message_key(mid, "pending", 1)
     assert k1 != mail_message_key(mid, "processed", 0)
+    # 0.3.2：清理副本后的再写入带 purged 段，与终态写入不撞键
+    purged = mail_message_key(mid, "processed", 0, revision="purged")
+    assert purged == f"mail:{PID}:processed-purged:0"
+    assert purged != mail_message_key(mid, "processed", 0)
+    assert purged == mail_message_key(mid, "processed-purged", 0)  # 与任务 G 的 retention.purge_key 一致
+    with pytest.raises(ValueError):
+        mail_message_key(mid, "processed", 0, revision="other")  # type: ignore[arg-type]
     assert is_valid_idempotency_key(mail_verification_key("verify-20261004T1100"))
     # 不安全字符退化为哈希
     assert is_valid_idempotency_key(mail_verification_key("核对 一"))

@@ -1,6 +1,6 @@
 [project]
 name = "monitor-contracts"
-version = "0.3.1"
+version = "0.3.2"
 description = "招聘 Monitor 模块间契约：JSON Schema、pydantic 模型、状态机、Protocol"
 requires-python = "==3.12.*"
 dependencies = [
