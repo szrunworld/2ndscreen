@@ -198,9 +198,9 @@
 
 验收：过期二维码接口返回 410；查看记录可查询；搜索快照 `unreadable` 与 `empty_confirmed` 分别可查。
 
-### G 邮件接入（邮箱即队列 + 消费 + 归档 + 核对）
+### G 邮件接入（Resend Inbound：webhook + 任务表 + 核对）
 
-目标：方案 8.2 第 1–7 条。范围：IMAP 适配器（UIDVALIDITY + UID 游标、MOVE 扩展，不支持 MOVE 时 COPY + 标记删除 + EXPUNGE 仅限本消息）与企业邮箱 API 适配器接口；BOSS 发件人白名单；先写原件与 `mail_messages` 记录再入队；任务队列接口（默认实现为数据库任务表，可替换为现有 MQ）；消费者（解析、去重、关联、写服务端、事务提交后再移动邮件）；失败重试与 `Failed` 文件夹；`NeedsReview` 人工队列；保留期清理任务；核对任务（方案 8.2 第 5 条全部检查项）。测试用本地 IMAP 测试服务器或 .eml 夹具目录模拟邮箱文件夹，覆盖：重复投递、提交后移动前崩溃、两份附件、非 BOSS 邮件、无法关联、扫描版 PDF、核对发现 INBOX 积压与原件缺失。不做：OCR；删除邮件（只移动）。依赖：A3、F1（服务端接口）；N 提供真实邮件样本（脱敏）后补关联规则。
+目标：方案 8.2 第 1–7 条（Resend 版）。范围：`POST /webhooks/resend`（Svix 签名校验，原始请求体，只接 email.received，按 email_id 幂等写 pending，快速 200）；数据库任务表与消费者（租约领取、取邮件与附件并立即下载、写原件与 sha256、BOSS 发件人白名单、去重、关联、写服务端、失败 3 次转 failed）；保留期清理（默认 30 天）；核对任务（`GET /emails/receiving` 分页对账补漏 + 方案 8.2 第 5 条全部检查）。Resend 访问封装成接口，测试用 fake Resend（含 webhook 重放、签名错误、附件链接过期、列表里有 webhook 没送到的邮件）。不做：OCR；MQ。依赖：A3、F1；N 提供脱敏的真实 BOSS 邮件样本后补关联规则。需要用户提供：Resend API key 与 webhook 签名密钥（只放在服务端环境变量，测试不用真实值）。
 
 ### H1 动作公共层 + 问候 + 求简历
 
