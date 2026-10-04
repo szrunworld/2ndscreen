@@ -6,7 +6,7 @@
 | --- | --- | --- | --- | --- | --- | --- |
 | A | 契约、协议与 API 规范 | ctx_0786c7296951 / monitor-A | monitor-A | 进行 | — | — |
 | B | 只读可行性验证与夹具 | ctx_1b25ee64eab9 / monitor-B（屏幕 monitor-b，BOSS pid 97510） | monitor-B | 进行 | — | — |
-| C | Driver 适配器 | — | — | 未派 | — | — |
+| C | Driver 适配器 | ctx_3dfbecec466d / monitor-C（自建屏幕 monitor-c） | monitor-C | 进行（第 1 阶段；等 A 先提交 Driver 协议） | — | — |
 | D1 | 本地账本 | — | — | 未派 | — | — |
 | D2 | 指令客户端与执行管线 | — | — | 未派 | — | — |
 | E | 观察模块 | — | — | 未派 | — | — |
@@ -28,7 +28,7 @@
 
 | 版本 | 日期 | 变更 | 受影响任务 |
 | --- | --- | --- | --- |
-| — | — | A 尚未交付 | — |
+| 0.1.0（开发中） | 2026-10-04 | A 问询裁决：新增 event kind `conversation_ambiguous`；command 加 `execution_mode: execute\|verify_only`（verify_only 不受上限、不看白名单）；contact_exchange_updated 只报 state（含 unknown），不带号码；workflow_id 对四个流程动作必填；command_result reason 枚举与组合约束；unsupported_presentation 走 heartbeat.last_error；monitor/uv.lock 归 A，后续任务不提交 lock 改动，监督者合并时重新 lock | 全部 |
 
 ## 用户待决事项
 
@@ -37,3 +37,5 @@ Run：run_7d52e82ce7ed。分支 monitor-v1（a12a931，自 szrunworld/ss-runtime
 1. B 阶段占用的是用户日常 BOSS 实例（已移到屏幕 monitor-b）；B 交付后归还窗口。
 2. N 阶段测试账号、候选人与逐项授权方式。
 3. 独立设备模式是否接受"自动登录 + 不启用 FileVault"。
+4. Monitor 打开未读会话会产生已读回执（对外可见），新投递检测是否接受这一点（B 已避免打开未读会话）。
+5. 候选人同意交换后，是否把手机号回传到服务端存储（v1 契约暂不带号码，只报状态）。
