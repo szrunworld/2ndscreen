@@ -3,8 +3,8 @@
 // and a stand-in 2ndscreen that never touches a screen. It checks what the
 // unit tests cannot: the command line exits while the detached worker goes
 // on, control calls answer while the worker is busy, concurrent command
-// lines start one worker, and a worker that dies mid-task leaves the task
-// blocked while nothing proves its processes gone.
+// lines start one worker, and a worker that dies mid-task leaves its task
+// alone until its processes are proven gone.
 
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
@@ -190,44 +190,39 @@ test('concurrent command lines start one worker between them', async () => {
   await until('workers gone', () => (workers(w).length === 0 ? true : undefined), 10_000);
 });
 
-test('a worker killed during a GUI command: the task stays unresolved and is never rerun on a guess', async () => {
+test('a worker killed during a GUI command: the takeover stops that exact command, then pauses the task without rerunning it', async () => {
   const w = world('hang');
   const id: string = (await run(w, '--account', 'hr-zhang')).json.result.taskId;
   const [first] = await until('a worker', () => (workers(w).length ? workers(w) : undefined));
   started.push(first!.pid);
   await until('running', async () => ((await status(w, id)).status === 'running' ? true : undefined));
   const record = () => JSON.parse(readFileSync(join(w.tasks, 'actors', `${first!.pid}-${Date.parse(first!.startedAt)}.json`), 'utf8'));
-  // The stand-in GUI command hangs; it leads its own group (A1 runs commands detached).
-  await until('a command under way', () => (record().commands.length > 0 ? true : undefined));
+  // The stand-in GUI command hangs in a group of its own (A1 runs commands detached); the
+  // runner's spawn report put that exact group in the worker's record.
   const hung = () => spawnSync('/bin/ps', ['-axo', 'pid=,comm='], { encoding: 'utf8' }).stdout.split('\n')
     .map((l) => l.trim().split(/\s+/)).filter((p) => p[1] === fakeCli).map((p) => Number(p[0]));
   const before = await until('the hung command', () => (hung().length ? hung() : undefined));
   started.push(...before);
+  const recorded = await until('its group on record', () => (record().groups.some((g: { pgid: number }) => before.includes(g.pgid)) ? true : undefined));
+  assert.ok(recorded);
+  assert.deepEqual(record().commands, [], 'the announcement ended with the report');
   process.kill(first!.pid, 'SIGKILL');
   await until('worker dead', () => (workers(w).length === 0 ? true : undefined));
   assert.deepEqual(hung(), before, 'its command outlives it');
 
-  // A later command line starts a standby; once the dead owner's lease runs out it takes over
-  // and finds the actor unproven while the command runs.
+  // A later command line starts a standby. Once the dead owner's lease runs out it takes
+  // over, proves the worker gone, stops the recorded command and only then pauses the task.
   w.setMode('down');
   assert.equal((await status(w, id)).status, 'running');
   const resumed = await cli(w, ['resume', id]);
   assert.equal(resumed.code, 0, JSON.stringify(resumed.json));
   const [standby] = await until('a standby worker', () => (workers(w).length ? workers(w) : undefined));
   started.push(standby!.pid);
-  await until('actor_exit_unproven', async () => ((await controlEvents(w, id)).includes('actor_exit_unproven') ? true : undefined), 40_000);
-  assert.equal((await status(w, id)).status, 'running', 'not moved on while its command may still act');
-  assert.deepEqual(hung(), before, 'an unidentified command is waited out, not killed');
-  assert.equal((await controlEvents(w, id)).filter((e) => e === 'worker_started').length, 1, 'no second actor was started');
-
-  // The command ends (here: killed by the test). Its pid was never reported to the worker's
-  // record (A1's runner gives no spawn report), so nothing proves it was the only one: still blocked.
-  for (const pid of before) process.kill(pid, 'SIGKILL');
-  await new Promise((r) => setTimeout(r, 12_000)); // two verifier rounds
+  await until('paused as an orphan', async () => ((await status(w, id)).status === 'paused' ? true : undefined), 45_000);
+  assert.deepEqual(hung(), [], 'the recorded command was stopped');
   const events = await controlEvents(w, id);
-  assert.equal((await status(w, id)).status, 'running');
-  assert.ok(!events.includes('actor_exit_verified'), events.join(','));
-  assert.ok(!events.includes('orphan_recovered'), events.join(','));
+  assert.ok(events.includes('actor_exit_verified'), events.join(','));
+  assert.ok(events.indexOf('actor_exit_verified') < events.indexOf('orphan_recovered'), events.join(','));
   assert.equal(events.filter((e) => e === 'worker_started').length, 1, 'it was not rerun');
   process.kill(standby!.pid, 'SIGTERM');
   await until('workers gone', () => (workers(w).length === 0 ? true : undefined), 10_000);

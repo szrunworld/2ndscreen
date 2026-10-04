@@ -188,7 +188,8 @@ test('with spawn reports, a command becomes an exact group in the write that end
   const groups = new Map<number, 'alive' | 'gone' | 'unknown'>([[3131, 'alive']]);
   const hooks = registry.commandHooks(fakeProbe(new Map(), groups));
   const writes: ActorRecord[] = [];
-  const spawnReport = { pid: 3131, file: '/x/2ndscreen', spawnedAfterMs: 1000, spawnedBeforeMs: 1003 };
+  const at = Date.now() + 5;
+  const spawnReport = { pid: 3131, file: '/x/2ndscreen', spawnedAfterMs: at, spawnedBeforeMs: at + 3 };
   let settle!: () => void;
   // A runner like A1's: spawns synchronously within the call, reports, settles after close.
   const run = registry.wrapRunner((file) => {
@@ -205,37 +206,86 @@ test('with spawn reports, a command becomes an exact group in the write that end
   await done;
   assert.equal(writes[0]!.commands.length, 1, 'announced before the spawn');
   assert.equal(writes[1]!.commands.length, 0, 'the announcement ended with the report');
-  assert.deepEqual(writes[1]!.groups.map((g) => [g.pgid, g.spawnedAfterMs, g.spawnedBeforeMs]), [[3131, 1000, 1003]]);
+  assert.deepEqual(writes[1]!.groups.map((g) => [g.pgid, g.spawnedAfterMs, g.spawnedBeforeMs]), [[3131, at, at + 3]]);
   // Settled, but a descendant still holds the group: kept.
   assert.deepEqual(registry.current.groups.map((g) => g.pgid), [3131]);
   assert.deepEqual(registry.current.commands, []);
   groups.set(3131, 'gone');
   await sleep(1_100);
   assert.deepEqual(registry.current.groups, []);
-  // A report that cannot be written throws, so the runner stops the child instead of losing it.
-  const d = dir();
-  const broken = ActorRegistry.create(d);
-  chmodSync(d, 0o500);
-  try {
-    assert.throws(() => broken.commandHooks().onSpawn(spawnReport));
-  } finally {
-    chmodSync(d, 0o700);
-  }
 });
 
-test('the runner wrapper announces a command while it runs, through success and failure', async () => {
-  const registry = ActorRegistry.create(dir());
+test('an announcement is cleared without a report only when the runner reports spawns and none happened', async () => {
+  // Hooks wired: a runner that settles without reporting a spawn never started a process.
+  const wired = ActorRegistry.create(dir());
+  wired.commandHooks();
   const seen: number[] = [];
-  const run = registry.wrapRunner(async (file) => {
-    seen.push(registry.current.commands.length);
-    if (file === 'bad') throw new Error('failed');
+  const run = wired.wrapRunner(async (file) => {
+    seen.push(wired.current.commands.length);
+    if (file === 'bad') throw new Error('failed before a pid');
     return { code: 0, stdout: '', stderr: '' };
   });
   await run('good', [], { timeoutMs: 1000 });
   await assert.rejects(run('bad', [], { timeoutMs: 1000 }));
   assert.deepEqual(seen, [1, 1]);
-  assert.deepEqual(registry.current.commands, []);
-  assert.deepEqual((JSON.parse(readFileSync(registry.path, 'utf8')) as ActorRecord).commands, []);
+  assert.deepEqual(wired.current.commands, []);
+  assert.deepEqual((JSON.parse(readFileSync(wired.path, 'utf8')) as ActorRecord).commands, []);
+  // Hooks not wired: a settled command may have left processes nobody reported; it stays announced.
+  const blind = ActorRegistry.create(dir());
+  await blind.wrapRunner(async () => ({ code: 0, stdout: '', stderr: '' }))('2ndscreen', [], { timeoutMs: 1000 });
+  assert.equal(blind.current.commands.length, 1);
+  blind.close();
+  assert.equal(blind.current.closedAt, undefined);
+});
+
+test('a spawn report that cannot be recorded keeps the announcement, breaks the record and blocks the verifier', async () => {
+  const d = dir();
+  const registry = ActorRegistry.create(d);
+  const hooks = registry.commandHooks(fakeProbe(new Map(), new Map()));
+  const report = (over: Partial<{ pid: number; file: string; spawnedAfterMs: number; spawnedBeforeMs: number }> = {}) =>
+    ({ pid: 4545, file: '/x/2ndscreen', spawnedAfterMs: Date.now(), spawnedBeforeMs: Date.now() + 2, ...over });
+  // A runner like A1's: the report fails (the record cannot be written for a moment), so it kills the child and rejects.
+  const run = registry.wrapRunner((file) => {
+    chmodSync(d, 0o500);
+    try {
+      hooks.onSpawn(report({ file }));
+    } catch (error) {
+      return Promise.reject(error);
+    } finally {
+      chmodSync(d, 0o700);
+    }
+    return Promise.resolve({ code: 0, stdout: '', stderr: '' });
+  });
+  await assert.rejects(run('/x/2ndscreen', [], { timeoutMs: 1000 }), /cannot record/);
+  // Writes work again, but the only evidence is kept and nothing more is started.
+  const onDisk = JSON.parse(readFileSync(registry.path, 'utf8')) as ActorRecord;
+  assert.equal(onDisk.commands.length, 1);
+  assert.deepEqual(onDisk.groups, []);
+  assert.ok(registry.failure);
+  await assert.rejects(run('/x/2ndscreen', [], { timeoutMs: 1000 }), /cannot be kept/);
+  assert.equal((JSON.parse(readFileSync(registry.path, 'utf8')) as ActorRecord).commands.length, 1);
+  // A later daemon cannot prove this worker stopped.
+  const record = JSON.parse(readFileSync(registry.path, 'utf8')) as ActorRecord;
+  const verdict = await verifyWorkerStopped(d, { ownerPid: record.pid, processStartedAt: record.startedAt }, { probe: fakeProbe(new Map(), new Map()) });
+  assert.equal(verdict.stopped, false);
+});
+
+test('spawn reports must match the announced command', async () => {
+  for (const bad of [{ file: '/other' }, { pid: 1 }, { spawnedAfterMs: 0 }, { spawnedBeforeMs: -1 }]) {
+    const registry = ActorRegistry.create(dir());
+    const hooks = registry.commandHooks(fakeProbe(new Map(), new Map()));
+    const run = registry.wrapRunner((file) => {
+      const now = Date.now();
+      hooks.onSpawn({ pid: 4646, file, spawnedAfterMs: now, spawnedBeforeMs: now + 1, ...bad });
+      return Promise.resolve({ code: 0, stdout: '', stderr: '' });
+    });
+    await assert.rejects(run('/x/2ndscreen', [], { timeoutMs: 1000 }), /does not match/, JSON.stringify(bad));
+    assert.equal(registry.current.commands.length, 1, 'the announcement stays');
+    assert.ok(registry.failure);
+  }
+  // Outside any announced command.
+  const registry = ActorRegistry.create(dir());
+  assert.throws(() => registry.commandHooks().onSpawn({ pid: 4747, file: 'x', spawnedAfterMs: 1, spawnedBeforeMs: 2 }), /outside an announced command/);
 });
 
 test('closed records are pruned after a while; findRecord matches pid and exact start', () => {

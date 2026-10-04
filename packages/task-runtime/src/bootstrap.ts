@@ -341,8 +341,9 @@ export async function startWorker(config: RuntimeConfig, options: WorkerOptions 
       cli: config.cli,
       socket: config.socket,
       ...(config.app ? { app: config.app } : {}),
-      // Every 2ndscreen command leads its own group: announced in the actor record while it runs.
-      run: registry.wrapRunner(createCommandRunner()),
+      // Every 2ndscreen command leads a group of its own: announced in the actor record before it
+      // starts, then recorded as that exact group when the runner reports the spawn.
+      run: registry.wrapRunner(createCommandRunner(registry.commandHooks())),
       screenshotDir,
     });
     const hub = createTelemetryHub();

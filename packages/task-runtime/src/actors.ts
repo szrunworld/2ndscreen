@@ -31,6 +31,7 @@ import { execFileSync } from 'node:child_process';
 import { closeSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import type { CommandRunner, LineProcessSpawner } from './contracts.ts';
+import type { CommandSpawn } from './adapters/second-screen.ts';
 import { processIdentity, processStartTime, type ActorExitVerdict, type WorkerRecord } from './daemon.ts';
 
 export const ACTOR_RECORD_VERSION = 1;
@@ -46,12 +47,10 @@ export interface ActorGroup {
   file: string;
 }
 
-/** A command spawn as a CommandRunner reports it. */
-export interface CommandSpawn {
-  pid: number;
-  file: string;
-  spawnedAfterMs: number;
-  spawnedBeforeMs: number;
+/** A command under way: announced, recorded as a group, or reported but not recorded. */
+interface CommandCall {
+  command: ActorCommand;
+  state: 'announced' | 'recorded' | 'unrecorded';
 }
 
 export interface ActorCommand {
@@ -190,7 +189,9 @@ export class ActorRegistry {
   private broken: Error | undefined;
   private commandIds = 0;
   /** The command whose runner call is on the stack right now. */
-  private announced: ActorCommand | undefined;
+  private inCall: CommandCall | undefined;
+  /** Whether the command runner reports its spawns through commandHooks(). */
+  private hooksWired = false;
 
   private constructor(path: string, record: ActorRecord) {
     this.path = path;
@@ -257,47 +258,71 @@ export class ActorRegistry {
 
   /**
    * A command runner that announces each command in the record before
-   * running it. With the runner's spawn reports wired (commandHooks), the
-   * announcement is replaced by the command's group in the same write;
-   * without them it stays until the command settles, and a crash meanwhile
-   * leaves the worker unproven.
+   * running it. It is meant for a runner wired with commandHooks(): a
+   * reported spawn replaces the announcement with the command's exact group
+   * in one write. The announcement is cleared without a report only when
+   * the hooks are wired, the runner settled, and no spawn was reported —
+   * the runner reports every spawn that got a pid, so none happened.
+   * Otherwise (hooks not wired, or a report that could not be recorded) it
+   * stays, and a crash leaves the worker unproven.
    */
   wrapRunner(run: CommandRunner, now: () => number = Date.now): CommandRunner {
     return async (file, args, options) => {
       if (this.broken) throw new Error(`not running ${file}: the actor record cannot be kept (${this.broken.message})`);
       const command: ActorCommand = { id: ++this.commandIds, file, startedAfterMs: now() };
       this.update((r) => ({ ...r, commands: [...r.commands, command] }));
+      const call: CommandCall = { command, state: 'announced' };
       // The runner spawns synchronously within this call: a spawn report now belongs to this command.
-      this.announced = command;
+      this.inCall = call;
       let running: ReturnType<CommandRunner>;
       try {
         running = run(file, args, options);
       } finally {
-        this.announced = undefined;
+        this.inCall = undefined;
       }
       try {
         return await running;
       } finally {
-        // Settled: its child has exited (and was recorded as a group if reported).
-        this.tryUpdate((r) => ({ ...r, commands: r.commands.filter((c) => c.id !== command.id) }));
+        if (call.state === 'announced' && this.hooksWired && !this.broken)
+          this.tryUpdate((r) => ({ ...r, commands: r.commands.filter((c) => c.id !== command.id) }));
       }
     };
   }
 
   /**
-   * Callbacks for a CommandRunner that reports its spawns. onSpawn records
-   * the command's group, ending its announcement in the same write, and
-   * throws when that cannot be written (the runner then stops the child).
-   * After onSettled the group stays on record until it has no members.
+   * Callbacks for a CommandRunner that reports its spawns. onSpawn checks
+   * the report against the command announced by wrapRunner and records its
+   * exact group, ending the announcement in the same write. A report that
+   * does not match, or cannot be written, marks the record broken (no more
+   * spawns, the announcement stays) and throws, so the runner stops the
+   * child. After onSettled the group stays on record until it is empty.
    */
   commandHooks(probe: ProcessProbe = systemProbe): { onSpawn(spawn: CommandSpawn): void; onSettled(spawn: CommandSpawn): void } {
+    this.hooksWired = true;
     return {
       onSpawn: (spawn) => {
-        const announced = this.announced;
+        const call = this.inCall;
+        const fail = (message: string): never => {
+          if (call) call.state = 'unrecorded';
+          const error = new Error(message);
+          this.broken ??= error;
+          throw error;
+        };
+        if (!call || call.state !== 'announced') fail(`a spawn of ${spawn?.file} was reported outside an announced command`);
+        if (!pidLike(spawn.pid) || !Number.isSafeInteger(spawn.spawnedAfterMs) || !Number.isSafeInteger(spawn.spawnedBeforeMs)
+          || spawn.spawnedAfterMs > spawn.spawnedBeforeMs || spawn.spawnedAfterMs < call!.command.startedAfterMs || spawn.file !== call!.command.file)
+          fail(`the spawn report of ${call!.command.file} does not match its announcement`);
         const group: ActorGroup = { pgid: spawn.pid, spawnedAfterMs: spawn.spawnedAfterMs, spawnedBeforeMs: spawn.spawnedBeforeMs, file: spawn.file };
-        this.update((r) => ({ ...r, commands: r.commands.filter((c) => c.id !== announced?.id), groups: [...r.groups, group] }));
+        try {
+          this.update((r) => ({ ...r, commands: r.commands.filter((c) => c.id !== call!.command.id), groups: [...r.groups, group] }));
+        } catch (error) {
+          fail(`cannot record ${spawn.file} (pid ${spawn.pid}): ${error instanceof Error ? error.message : String(error)}`);
+        }
+        call!.state = 'recorded';
       },
       onSettled: (spawn) => {
+        const known = () => this.record.groups.some((g) => g.pgid === spawn.pid && g.spawnedAfterMs === spawn.spawnedAfterMs);
+        if (!known()) return; // never recorded: nothing of ours to clear
         const drop = () => {
           if (probe.group(spawn.pid) !== 'gone') return false;
           this.tryUpdate((r) => ({ ...r, groups: r.groups.filter((g) => !(g.pgid === spawn.pid && g.spawnedAfterMs === spawn.spawnedAfterMs)) }));
