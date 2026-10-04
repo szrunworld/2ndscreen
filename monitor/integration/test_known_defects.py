@@ -44,16 +44,11 @@ def test_heartbeat_4xx_does_not_crash_runtime(w: World):
     assert m.runtime.last_error is not None
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="等待 D2c（入口分发）：`python -m monitor install|mode` 还不能用（__main__ 的 --server-url 等为必填），"
-    "目前入口是 python -m monitor.install；runbook 两种写法都给出",
-)
 def test_monitor_main_dispatches_install_subcommand(monkeypatch):
     import monitor.install.cli as install_cli
     from monitor.__main__ import main
 
     seen: list[list[str]] = []
     monkeypatch.setattr(install_cli, "main", lambda argv=None, env=None: seen.append(list(argv or [])) or 0)
-    assert main(["install", "--mode", "local"]) == 0  # 现在：argparse 因缺 --server-url 等退出（SystemExit 2）
+    assert main(["install", "--mode", "local"]) == 0  # D2c 起转给 monitor.install.cli
     assert seen and seen[0][-2:] == ["--mode", "local"]
