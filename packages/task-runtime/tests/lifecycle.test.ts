@@ -83,6 +83,8 @@ function world(mode: 'hang' | 'down') {
     FAKE_MODE_FILE: modeFile,
     SECONDSCREEN_CLI: fakeCli,
     SECONDSCREEN_SOCKET: join(root, 's.sock'),
+    // Never the real app, even when the runtime under test sits inside one: no side instance may start.
+    SECONDSCREEN_APP: join(root, 'no-such.app'),
     SECONDSCREEN_TASKS_DIR: join(root, 'tasks'),
     SECONDSCREEN_WORKER_IDLE_MS: '120000',
   };

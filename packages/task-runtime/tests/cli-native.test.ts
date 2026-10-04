@@ -245,8 +245,9 @@ test('MCP task tools run the same CLI and refuse loose arguments', { skip }, asy
 
 // The whole path with nothing synthetic but the ledger's folder: MCP → this
 // CLI → execv into the installed runtime's own node → a detached worker.
-// The socket names no running 2ndscreen and no app is given, so the worker
-// can only report that the desktop is unavailable; nothing touches a screen.
+// The socket names no running 2ndscreen and the app named cannot start, so
+// the worker can only report that the desktop is unavailable; nothing
+// touches a screen.
 const INSTALLED = process.env.TASK_RUNTIME_UNDER_TEST;
 const skipInstalled = skip || (INSTALLED ? false : 'set TASK_RUNTIME_UNDER_TEST to an installed runtime to run');
 
@@ -257,7 +258,8 @@ test('MCP runs a task through the installed runtime and its background worker', 
     SECONDSCREEN_NODE: undefined,
     SECONDSCREEN_TASKS_DIR: join(root, 'tasks'),
     SECONDSCREEN_SOCKET: join(root, 'none.sock'),
-    SECONDSCREEN_APP: undefined,
+    // Never the real app, even when the runtime under test sits inside one: no side instance may start.
+    SECONDSCREEN_APP: join(root, 'no-such.app'),
   };
   const call = (id: number, name: string, args: object) => ({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } });
   const text = (reply: Record<string, any>) => JSON.parse(reply.result.content[0].text.trim());
