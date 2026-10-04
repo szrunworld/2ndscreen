@@ -45,8 +45,8 @@
 | `WindowGeometry` | pid、windowId、进程启动时间、bundle、frame、contentFrame、scale、displayId |
 | `Observation` | `snapshotId`（每次读取唯一）、窗口几何、可选元素、截图（含 `covers`）、文字、`pageClass` |
 | `Locator` | element（role/label/labelPattern，或绑定快照的 index）、relative、template、ocr |
-| `Action` / `ActionRequest` | click/type/key/scroll，每个动作必须声明 `effect`（read/navigation/artifact/external-submit）；使用元素 index 时必须带 `snapshotId` |
-| `ActionResult` | ok、no_effect（事件送达但页面未变，视为失败）、failed、stale_snapshot、unknown（结果不可知，external-submit 不得重发）；记录路由、坐标、前后快照、焦点是否变化 |
+| `Action` / `ActionRequest` | click/type/key/scroll，每个动作必须声明 `effect`（read/navigation/artifact/external-submit）；使用元素 index 时必须带 `snapshotId`。click 可选 `method: 'accessibility'`（见下文“显式辅助功能按压”） |
+| `ActionResult` | ok、no_effect（事件送达但页面未变，视为失败）、failed、stale_snapshot、unknown（结果不可知，external-submit 不得重发）；记录路由（`InputRoute`：element/coordinate/keyboard/accessibility）、坐标、前后快照、焦点是否变化 |
 | `Condition` / `WaitSpec` / `CheckResult` | element/text/page/window/file/all/any，嵌套 ≤4 层；等待 1 ms – 120 s，轮询 50 ms – 5 s（`WAIT_LIMITS`） |
 | `Budget` / `DEFAULT_BUDGET` / `checkBudget` | 每步本地恢复 2 次、每次修复 6 轮、每候选人 2 次模型修复、整任务调用数/token/墙钟上限 |
 | `Usage` / `TokenCount` / `addTokens` | ui/repair/analysis 调用分开计；服务不报 token 时为 `'unknown'`，不得记 0，任一项 unknown 则合计为 unknown |
@@ -58,6 +58,16 @@
 | `leaseScopeKey` / `leaseScopesOverlap` | 租约 scope 为 `<bundleId>:<accountKey>`，账号未知时为 `<bundleId>:*`；同一 bundleId 的任意两个 scope 都视为重叠（`app:*` 与 `app:acct1`、`app:acct1` 与 `app:acct2` 均冲突），因为单实例应用同一时刻只能由一个会话操作 |
 | `nextProcedureState` | 晋级与降级的唯一规则 |
 | `ExplorationRequest` / `BridgeEvent` / `parseBridgeEvent` | 见 Bridge 协议 |
+
+### 显式辅助功能按压（click `method: 'accessibility'`）
+
+默认点击不变：不带 `method` 时由适配器选路（Web 内容走事件，原生可按压控件可能走 AXPress，路由报 element/coordinate）。只有逐个动作显式选择 `method: 'accessibility'` 时，才对**一个元素**执行 AXPress，并且只做这一件事：不移动指针、不改焦点、不发按键或事件，失败即失败，**不回退**。
+
+- 校验（`validateAction`）：`method` 只能是 `'accessibility'`；目标必须是 `kind: 'element'`（index 绑定快照，或由 Session 在新读取上解析为唯一 index 的 role/label）；不得有 `button: 'right'`、`count: 2`、`modifiers`；relative/template/ocr 目标一律拒绝。
+- Session 原样传递 `method`（语义定位器解析后仍保留）。
+- SecondScreenAdapter：发送 `2ndscreen ax-press --screen … --pid … --window-id … --index N`（独立动词，不是 `click` 的选项：不认识它的旧 CLI 以 unknown command 退出，不会发出任何输入）。CLI 回报路由必须是 `ax.press.explicit`，结果 `route: 'accessibility'`；回报其他路由时结果为 `unknown` + `capability_missing`。旧 CLI（unknown command）、旧 side instance（bad request，无法解码）、元素不声明 AXPress 都归为 `capability_missing`。
+- 原生：`InputAction.Kind.accessibilityPress` 是独立的线上枚举值，旧 app 解码即失败，在任何输入之前拒绝。InputEngine 只接受上一次 `window.state` 缓存快照中的 index（不重新读取、不按文字解析），元素必须声明 AXPress 且 AXPress 成功，路由 `ax.press.explicit`。
+- 当前唯一使用者：BOSS 职位筛选箭头（P0 证实事件点击无效、AXPress 有效）。
 
 ## 模块文件与工厂签名
 
