@@ -327,8 +327,8 @@ def test_migrate_from_empty_and_is_idempotent(tmp_path):
 def test_migrate_upgrades_previous_version(tmp_path):
     conn = sqlite3.connect(tmp_path / "s.db", isolation_level=None)
     extra = "CREATE TABLE future_table (id INTEGER PRIMARY KEY);"
-    assert migrate(conn, MIGRATIONS) == 1
-    assert migrate(conn, [*MIGRATIONS, extra]) == 2
+    assert migrate(conn, MIGRATIONS) == len(MIGRATIONS)
+    assert migrate(conn, [*MIGRATIONS, extra]) == len(MIGRATIONS) + 1
     assert conn.execute("SELECT count(*) FROM future_table").fetchone()[0] == 0
 
 

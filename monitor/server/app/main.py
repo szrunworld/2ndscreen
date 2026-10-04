@@ -38,6 +38,11 @@ if TYPE_CHECKING:
     from .commands import CommandNotifier, CommandService
     from .devices import DeviceService
     from .events import EventBus, EventService
+    from .cases import CaseService
+    from .manual import ManualService
+    from .orchestrator import Orchestrator
+    from .overview import OverviewService
+    from .policy import PolicyService
 
 API_PREFIX = "/api/v1"
 PROBLEM_MEDIA_TYPE = "application/problem+json"
@@ -386,6 +391,12 @@ class AppContext:
     policy_version: Callable[[str], int | None] = field(default=lambda account_id: None)
     login_qr_active: Callable[[str], bool] = field(default=lambda device_id: False)
     idempotency_locks: _KeyedLocks = field(default_factory=_KeyedLocks)
+    # F2：招聘流程、策略、编排、人工处理、总览（create_app 中装配）
+    policies: PolicyService = field(init=False)
+    cases: CaseService = field(init=False)
+    orchestrator: Orchestrator = field(init=False)
+    manual: ManualService = field(init=False)
+    overview: OverviewService = field(init=False)
 
 
 Ctx = Annotated[AppContext, Depends(get_ctx)]
@@ -425,6 +436,16 @@ def create_app(
     ctx.events = events.EventService(ctx)
     ctx.commands = commands.CommandService(ctx)
     ctx.devices = devices.DeviceService(ctx)
+    # F2 装配：策略 → 流程 → 编排（订阅事件总线）→ 人工处理 → 总览
+    from . import cases, manual, orchestrator, overview, policy
+
+    ctx.policies = policy.PolicyService(ctx)
+    ctx.cases = cases.CaseService(ctx)
+    ctx.orchestrator = orchestrator.Orchestrator(ctx)
+    ctx.manual = manual.ManualService(ctx)
+    ctx.overview = overview.OverviewService(ctx)
+    if policy_version is None:
+        ctx.policy_version = ctx.policies.version
 
     app = FastAPI(
         title="招聘 Monitor 服务端 API",
@@ -436,6 +457,12 @@ def create_app(
     app.include_router(devices.router, prefix=API_PREFIX)
     app.include_router(commands.router, prefix=API_PREFIX)
     app.include_router(events.router, prefix=API_PREFIX)
+    app.include_router(cases.router, prefix=API_PREFIX)
+    app.include_router(manual.router, prefix=API_PREFIX)
+    app.include_router(policy.router, prefix=API_PREFIX)
+    app.include_router(overview.router, prefix=API_PREFIX)
+    # 应用启动（uvicorn 的 lifespan）时开启编排的后台定时推进；测试不进入 lifespan，直接调用 tick()
+    app.router.lifespan_context = orchestrator.with_background_tick(ctx.orchestrator, app.router.lifespan_context)
     app.openapi = lambda: _cached_openapi(app)  # type: ignore[method-assign]
     return app
 

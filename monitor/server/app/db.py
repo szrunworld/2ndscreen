@@ -377,6 +377,61 @@ MIGRATIONS: list[str] = [
         PRIMARY KEY (principal, method, path, key)
     );
     """,
+    # v2：F2 招聘流程、时间线、策略、自动流程指令登记、简历关联摘要
+    """
+    CREATE TABLE recruitment_cases (
+        seq                    INTEGER PRIMARY KEY AUTOINCREMENT,
+        case_id                TEXT NOT NULL UNIQUE,
+        account_id             TEXT NOT NULL,
+        candidate_name         TEXT NOT NULL,
+        job_title              TEXT NOT NULL,
+        conversation_hints_json TEXT NOT NULL,
+        stage                  TEXT NOT NULL,
+        needs_human_reason     TEXT,
+        contact_status         TEXT NOT NULL DEFAULT 'not_requested',
+        next_action            TEXT,
+        next_depends_on        TEXT,
+        blocked_reason         TEXT,
+        resume_requested_at    TEXT,
+        created_at             TEXT NOT NULL,
+        updated_at             TEXT NOT NULL,
+        UNIQUE (account_id, candidate_name, job_title)
+    );
+    CREATE INDEX recruitment_cases_account ON recruitment_cases (account_id, seq);
+    CREATE INDEX recruitment_cases_next ON recruitment_cases (next_action);
+    CREATE TABLE case_timeline (
+        seq        INTEGER PRIMARY KEY AUTOINCREMENT,
+        case_id    TEXT NOT NULL,
+        at         TEXT NOT NULL,
+        type       TEXT NOT NULL,
+        ref_id     TEXT NOT NULL,
+        stage_from TEXT,
+        stage_to   TEXT,
+        summary    TEXT NOT NULL
+    );
+    CREATE INDEX case_timeline_case ON case_timeline (case_id, seq);
+    CREATE INDEX case_timeline_at ON case_timeline (type, at);
+    CREATE TABLE case_commands (
+        command_id TEXT PRIMARY KEY,
+        case_id    TEXT NOT NULL,
+        origin     TEXT NOT NULL CHECK (origin IN ('auto', 'manual', 'recheck')),
+        created_at TEXT NOT NULL
+    );
+    CREATE INDEX case_commands_case ON case_commands (case_id);
+    CREATE TABLE case_resume_links (
+        doc_id    TEXT PRIMARY KEY,
+        case_id   TEXT NOT NULL,
+        linked_at TEXT NOT NULL,
+        parsed_at TEXT
+    );
+    CREATE INDEX case_resume_links_case ON case_resume_links (case_id);
+    CREATE TABLE policies (
+        account_id     TEXT PRIMARY KEY,
+        policy_version INTEGER NOT NULL,
+        policy_json    TEXT NOT NULL,
+        updated_at     TEXT NOT NULL
+    );
+    """,
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)
