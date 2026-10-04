@@ -9,6 +9,8 @@ import UniformTypeIdentifiers
 /// Screenshots come back as image content, downscaled for the model.
 enum MCPServer {
     static let protocolVersion = "2025-06-18"
+    /// The version agreed in initialize; resource_link content needs 2025-06-18 or later.
+    private static var negotiatedVersion = protocolVersion
 
     static func run() -> Never {
         while let line = readLine(strippingNewline: true) {
@@ -33,9 +35,10 @@ enum MCPServer {
         switch method {
         case "initialize":
             let requested = params["protocolVersion"] as? String
+            negotiatedVersion = requested ?? protocolVersion
             return result(id, [
-                "protocolVersion": requested ?? protocolVersion,
-                "capabilities": ["tools": [String: Any]()],
+                "protocolVersion": negotiatedVersion,
+                "capabilities": ["tools": [String: Any](), "resources": [String: Any]()],
                 "serverInfo": ["name": "2ndscreen", "version": "0.1.0"],
                 "instructions": """
                     Private virtual screens for testing macOS apps without touching the user's \
@@ -43,11 +46,29 @@ enum MCPServer {
                     state or screenshot, act with click/type/key/scroll/drag, verify, then quit the app and \
                     destroy the screen. Only act on apps you launched. \
                     The task_* tools run whole skill tasks (such as boss.collect-resumes) in the \
-                    background through the bundled task runtime; they are the same as `2ndscreen task`.
+                    background through the bundled task runtime; they are the same as `2ndscreen task`. \
+                    Their results link the task as 2ndscreen://tasks/TASK_ID (its status) and \
+                    2ndscreen://tasks/TASK_ID/artifacts (its saved files); read those with resources/read.
                     """,
             ])
         case "ping":
             return result(id, [:])
+        case "resources/list":
+            // Tasks are not enumerated; each task_* result links its own.
+            return result(id, ["resources": [[String: Any]]()])
+        case "resources/templates/list":
+            return result(id, ["resourceTemplates": TaskResource.templates])
+        case "resources/read":
+            guard let uri = params["uri"] as? String, let resource = TaskResource(uri: uri) else {
+                return failure(id, code: -32602, "unknown resource: expected 2ndscreen://tasks/TASK_ID or 2ndscreen://tasks/TASK_ID/artifacts")
+            }
+            switch resource.read(runSelf) {
+            case .success(let contents):
+                return result(id, ["contents": [contents]])
+            case .failure(let problem):
+                return ["jsonrpc": "2.0", "id": id,
+                        "error": ["code": problem.code, "message": problem.message, "data": problem.data]]
+            }
         case "tools/list":
             return result(id, ["tools": tools.map(\.definition)])
         case "tools/call":
@@ -347,12 +368,15 @@ enum MCPServer {
         if status == 0, let path = tool.image?(arguments), let image = imageContent(path) {
             content.append(image)
         }
+        if status == 0, let taskID = TaskResource.taskID(tool: tool.name, arguments: arguments, output: output) {
+            content += TaskResource.links(taskID, asResourceLinks: negotiatedVersion >= "2025-06-18")
+        }
         return ["content": content, "isError": status != 0]
     }
 
     /// Run this executable with `words` and capture its output.
     /// `closeInput` keeps the child off this server's stdin, which carries the protocol.
-    private static func runSelf(_ words: [String], closeInput: Bool = false) -> (Int32, String) {
+    static func runSelf(_ words: [String], closeInput: Bool = false) -> (Int32, String) {
         let process = Process()
         process.executableURL = Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0])
         process.arguments = words
@@ -518,5 +542,125 @@ extension MCPServer {
         let double = number.doubleValue
         guard double.isFinite, double.rounded() == double, abs(double) <= 9_007_199_254_740_991 else { return nil }
         return number.int64Value
+    }
+}
+
+// MARK: Task resources
+
+/// A task as an MCP resource, read through the same `2ndscreen task` commands
+/// as the tools: 2ndscreen://tasks/TASK_ID is `task status`, and
+/// 2ndscreen://tasks/TASK_ID/artifacts is `task artifacts`. Nothing else can
+/// be named: no files, no other commands, and reading writes nothing.
+struct TaskResource {
+    enum Kind { case status, artifacts }
+
+    let taskID: String
+    let kind: Kind
+
+    /// The runtime's own task ID rule (packages/task-runtime/src/cli.ts):
+    /// 1-128 ASCII letters, digits, '.', '_', ':' or '-', starting with a letter
+    /// or digit. Checked character by character over the whole string, so no
+    /// trailing newline or other character can slip past an anchor.
+    static func validID(_ id: String) -> Bool {
+        let scalars = Array(id.unicodeScalars)
+        guard (1...128).contains(scalars.count) else { return false }
+        func alphanumeric(_ c: Unicode.Scalar) -> Bool {
+            ("a"..."z").contains(c) || ("A"..."Z").contains(c) || ("0"..."9").contains(c)
+        }
+        return alphanumeric(scalars[0]) && scalars.allSatisfy { alphanumeric($0) || ".:_-".unicodeScalars.contains($0) }
+    }
+
+    static func uri(_ id: String, _ kind: Kind) -> String {
+        "2ndscreen://tasks/\(id)" + (kind == .artifacts ? "/artifacts" : "")
+    }
+
+    /// Exactly 2ndscreen://tasks/ID or 2ndscreen://tasks/ID/artifacts: no
+    /// other host, path, query, fragment, user, port or percent-encoding.
+    init?(uri: String) {
+        let prefix = "2ndscreen://tasks/"
+        guard uri.utf8.count <= 256, uri.hasPrefix(prefix) else { return nil }
+        let rest = String(uri.dropFirst(prefix.count))
+        let parts = rest.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        switch parts.count {
+        case 1: kind = .status
+        case 2 where parts[1] == "artifacts": kind = .artifacts
+        default: return nil
+        }
+        guard Self.validID(parts[0]) else { return nil }
+        taskID = parts[0]
+    }
+
+    struct Problem: Error {
+        let code: Int
+        let message: String
+        let data: [String: Any]
+    }
+
+    /// The current status report or artifact index, as the CLI prints its `result`.
+    func read(_ runSelf: ([String], Bool) -> (Int32, String)) -> Result<[String: Any], Problem> {
+        let uri = Self.uri(taskID, kind)
+        let (status, output) = runSelf(["task", kind == .status ? "status" : "artifacts", taskID], true)
+        guard let line = output.split(separator: "\n").last.map(String.init),
+              let data = line.data(using: .utf8),
+              let reply = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return .failure(Problem(code: -32603, message: "the task runtime gave no readable answer", data: ["uri": uri]))
+        }
+        guard status == 0, reply["ok"] as? Bool == true, let value = reply["result"] else {
+            let error = reply["error"] as? [String: Any] ?? [:]
+            let code = error["code"] as? String ?? "internal"
+            // MCP's resource-not-found code for a task the ledger does not have.
+            return .failure(Problem(code: code == "not_found" ? -32002 : -32603,
+                                    message: error["message"] as? String ?? "the task runtime refused",
+                                    data: ["uri": uri, "error": error]))
+        }
+        guard let text = try? JSONSerialization.data(withJSONObject: value, options: [.withoutEscapingSlashes, .sortedKeys]) else {
+            return .failure(Problem(code: -32603, message: "the task runtime's answer is not JSON", data: ["uri": uri]))
+        }
+        return .success(["uri": uri, "mimeType": "application/json", "text": String(decoding: text, as: UTF8.self)])
+    }
+
+    static let templates: [[String: Any]] = [
+        ["uriTemplate": "2ndscreen://tasks/{taskId}", "name": "task",
+         "title": "Task status", "mimeType": "application/json",
+         "description": "A task's current status report, as task_status returns it"],
+        ["uriTemplate": "2ndscreen://tasks/{taskId}/artifacts", "name": "task-artifacts",
+         "title": "Task artifacts", "mimeType": "application/json",
+         "description": "The artifacts a task has recorded, as task_artifacts returns them"],
+    ]
+
+    /// The task a successful task_* call is about: from the runtime's own answer
+    /// (run's taskId, a status or record's id) or, for artifacts, the argument it was given.
+    static func taskID(tool: String, arguments: [String: Any], output: String) -> String? {
+        guard tool.hasPrefix("task_"), tool != "task_inspect_procedure",
+              let line = output.split(separator: "\n").last.map(String.init),
+              let data = line.data(using: .utf8),
+              let reply = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              reply["ok"] as? Bool == true
+        else { return nil }
+        let result = reply["result"] as? [String: Any]
+        let candidate: String?
+        switch tool {
+        case "task_run": candidate = result?["taskId"] as? String
+        case "task_status": candidate = (result?["task"] as? [String: Any])?["id"] as? String
+        case "task_artifacts": candidate = arguments["task_id"] as? String
+        default: candidate = result?["id"] as? String
+        }
+        return candidate.flatMap { validID($0) ? $0 : nil }
+    }
+
+    /// resource_link items on 2025-06-18 and later; before that, one text line naming the URIs.
+    static func links(_ id: String, asResourceLinks: Bool) -> [[String: Any]] {
+        let status = uri(id, .status)
+        let artifacts = uri(id, .artifacts)
+        guard asResourceLinks else {
+            return [["type": "text", "text": "resources: \(status) \(artifacts)"]]
+        }
+        return [
+            ["type": "resource_link", "uri": status, "name": "task \(id)", "title": "Task status",
+             "mimeType": "application/json", "description": "Current status report; read with resources/read"],
+            ["type": "resource_link", "uri": artifacts, "name": "task \(id) artifacts", "title": "Task artifacts",
+             "mimeType": "application/json", "description": "Recorded artifacts and their completeness; read with resources/read"],
+        ]
     }
 }

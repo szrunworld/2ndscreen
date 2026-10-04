@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { chmod, mkdir, mkdtemp, readdir, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -148,6 +148,24 @@ test('task hands its words to the runtime verbatim, with no shell', { skip }, as
   assert.deepEqual(JSON.parse(bundled.stdout).argv, ['status', 'task-1']);
 });
 
+/** The one task the synthetic control knows: a status report and its artifact index. */
+const SYNTH_TASK = {
+  report: {
+    task: {
+      id: 'task-7', skillId: 'boss.collect-resumes', skillVersion: '1.0.0', status: 'partial', terminationReason: 'source_exhausted',
+      input: { job: '前端工程师', requestedCount: 2, outputDir: '/tmp/out', source: 'conversations', captureMode: 'available' },
+      counts: { requested: 2, browsed: 3, committed: 1, unavailable: 1, failed: 0, ambiguous: 0, diagnostic: 1 },
+      account: { platform: 'boss', accountKey: 'hr-zhang', binding: 'explicit' },
+      createdAt: '2026-10-04T08:00:00.000Z', updatedAt: '2026-10-04T08:10:00.000Z',
+    },
+    outputPath: '/tmp/out/task-7',
+  },
+  artifacts: [
+    { id: 'a1', taskId: 'task-7', itemId: 'i1', kind: 'captured_image', path: '/tmp/out/task-7/candidates/c1/captured/resume.png', sha256: 'a'.repeat(64), bytes: 1234, completeness: 'complete', createdAt: '2026-10-04T08:05:00.000Z' },
+    { id: 'a2', taskId: 'task-7', itemId: 'i2', kind: 'diagnostic', path: '/tmp/out/task-7/candidates/c2/captured/pages/1.png', sha256: 'b'.repeat(64), bytes: 99, completeness: 'partial_capture', createdAt: '2026-10-04T08:07:00.000Z' },
+  ],
+};
+
 /** A runtime folder whose entry runs the real runCli over a synthetic TaskControl. */
 async function synthRuntime(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'a7-synth-runtime-'));
@@ -156,13 +174,18 @@ async function synthRuntime(): Promise<string> {
   await writeFile(join(dir, 'synthetic.mts'), `
 import { runCli } from ${JSON.stringify(join(PACKAGE, 'src/cli.ts'))};
 import { RuntimeError, type TaskControl } from ${JSON.stringify(join(PACKAGE, 'src/contracts.ts'))};
-// Synthetic control for this smoke only: it records, it runs nothing.
+import { appendFileSync } from 'node:fs';
+// Synthetic control for this smoke only: it records, it runs nothing. task-7 is the one known task.
+if (process.env.SYNTH_LOG) appendFileSync(process.env.SYNTH_LOG, JSON.stringify(process.argv.slice(2)) + '\\n');
+// A runtime that says ok but fails: the exit status must decide.
+if (process.argv[3] === 'task-exit') { process.stdout.write(JSON.stringify({ ok: true, command: process.argv[2], result: { task: { id: 'task-exit' } } }) + '\\n'); process.exit(3); }
 const none = async (): Promise<never> => { throw new RuntimeError('not_found', 'none'); };
+const known = ${JSON.stringify(SYNTH_TASK)};
 const control = {
   submit: async (skillId: string, input: unknown) => ({ taskId: 'synthetic-1', echo: { skillId, input } }),
-  status: async (id: string) => { throw new RuntimeError('not_found', 'no task ' + id); },
+  status: async (id: string) => { if (id === known.report.task.id) return known.report; throw new RuntimeError('not_found', 'no task ' + id); },
   pause: none, resume: none, cancel: none,
-  artifacts: async () => [],
+  artifacts: async (id: string) => { if (id === known.report.task.id) return known.artifacts; throw new RuntimeError('not_found', 'no task ' + id); },
   inspectProcedure: async () => undefined,
 } as unknown as TaskControl;
 process.exitCode = await runCli(process.argv.slice(2), { stdout: (l) => process.stdout.write(l + '\\n'), stderr: (l) => process.stderr.write(l + '\\n') }, control);
@@ -286,6 +309,18 @@ test('MCP runs a task through the installed runtime and its background worker', 
   assert.equal(task.status, 'cancelled');
   const [artifacts] = await mcp([call(4, 'task_artifacts', { task_id: taskId })], env);
   assert.deepEqual(text(artifacts!).result, []);
+  // The linked resources read the same ledger.
+  assert.deepEqual(artifacts!.result.content.slice(1).map((c: any) => c.uri), [`2ndscreen://tasks/${taskId}`, `2ndscreen://tasks/${taskId}/artifacts`]);
+  const [statusRes, indexRes, unknownRes] = await mcp([
+    { jsonrpc: '2.0', id: 6, method: 'resources/read', params: { uri: `2ndscreen://tasks/${taskId}` } },
+    { jsonrpc: '2.0', id: 7, method: 'resources/read', params: { uri: `2ndscreen://tasks/${taskId}/artifacts` } },
+    { jsonrpc: '2.0', id: 8, method: 'resources/read', params: { uri: '2ndscreen://tasks/no-such-task' } },
+  ], env);
+  const read = JSON.parse(statusRes!.result.contents[0].text);
+  assert.equal(read.task.id, taskId);
+  assert.equal(read.task.status, 'cancelled');
+  assert.deepEqual(JSON.parse(indexRes!.result.contents[0].text), []);
+  assert.equal(unknownRes!.error.code, -32002);
   // Stop the worker it started.
   const actors = await readdir(join(root, 'tasks', 'actors'));
   for (const name of actors) {
@@ -294,4 +329,114 @@ test('MCP runs a task through the installed runtime and its background worker', 
       process.kill(pid, 'SIGTERM');
     } catch {}
   }
+});
+
+test('MCP links task resources and reads them through the same task commands, and nothing else', { skip }, async () => {
+  const dir = await synthRuntime();
+  const root = await mkdtemp(join('/tmp', 'a7-res-'));
+  const log = join(root, 'calls.log');
+  const env = {
+    SECONDSCREEN_TASK_RUNTIME: dir, SECONDSCREEN_NODE: process.execPath, SYNTH_LOG: log,
+    // Never a desktop: a socket nobody serves and an app that does not exist.
+    SECONDSCREEN_SOCKET: join(root, 'none.sock'), SECONDSCREEN_APP: join(root, 'no-such.app'),
+  };
+  const init = (version: string) => ({ jsonrpc: '2.0', id: 0, method: 'initialize', params: { protocolVersion: version } });
+  const call = (id: number, name: string, args: object) => ({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } });
+  const read = (id: number, uri: unknown) => ({ jsonrpc: '2.0', id, method: 'resources/read', params: { uri } });
+  const replies = await mcp([
+    init('2025-06-18'),
+    { jsonrpc: '2.0', id: 1, method: 'tools/list' },
+    call(2, 'task_run', { skill_id: 'boss.collect-resumes', job: '前端', limit: 3, output: '/tmp/out' }),
+    call(3, 'task_status', { task_id: 'task-7' }),
+    call(4, 'task_artifacts', { task_id: 'task-7' }),
+    call(5, 'task_status', { task_id: 'task-9' }),
+    read(6, '2ndscreen://tasks/task-7'),
+    read(7, '2ndscreen://tasks/task-7/artifacts'),
+    read(8, '2ndscreen://tasks/task-9'),
+    { jsonrpc: '2.0', id: 9, method: 'resources/templates/list' },
+    read(11, '2ndscreen://tasks/task-exit'),
+    { jsonrpc: '2.0', id: 10, method: 'resources/list' },
+  ], env);
+  const byId = new Map(replies.map((r) => [r.id, r]));
+  const initialized = byId.get(0)!.result;
+  assert.deepEqual(initialized.capabilities.resources, {});
+  assert.ok(initialized.capabilities.tools);
+  assert.equal(byId.get(1)!.result.tools.length, 14 + 8, 'the old tools are all still there');
+
+  const links = (r: Record<string, any>) => r.result.content.filter((c: any) => c.type === 'resource_link').map((c: any) => [c.uri, c.mimeType]);
+  // The existing text payload stays first and unchanged; the links follow it.
+  const run = byId.get(2)!.result;
+  assert.equal(run.isError, false);
+  assert.equal(JSON.parse(run.content[0].text).result.taskId, 'synthetic-1');
+  assert.deepEqual(links(byId.get(2)!), [['2ndscreen://tasks/synthetic-1', 'application/json'], ['2ndscreen://tasks/synthetic-1/artifacts', 'application/json']]);
+  assert.deepEqual(links(byId.get(3)!), [['2ndscreen://tasks/task-7', 'application/json'], ['2ndscreen://tasks/task-7/artifacts', 'application/json']]);
+  assert.deepEqual(links(byId.get(4)!), [['2ndscreen://tasks/task-7', 'application/json'], ['2ndscreen://tasks/task-7/artifacts', 'application/json']]);
+  assert.equal(byId.get(5)!.result.isError, true);
+  assert.deepEqual(links(byId.get(5)!), [], 'a failed call links nothing');
+
+  // The resources are the runtime's own answers, exactly.
+  const status = byId.get(6)!.result.contents;
+  assert.equal(status.length, 1);
+  assert.equal(status[0].uri, '2ndscreen://tasks/task-7');
+  assert.equal(status[0].mimeType, 'application/json');
+  assert.deepEqual(JSON.parse(status[0].text), SYNTH_TASK.report);
+  const index = byId.get(7)!.result.contents[0];
+  assert.equal(index.uri, '2ndscreen://tasks/task-7/artifacts');
+  assert.deepEqual(JSON.parse(index.text), SYNTH_TASK.artifacts);
+  // A task the ledger does not have is reported as missing, not made up.
+  const missing = byId.get(8)!;
+  assert.equal(missing.error.code, -32002);
+  assert.equal(missing.error.data.uri, '2ndscreen://tasks/task-9');
+  assert.equal(missing.error.data.error.code, 'not_found');
+  assert.deepEqual(byId.get(9)!.result.resourceTemplates.map((t: any) => t.uriTemplate), ['2ndscreen://tasks/{taskId}', '2ndscreen://tasks/{taskId}/artifacts']);
+  assert.deepEqual(byId.get(10)!.result.resources, []);
+  const exited = byId.get(11)!;
+  assert.equal(exited.result, undefined, 'ok:true with a failing exit status is not a resource');
+  assert.equal(exited.error.code, -32603);
+
+  // Only the task commands ran, with the IDs as given.
+  const calls = (await readFile(log, 'utf8')).trim().split('\n').map((l) => JSON.parse(l));
+  assert.deepEqual(calls.filter((c) => c[0] !== 'run'), [
+    ['status', 'task-7'], ['artifacts', 'task-7'], ['status', 'task-9'], ['status', 'task-7'], ['artifacts', 'task-7'], ['status', 'task-9'], ['status', 'task-exit'],
+  ]);
+});
+
+test('MCP refuses every URI that is not exactly a task or its artifacts, before anything runs', { skip }, async () => {
+  const dir = await synthRuntime();
+  const root = await mkdtemp(join('/tmp', 'a7-res-'));
+  const log = join(root, 'calls.log');
+  const env = { SECONDSCREEN_TASK_RUNTIME: dir, SECONDSCREEN_NODE: process.execPath, SYNTH_LOG: log,
+    SECONDSCREEN_SOCKET: join(root, 'none.sock'), SECONDSCREEN_APP: join(root, 'no-such.app') };
+  const bad: unknown[] = [
+    '2ndscreen://tasks/../etc/passwd', '2ndscreen://tasks/task-7/../../x', '2ndscreen://tasks/.hidden', '2ndscreen://tasks/task-7/',
+    '2ndscreen://tasks/task-7/artifacts/x', '2ndscreen://tasks/task-7/files', '2ndscreen://tasks/', '2ndscreen://tasks', '2ndscreen://tasks//artifacts',
+    '2ndscreen://tasks/task-7?x=1', '2ndscreen://tasks/task-7#a', '2ndscreen://tasks/task%2D7', '2ndscreen://tasks/task 7', '2ndscreen://tasks/-rf',
+    '2ndscreen://other/task-7', '2ndscreen://user@tasks/task-7', '2ndscreen://tasks:80/task-7', 'file:///etc/passwd', 'https://tasks/task-7',
+    '2NDSCREEN://tasks/task-7', `2ndscreen://tasks/${'a'.repeat(129)}`, 'tasks/task-7', '', 7, null,
+    '2ndscreen://tasks/task-7\n', '2ndscreen://tasks/task-7\r', '2ndscreen://tasks/task-7\r\n', '2ndscreen://tasks/task-7/artifacts\n',
+    '2ndscreen://tasks/task-7%2Fartifacts', '2ndscreen://tasks/..%2F..%2Fetc', '2ndscreen://tasks/task-7%0A', '2ndscreen://tasks/task\u00e9',
+    '2ndscreen://tasks/task-7\\artifacts', '2ndscreen://tasks/task-7/./artifacts', '2ndscreen://tasks/\uff54ask-7',
+  ];
+  const replies = await mcp(bad.map((uri, i) => ({ jsonrpc: '2.0', id: i + 1, method: 'resources/read', params: { uri } })), env);
+  assert.equal(replies.length, bad.length);
+  for (const [i, reply] of replies.entries()) {
+    assert.equal(reply.error?.code, -32602, `${JSON.stringify(bad[i])}: ${JSON.stringify(reply)}`);
+    assert.equal(reply.result, undefined);
+  }
+  assert.equal(existsSync(log), false, 'the runtime was never started');
+});
+
+test('MCP before 2025-06-18 gets the task URIs as text instead of resource_link content', { skip }, async () => {
+  const dir = await synthRuntime();
+  const root = await mkdtemp(join('/tmp', 'a7-res-'));
+  const env = { SECONDSCREEN_TASK_RUNTIME: dir, SECONDSCREEN_NODE: process.execPath,
+    SECONDSCREEN_SOCKET: join(root, 'none.sock'), SECONDSCREEN_APP: join(root, 'no-such.app') };
+  const [, status] = await mcp([
+    { jsonrpc: '2.0', id: 0, method: 'initialize', params: { protocolVersion: '2025-03-26' } },
+    { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'task_status', arguments: { task_id: 'task-7' } } },
+  ], env);
+  const content = status!.result.content;
+  assert.equal(JSON.parse(content[0].text).result.task.id, 'task-7');
+  assert.ok(content.every((c: any) => c.type === 'text'));
+  assert.equal(content[1].text, 'resources: 2ndscreen://tasks/task-7 2ndscreen://tasks/task-7/artifacts');
 });
