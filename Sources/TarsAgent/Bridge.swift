@@ -200,6 +200,8 @@ public final class ExplorationBridge {
     private var lastSnapshot: String?
     private var stepCount = 0
     private var modelCalls = 0
+    /// The last error reading the screen, to explain rounds that came to nothing.
+    private var lastScreenError: String?
     private var inputTokens: Int? = 0
     private var outputTokens: Int? = 0
     /// Every action that reached the app, in order, as the events told it.
@@ -259,6 +261,13 @@ public final class ExplorationBridge {
         case .done:
             return finish()
         case .user where result.reason == "reached \(options.maxSteps) steps":
+            // Rounds also pass when the screen cannot be read; only rounds
+            // spent on the model use up the budget.
+            let (calls, screenError) = locked { (modelCalls, lastScreenError) }
+            if calls < request.maxRounds {
+                return end(.error, "\(request.maxRounds) rounds passed with \(calls) model call(s)"
+                           + (screenError.map { "; the screen: \($0)" } ?? ""))
+            }
             return end(.budgetExhausted, "used all \(request.maxRounds) rounds")
         case .user:
             return end(.error, result.reason)
@@ -376,6 +385,12 @@ public final class ExplorationBridge {
     }
 
     func remember(_ elements: [AXElementInfo]) { self.elements = elements }
+
+    func screenFailed(_ error: Error) {
+        lock.lock()
+        lastScreenError = error.localizedDescription
+        lock.unlock()
+    }
 
     // MARK: Actions
 
@@ -618,10 +633,23 @@ public final class ExplorationBridge {
             self.inner = inner
         }
 
-        func frame() throws -> CGRect { try inner.frame() }
+        func frame() throws -> CGRect {
+            do {
+                return try inner.frame()
+            } catch {
+                bridge.screenFailed(error)
+                throw error
+            }
+        }
 
         func screenshot(size: CGSize) throws -> Data {
-            let png = try inner.screenshot(size: size)
+            let png: Data
+            do {
+                png = try inner.screenshot(size: size)
+            } catch {
+                bridge.screenFailed(error)
+                throw error
+            }
             bridge.observed()
             return png
         }

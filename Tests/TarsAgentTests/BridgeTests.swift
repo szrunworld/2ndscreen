@@ -14,8 +14,12 @@ private final class BridgeScreen: AgentScreen {
     var elementList: [AXElementInfo] = []
     /// Runs inside each action, as the app takes it.
     var during: ((InputAction) throws -> ControlResponse)?
+    var frameError: Error?
 
-    func frame() throws -> CGRect { bridgeFrame }
+    func frame() throws -> CGRect {
+        if let frameError { throw frameError }
+        return bridgeFrame
+    }
     func screenshot(size: CGSize) throws -> Data { Data([0x89, 0x50, 0x4E, 0x47]) }
     func perform(_ action: InputAction) throws -> ControlResponse {
         performed.append(action)
@@ -206,6 +210,16 @@ private final class Harness {
         #expect(model.calls == 2 && harness.of("model_usage").count == 2)
         #expect(harness.screen.performed.count == 2)
         #expect(harness.last["reason"] as? String == "budget_exhausted")
+    }
+
+    @Test func roundsLostToAnUnreadableScreenAreAnErrorNotABudget() {
+        let model = Script([])
+        let harness = Harness(request(budget: ["maxRounds": 1]), model: model)
+        harness.screen.frameError = AgentError("no screen named \"boss\"")
+        #expect(harness.bridge.run() == 1)
+        #expect(model.calls == 0 && harness.screen.performed.isEmpty)
+        #expect(harness.last["reason"] as? String == "error")
+        #expect((harness.last["message"] as? String ?? "").contains("no screen named"))
     }
 
     @Test func unknownTokensUnderALimitStopAfterOneCall() {
