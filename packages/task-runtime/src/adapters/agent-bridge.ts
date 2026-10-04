@@ -44,7 +44,8 @@ const TRUNCATED_LINE = '\u0000bridge line without its newline';
 const DRAIN_MS = 1000;
 /** How long the spawner waits for stdout to close, then for the process group to die. */
 const STDOUT_CLOSE_MS = 500;
-const GROUP_GONE_MS = 5000;
+/** The longest pause between kills while confirming a process group is gone. */
+const GROUP_POLL_MAX_MS = 1000;
 
 type FailureReason = NonNullable<ExplorationOutcome['failure']>;
 
@@ -66,66 +67,84 @@ export function createAgentBridge(options: {
     if (grant.signal.aborted) return run.outcome('cancelled');
 
     const child = options.spawn(options.cli, ['agent-bridge'], { ...options.env, SECONDSCREEN_SOCKET: request.session.socket });
-    let gone = false;
+    // Set the moment the exit is confirmed: from then on nothing signals the
+    // pid, which may belong to someone else. Lines already written are still
+    // taken until `accepting` ends after a bounded drain.
+    let processGone = false;
+    let accepting = true;
     let stopping: FailureReason | undefined;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
+    let drainTimer: ReturnType<typeof setTimeout> | undefined;
     const stop = (reason: FailureReason): void => {
       if (stopping) return;
       stopping = reason;
       run.stoppedBy(reason);
-      // Never signal after the exit: the pid may belong to someone else by then.
-      if (gone) return;
+      if (processGone) return;
       signal(child, 'SIGTERM');
-      killTimer = setTimeout(() => !gone && signal(child, 'SIGKILL'), killGraceMs);
+      killTimer = setTimeout(() => {
+        if (!processGone) signal(child, 'SIGKILL');
+      }, killGraceMs);
     };
     const onAbort = (): void => stop('cancelled');
     grant.signal.addEventListener('abort', onAbort, { once: true });
     const deadline = setTimeout(() => stop('timeout'), request.budget.timeoutMs);
 
     try {
-      child.write(encodeJsonLine(request));
-      child.closeInput();
-    } catch {
-      // The child died at once; its exit and its missing events tell the rest.
-    }
-    const reading = (async () => {
+      // An abort that fired while spawning never reached the listener: the
+      // child gets no request, so it has nothing to act on, and is stopped.
+      const abortedDuringSpawn = grant.signal.aborted;
       try {
-        for await (const line of child.lines()) {
-          // Keep reading after a failure, so the child never blocks on a full pipe.
-          if (run.broken || gone) continue;
-          const event = run.take(line);
-          if (!event) {
-            stop('error');
-            continue;
-          }
-          if (run.forbidden) stop('forbidden_effect');
-          if (onEvent) {
-            try {
-              onEvent(event);
-            } catch {
-              // An observer's failure must not cost the session its confirmed exit.
+        if (!abortedDuringSpawn) child.write(encodeJsonLine(request));
+        child.closeInput();
+      } catch {
+        // The child died at once; its exit and its missing events tell the rest.
+      }
+      if (abortedDuringSpawn) onAbort();
+
+      const reading = (async () => {
+        try {
+          for await (const line of child.lines()) {
+            // Keep reading after a failure, so the child never blocks on a full pipe.
+            if (!accepting || run.broken) continue;
+            const event = run.take(line);
+            if (!event) {
+              stop('error');
+              continue;
+            }
+            if (run.forbidden) stop('forbidden_effect');
+            if (onEvent) {
+              try {
+                onEvent(event);
+              } catch {
+                // An observer's failure must not cost the session its confirmed exit.
+              }
             }
           }
+        } catch {
+          run.fail('error');
+          stop('error');
         }
-      } catch {
-        run.fail('error');
-        stop('error');
-      }
-    })();
+      })();
 
-    // The exit, not the end of stdout, releases the window: a descendant
-    // holding stdout open must not keep the session waiting forever.
-    const exit = await child.exited();
-    // Lines already written still count; give them a bounded moment to arrive.
-    let drained: ReturnType<typeof setTimeout> | undefined;
-    await Promise.race([reading, new Promise<void>((resolve) => (drained = setTimeout(resolve, DRAIN_MS)))]);
-    gone = true;
-    clearTimeout(drained);
-    clearTimeout(deadline);
-    clearTimeout(killTimer);
-    grant.signal.removeEventListener('abort', onAbort);
-    run.exited(exit.code);
-    return run.outcome();
+      // The exit, not the end of stdout, releases the window: a descendant
+      // holding stdout open must not keep the session waiting forever.
+      const exit = await child.exited();
+      processGone = true;
+      clearTimeout(killTimer);
+      clearTimeout(deadline);
+      // Lines already written still count; give them a bounded moment to arrive.
+      await Promise.race([reading, new Promise<void>((resolve) => (drainTimer = setTimeout(resolve, DRAIN_MS)))]);
+      accepting = false;
+      run.exited(exit.code);
+      return run.outcome();
+    } finally {
+      // Also when exited() or the reader threw: no timer or listener outlives the call.
+      accepting = false;
+      clearTimeout(drainTimer);
+      clearTimeout(killTimer);
+      clearTimeout(deadline);
+      grant.signal.removeEventListener('abort', onAbort);
+    }
   }
 
   return { explore };
@@ -308,8 +327,10 @@ type Snapshot = Pick<Observation, 'snapshotId' | 'pageClass'>;
 /**
  * Children through node:child_process, each leading its own process group,
  * so a signal reaches anything it started. stderr is drained and dropped.
- * `exited()` resolves once the child has exited and its whole group is
- * gone: descendants left holding stdout are killed, and stdout is closed.
+ * `exited()` resolves only once the child has exited and its whole group is
+ * confirmed gone: descendants left holding stdout are killed, and stdout is
+ * closed. Once the child has exited, `kill` sends nothing: the cleanup owns
+ * the group, and a pid that is gone may be reused.
  */
 export function createLineProcessSpawner(): LineProcessSpawner {
   return (file, args, env) => {
@@ -319,6 +340,8 @@ export function createLineProcessSpawner(): LineProcessSpawner {
       detached: true,
     });
     const pid = child.pid;
+    /** The child has exited (or never started); only the cleanup may signal its group now. */
+    let leaderExited = pid === undefined;
     const group = (name: NodeJS.Signals | 0): boolean => {
       if (pid === undefined) return false;
       try {
@@ -331,14 +354,11 @@ export function createLineProcessSpawner(): LineProcessSpawner {
     const stdoutClosed = new Promise<void>((resolve) => child.stdout.once('close', () => resolve()));
     const exited = new Promise<{ code: number | null; signal: string | null }>((resolve) => {
       child.once('exit', (code, signal) => {
+        leaderExited = true;
         void (async () => {
           await Promise.race([stdoutClosed, sleep(STDOUT_CLOSE_MS)]);
-          // Whatever of the group is left, it must not keep acting or holding the pipe.
-          const until = Date.now() + GROUP_GONE_MS;
-          while (group(0) && Date.now() < until) {
-            group('SIGKILL');
-            await sleep(20);
-          }
+          // Whatever of the group is left must not keep acting or holding the pipe.
+          await confirmGroupGone(() => group(0), () => void group('SIGKILL'));
           child.stdout.destroy();
           child.stderr.destroy();
           resolve({ code, signal });
@@ -347,6 +367,7 @@ export function createLineProcessSpawner(): LineProcessSpawner {
       // Never started (missing file, no permission): there is nothing to wait for.
       child.on('error', () => {
         if (child.pid === undefined) {
+          leaderExited = true;
           child.stdout.destroy();
           resolve({ code: null, signal: null });
         }
@@ -361,10 +382,29 @@ export function createLineProcessSpawner(): LineProcessSpawner {
       lines: () => readLines(child.stdout),
       exited: () => exited,
       kill: (name = 'SIGTERM') => {
+        if (leaderExited) return;
         if (!group(name)) child.kill(name);
       },
     };
   };
+}
+
+/**
+ * Kill until `alive` says the group is gone, backing off to a pause of
+ * `GROUP_POLL_MAX_MS`. It never gives up: a group that cannot be shown dead
+ * must not have its window handed to another actor. Resolves with the
+ * number of kills it took.
+ */
+export async function confirmGroupGone(alive: () => boolean, kill: () => void, wait: (ms: number) => Promise<void> = sleep): Promise<number> {
+  let kills = 0;
+  let pause = 20;
+  while (alive()) {
+    kill();
+    kills += 1;
+    await wait(pause);
+    pause = Math.min(pause * 2, GROUP_POLL_MAX_MS);
+  }
+  return kills;
 }
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));

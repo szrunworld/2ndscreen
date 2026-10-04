@@ -1,9 +1,10 @@
-import { test } from 'node:test';
+import { mock, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createAgentBridge, createLineProcessSpawner } from '../src/adapters/agent-bridge.ts';
+import { setTimeout as delay } from 'node:timers/promises';
+import { confirmGroupGone, createAgentBridge, createLineProcessSpawner } from '../src/adapters/agent-bridge.ts';
 import {
   isRuntimeError,
   validateExplorationRequest,
@@ -75,7 +76,11 @@ class FakeChild implements LineProcess {
   private wake?: () => void;
   private closed = false;
   private resolveExit!: (exit: { code: number | null; signal: string | null }) => void;
-  private readonly exitPromise = new Promise<{ code: number | null; signal: string | null }>((resolve) => (this.resolveExit = resolve));
+  private rejectExit!: (error: Error) => void;
+  private readonly exitPromise = new Promise<{ code: number | null; signal: string | null }>((resolve, reject) => {
+    this.resolveExit = resolve;
+    this.rejectExit = reject;
+  });
   onSignal: (child: FakeChild, signal: 'SIGTERM' | 'SIGKILL') => void = (child, signal) => {
     if (signal === 'SIGTERM') {
       child.emit(unitFailed('cancelled'));
@@ -100,6 +105,20 @@ class FakeChild implements LineProcess {
     if (this.closed) return;
     this.queue.push(...lines);
     this.wake?.();
+  }
+  /** Report the exit while lines may still be on their way, as a pipe may deliver them. */
+  exitKeepingLines(code: number | null): void {
+    if (this.hasExited) return;
+    this.hasExited = true;
+    this.resolveExit({ code, signal: null });
+  }
+  closeLines(): void {
+    this.closed = true;
+    this.wake?.();
+  }
+  /** Make exited() fail, as a broken transport would. */
+  failExit(): void {
+    this.rejectExit(new Error('transport lost'));
   }
   exit(code: number | null, signal: string | null = null): void {
     if (this.hasExited) return;
@@ -320,6 +339,96 @@ test('abort sends SIGTERM and resolves cancelled only after the child exits', as
   assert.deepEqual(outcome.executed.map((s) => s.result.status), ['ok']);
 });
 
+test('an abort that fires inside the spawner stops the child before it gets any request', async () => {
+  const controller = new AbortController();
+  const child = new FakeChild(() => {});
+  const spawn: LineProcessSpawner = () => {
+    controller.abort();
+    return child;
+  };
+  const outcome = await createAgentBridge({ cli: '/opt/2ndscreen', spawn, killGraceMs: 30 }).explore(request(), grant(controller.signal));
+  assert.deepEqual(child.written, [], 'no request, so nothing to act on');
+  assert.equal(child.inputClosed, true);
+  assert.deepEqual(child.signals, ['SIGTERM']);
+  assert.equal(child.hasExited, true);
+  assert.equal(outcome.failure, 'cancelled');
+  assert.deepEqual(outcome.executed, []);
+});
+
+test('lines written before the exit are still taken, but nothing signals the exited child', async () => {
+  const child = new FakeChild((c) => {
+    c.emit(started('st1'));
+    c.exitKeepingLines(0);
+    setTimeout(() => {
+      // Arrives after the exit: accepted, and the protocol error it causes signals nobody.
+      c.emit(finished('st1'), unitFinished(1), 'not json');
+      c.closeLines();
+    }, 20);
+  });
+  const seen: string[] = [];
+  const outcome = await bridgeWith(child).bridge.explore(request(), grant(), (event) => seen.push(event.type));
+  assert.deepEqual(seen, ['action_started', 'action_finished', 'unit_finished']);
+  assert.equal(outcome.failure, 'error', 'the line after the last one still counts against the run');
+  assert.deepEqual(outcome.executed.map((s) => s.result.status), ['ok']);
+  assert.deepEqual(child.signals, [], 'no signal after the exit');
+});
+
+test('lines after the drain, timers after the exit and aborts after the call send nothing', async () => {
+  const controller = new AbortController();
+  const child = new FakeChild((c) => {
+    c.emit(unitFinished(0));
+    c.exitKeepingLines(0);
+  });
+  const seen: string[] = [];
+  const outcome = await bridgeWith(child, 20).bridge.explore(request({ budget: { maxRounds: 6, timeoutMs: 40 } }), grant(controller.signal), (e) => seen.push(e.type));
+  assert.equal(outcome.status, 'finished');
+  child.emit(usage(), unitFailed('error'));
+  controller.abort();
+  await delay(80); // past the deadline and the kill grace
+  assert.deepEqual(seen, ['unit_finished'], 'nothing is taken once explore returned');
+  assert.deepEqual(child.signals, []);
+});
+
+test('a stop before the exit never escalates to SIGKILL once the child is gone', async () => {
+  const controller = new AbortController();
+  const child = new FakeChild(() => controller.abort());
+  child.onSignal = (me, sig) => sig === 'SIGTERM' && me.exit(143, 'SIGTERM');
+  const outcome = await bridgeWith(child, 20).bridge.explore(request(), grant(controller.signal));
+  await delay(60);
+  assert.deepEqual(child.signals, ['SIGTERM']);
+  assert.equal(outcome.failure, 'cancelled');
+});
+
+test('when the exit cannot be confirmed, explore rejects and leaves no timer or listener behind', async () => {
+  const controller = new AbortController();
+  const child = new FakeChild((c) => c.failExit());
+  await assert.rejects(bridgeWith(child, 20).bridge.explore(request({ budget: { maxRounds: 6, timeoutMs: 30 } }), grant(controller.signal)), /transport lost/);
+  controller.abort();
+  await delay(70);
+  assert.deepEqual(child.signals, [], 'neither the abort listener nor the deadline outlived the call');
+});
+
+test('a process group is only reported gone once shown gone, however long it takes', async () => {
+  let alive = 40;
+  let kills = 0;
+  const pauses: number[] = [];
+  const total = await confirmGroupGone(() => alive-- > 0, () => void kills++, async (ms) => void pauses.push(ms));
+  assert.equal(total, 40);
+  assert.equal(kills, 40);
+  assert.equal(Math.max(...pauses), 1000, 'backs off without giving up');
+
+  // A group that never dies keeps it waiting: it does not resolve.
+  let settled = false;
+  let waits = 0;
+  void confirmGroupGone(() => true, () => {}, async () => {
+    waits += 1;
+    if (waits >= 500) await new Promise(() => {});
+  }).then(() => (settled = true));
+  await delay(20);
+  assert.equal(waits, 500);
+  assert.equal(settled, false);
+});
+
 test('a child that ignores SIGTERM is killed after the grace period, and only then does explore resolve', async () => {
   const controller = new AbortController();
   const child = new FakeChild(() => controller.abort());
@@ -522,13 +631,44 @@ process.stdin.on('end', () => {
   process.exit(0);
 });`,
     );
+    let leader: number | undefined;
+    const real = createLineProcessSpawner();
+    const spawn: LineProcessSpawner = (file, args, env) => {
+      const child = real(file, args, env);
+      leader = child.pid;
+      return child;
+    };
     const t0 = Date.now();
-    const outcome = await createAgentBridge({ cli, spawn: createLineProcessSpawner() }).explore(request(), grant());
+    const outcome = await createAgentBridge({ cli, spawn }).explore(request(), grant());
     const { readFile } = await import('node:fs/promises');
     const grandchild = Number(await readFile(pidFile, 'utf8'));
     assert.equal(outcome.status, 'finished', JSON.stringify(outcome));
     assert.ok(Date.now() - t0 < 4000, 'bounded');
     assert.equal(alive(grandchild), false, 'the descendant is gone when explore resolves');
+    assert.throws(() => process.kill(-leader!, 0), /ESRCH/, 'and so is the whole group');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('real children: once exited() resolves the group is gone, and later kills send nothing', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'agent-bridge-'));
+  try {
+    const cli = await script(dir, 'quick.mjs', `${PRELUDE}\nprocess.stdin.on('end', () => process.exit(0));`);
+    const child = createLineProcessSpawner()(cli, ['agent-bridge']);
+    child.closeInput();
+    for await (const _ of child.lines());
+    await child.exited();
+    assert.throws(() => process.kill(-child.pid!, 0), /ESRCH/, 'no member of the group is left');
+    const kill = mock.method(process, 'kill');
+    try {
+      child.kill('SIGTERM');
+      child.kill('SIGKILL');
+      child.kill();
+      assert.equal(kill.mock.callCount(), 0, 'no signal after the exit, to a pid that may be reused');
+    } finally {
+      kill.mock.restore();
+    }
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
