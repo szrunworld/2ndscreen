@@ -187,14 +187,15 @@ test('MCP lists the task tools beside the old ones', { skip }, async () => {
   const tools = new Map<string, any>(list!.result.tools.map((t: any) => [t.name, t]));
   for (const old of ['screen_create', 'screen_list', 'screen_destroy', 'screen_resize', 'app_launch', 'window_move', 'window_release',
     'screenshot', 'state', 'click', 'type', 'key', 'scroll', 'drag']) assert.ok(tools.has(old), old);
-  assert.equal(tools.size, 14 + 7);
+  assert.equal(tools.size, 14 + 8);
   const run = tools.get('task_run');
   assert.deepEqual(run.inputSchema.required, ['skill_id', 'job', 'limit', 'output']);
   assert.deepEqual(Object.keys(run.inputSchema.properties).sort(),
-    ['analysis', 'browse_limit', 'budget', 'deadline', 'job', 'keep_window', 'limit', 'mode', 'output', 'skill_id', 'source', 'take_over']);
+    ['account', 'analysis', 'browse_limit', 'budget', 'deadline', 'job', 'keep_window', 'limit', 'mode', 'output', 'skill_id', 'source', 'take_over']);
   for (const name of ['task_status', 'task_pause', 'task_resume', 'task_cancel', 'task_artifacts'])
     assert.deepEqual(tools.get(name).inputSchema.required, ['task_id'], name);
   assert.deepEqual(tools.get('task_inspect_procedure').inputSchema.required, ['procedure_id']);
+  assert.deepEqual(tools.get('task_bind_account').inputSchema.required, ['task_id', 'account']);
 });
 
 test('MCP task tools run the same CLI and refuse loose arguments', { skip }, async () => {
@@ -210,6 +211,10 @@ test('MCP task tools run the same CLI and refuse loose arguments', { skip }, asy
     call(6, 'task_run', { skill_id: 's', job: 'x', limit: 3, output: '/o', take_over: 1 }),
     call(7, 'task_run', { skill_id: 's', job: 'x', limit: 3, output: 'relative' }),
     call(8, 'task_inspect_procedure', { procedure_id: 'p-1' }),
+    call(9, 'task_bind_account', { task_id: 'task-9', account: 'hr-zhang' }),
+    call(10, 'task_bind_account', { task_id: 'task-9', account: 'a:b' }),
+    call(11, 'task_run', { skill_id: 's', job: 'x', limit: 3, output: '/o', account: 7 }),
+    call(12, 'task_run', { skill_id: 's', job: 'x', limit: 3, output: '/o', account: 'hr-zhang' }),
   ], env);
   const text = (i: number) => JSON.parse(replies[i]!.result.content[0].text.trim());
   assert.equal(replies[0]!.result.isError, false, replies[0]!.result.content[0].text);
@@ -228,4 +233,12 @@ test('MCP task tools run the same CLI and refuse loose arguments', { skip }, asy
   assert.equal(text(6).error.code, 'invalid_input');
   assert.match(text(6).error.message, /outputDir must be an absolute path/);
   assert.equal(text(7).error.code, 'not_found');
+  // The synthetic control cannot bind accounts: the runtime refuses instead of dropping the account.
+  assert.equal(text(8).error.code, 'capability_missing');
+  assert.equal(text(8).command, 'bind-account');
+  assert.equal(text(9).error.code, 'invalid_input');
+  assert.match(text(9).error.message, /ACCOUNT_KEY/);
+  assert.match(text(10).error.message, /account must be a string/);
+  assert.equal(text(11).error.code, 'capability_missing');
+  assert.equal(text(11).command, 'run');
 });
