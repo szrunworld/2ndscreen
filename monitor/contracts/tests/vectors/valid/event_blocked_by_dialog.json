@@ -1,0 +1,28 @@
+{
+  "contract": "event",
+  "description": "风控弹窗阻断执行",
+  "data": {
+    "event_id": "d361210fd9bf0acaf5bdbb4e6e27598b771ab3c4e4872bc65d13f0ed860f9f39",
+    "device_id": "dev_mac_01",
+    "account_id": "acct_demo",
+    "kind": "blocked_by_dialog",
+    "conversation": {
+      "candidate_name": "候选人A",
+      "job_title": "后端工程师",
+      "hints": [
+        "本科",
+        "上海"
+      ]
+    },
+    "bucket": "2026-10-04T01:00:00Z/3600",
+    "observed_at": "2026-10-04T09:31:05+08:00",
+    "payload": {
+      "dialog_kind": "risk_warning",
+      "dialog_text": "操作过于频繁",
+      "buttons": [
+        "我知道了"
+      ],
+      "command_id": "00000000-0000-4000-8000-000000000002"
+    }
+  }
+}

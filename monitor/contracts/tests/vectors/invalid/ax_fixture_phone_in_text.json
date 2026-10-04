@@ -1,0 +1,106 @@
+{
+  "contract": "ax_fixture",
+  "description": "夹具含手机号",
+  "data": {
+    "fixture_version": 1,
+    "scene": "conversation_list_new_application",
+    "description": "会话列表，第一条是新投递",
+    "recorded_at": "2026-10-04T09:30:00+08:00",
+    "source": {
+      "app": "BOSS直聘",
+      "app_version": null,
+      "driver": "2ndscreen-cli",
+      "recorded_by": null
+    },
+    "redaction": {
+      "names_replaced": true,
+      "phones_removed": true,
+      "wechat_removed": true,
+      "notes": null
+    },
+    "steps": [
+      {
+        "label": "初始列表",
+        "window": {
+          "pid": 4242,
+          "window_id": 101,
+          "frame": {
+            "x": 0,
+            "y": 0,
+            "w": 1280,
+            "h": 800
+          },
+          "title": "BOSS直聘",
+          "app_name": "BOSS直聘"
+        },
+        "elements": [
+          {
+            "index": 0,
+            "role": "AXRow",
+            "label": "候选人A 13812345678",
+            "value": "",
+            "frame": {
+              "x": 10,
+              "y": 100,
+              "w": 300,
+              "h": 60
+            },
+            "enabled": true
+          },
+          {
+            "index": 1,
+            "role": "AXRow",
+            "label": "候选人B 产品经理",
+            "value": "",
+            "frame": {
+              "x": 10,
+              "y": 160,
+              "w": 300,
+              "h": 60
+            },
+            "enabled": true
+          }
+        ],
+        "annotations": {
+          "page": "conversation_list",
+          "conversations": [
+            {
+              "element_index": 0,
+              "conversation": {
+                "candidate_name": "候选人A",
+                "job_title": "后端工程师",
+                "hints": [
+                  "本科",
+                  "上海"
+                ]
+              },
+              "is_new_application": true,
+              "unread": true
+            },
+            {
+              "element_index": 1,
+              "conversation": {
+                "candidate_name": "候选人B",
+                "job_title": "产品经理",
+                "hints": []
+              },
+              "is_new_application": false,
+              "unread": true
+            }
+          ],
+          "is_new_application": [
+            0
+          ],
+          "qr_region": null,
+          "expected_events": [
+            "application_observed"
+          ],
+          "x_group_label": "新招呼"
+        }
+      }
+    ]
+  },
+  "expected_error_paths": [
+    "steps[0].elements[0].label"
+  ]
+}

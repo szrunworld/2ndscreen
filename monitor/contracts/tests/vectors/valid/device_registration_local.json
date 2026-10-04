@@ -1,0 +1,18 @@
+{
+  "contract": "device_registration",
+  "description": "本机注册",
+  "data": {
+    "enrollment_code": "ENR-7Q4K-22",
+    "device_name": "招聘专用 Mac mini",
+    "mode": "local",
+    "platform": {
+      "os": "macos",
+      "os_version": "14.6"
+    },
+    "monitor_version": "0.1.0",
+    "contracts_version": "0.1.0",
+    "capabilities": [
+      "observe"
+    ]
+  }
+}

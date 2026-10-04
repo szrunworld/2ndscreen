@@ -1,0 +1,27 @@
+{
+  "contract": "command_result",
+  "description": "确认无结果",
+  "data": {
+    "command_id": "00000000-0000-4000-8000-000000000008",
+    "action": "search_candidates",
+    "status": "succeeded",
+    "reason": null,
+    "observed": {
+      "before": [],
+      "after": []
+    },
+    "evidence": [],
+    "executed_at": "2026-10-04T09:31:05+08:00",
+    "reported_at": "2026-10-04T09:31:20+08:00",
+    "output": {
+      "snapshot": {
+        "search_id": "s_43",
+        "query": "cobol",
+        "scope": "current_page",
+        "coverage": "empty_confirmed",
+        "items": [],
+        "captured_at": "2026-10-04T09:31:05+08:00"
+      }
+    }
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "contract": "device_heartbeat",
+  "description": "执行中",
+  "data": {
+    "device_id": "dev_mac_01",
+    "sent_at": "2026-10-04T09:31:20+08:00",
+    "mode": "local",
+    "account_id": "acct_demo",
+    "client_state": "running",
+    "paused": false,
+    "pause_reason": null,
+    "needs_baseline": false,
+    "current_action": {
+      "command_id": "00000000-0000-4000-8000-000000000002",
+      "action": "request_resume",
+      "started_at": "2026-10-04T09:31:05+08:00"
+    },
+    "queue": {
+      "queued_commands": 2,
+      "undelivered_results": 1,
+      "outbox_events": 0
+    },
+    "last_error": null,
+    "monitor_version": "0.1.0"
+  }
+}

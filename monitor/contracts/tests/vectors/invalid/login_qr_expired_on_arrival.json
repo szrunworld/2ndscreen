@@ -1,0 +1,16 @@
+{
+  "contract": "login_qr",
+  "description": "过期时间早于截取时间（语义）",
+  "data": {
+    "device_id": "dev_mac_01",
+    "account_id": null,
+    "qr_payload": "https://example.invalid/qr?k=abc123",
+    "qr_seq": 1,
+    "captured_at": "2026-10-04T09:31:05+08:00",
+    "expires_at": "2026-10-04T09:30:00+08:00",
+    "decoder": "vision_barcode"
+  },
+  "expected_error_paths": [
+    "expires_at"
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "contract": "command",
+  "description": "搜索当前页",
+  "data": {
+    "command_id": "00000000-0000-4000-8000-000000000006",
+    "workflow_id": null,
+    "account_id": "acct_demo",
+    "action": "search_candidates",
+    "target": {
+      "scope": "current_page"
+    },
+    "payload": {
+      "search_id": "s_42",
+      "query": "golang 后端",
+      "max_results": 20
+    },
+    "issued_at": "2026-10-04T09:30:00+08:00",
+    "expires_at": "2026-10-04T09:40:00+08:00",
+    "depends_on": null
+  }
+}

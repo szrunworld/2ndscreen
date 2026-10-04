@@ -1,0 +1,29 @@
+{
+  "contract": "event",
+  "description": "v1 不回传号码",
+  "data": {
+    "event_id": "df23c18e3013bc29383aff220253da0550983c4058a39d346ab49eaadb06a1a6",
+    "device_id": "dev_mac_01",
+    "account_id": "acct_demo",
+    "kind": "contact_exchange_updated",
+    "conversation": {
+      "candidate_name": "候选人A",
+      "job_title": "后端工程师",
+      "hints": [
+        "本科",
+        "上海"
+      ]
+    },
+    "bucket": "2026-10-04T01:00:00Z/3600",
+    "observed_at": "2026-10-04T09:31:05+08:00",
+    "payload": {
+      "exchange_type": "phone",
+      "exchange_state": "available",
+      "evidence": [],
+      "value": "13800000000"
+    }
+  },
+  "expected_error_paths": [
+    "payload.value"
+  ]
+}

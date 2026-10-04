@@ -1,0 +1,22 @@
+{
+  "contract": "command_result",
+  "description": "转发成功",
+  "data": {
+    "command_id": "00000000-0000-4000-8000-000000000005",
+    "action": "forward_resume",
+    "status": "succeeded",
+    "reason": null,
+    "observed": {
+      "before": [],
+      "after": []
+    },
+    "evidence": [],
+    "executed_at": "2026-10-04T09:31:05+08:00",
+    "reported_at": "2026-10-04T09:31:20+08:00",
+    "gui_write_performed": true,
+    "output": {
+      "destination": "resumes@example.com",
+      "forwarded_at": "2026-10-04T09:31:05+08:00"
+    }
+  }
+}

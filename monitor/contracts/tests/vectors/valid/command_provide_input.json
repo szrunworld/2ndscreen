@@ -1,0 +1,19 @@
+{
+  "contract": "command",
+  "description": "代填短信验证码",
+  "data": {
+    "command_id": "00000000-0000-4000-8000-000000000007",
+    "workflow_id": null,
+    "account_id": "acct_demo",
+    "action": "provide_input",
+    "target": {
+      "input_request_id": "00000000-0000-4000-8000-000000000070"
+    },
+    "payload": {
+      "value": "123456"
+    },
+    "issued_at": "2026-10-04T09:30:00+08:00",
+    "expires_at": "2026-10-04T09:40:00+08:00",
+    "depends_on": null
+  }
+}
