@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import Testing
 @testable import SecondScreenCore
@@ -56,17 +57,35 @@ struct DisplaySleepTests {
         DisplayWork(configurator: configurator, waitLimit: waitLimit, assertions: assertions, sleepState: states.next, pollNanoseconds: 5_000_000)
     }
 
-    @Test func sleepIsJudgedOnOnlinePhysicalDisplays() {
-        // P0: physical 1 and 2 online, inactive and asleep; leftover virtual displays awake and active.
-        let p0: [DisplaySleep.Online] = [
-            .init(id: 1, asleep: true, virtual: false), .init(id: 2, asleep: true, virtual: false),
-            .init(id: 352, asleep: false, virtual: true), .init(id: 355, asleep: false, virtual: true),
-        ]
-        #expect(DisplaySleep.state(p0) == .asleep)
-        #expect(DisplaySleep.state([.init(id: 1, asleep: true, virtual: false), .init(id: 2, asleep: false, virtual: false)]) == .awake,
-                "one physical display awake is not display sleep")
-        #expect(DisplaySleep.state([.init(id: 352, asleep: true, virtual: true)]) == .awake, "headless, on purpose")
-        #expect(DisplaySleep.state([]) == .awake, "headless, on purpose")
+    private func physical(_ id: CGDirectDisplayID, active: Bool, asleep: Bool) -> DisplaySleep.Online {
+        .init(id: id, active: active, asleep: asleep, virtual: false)
+    }
+
+    private func virtual(_ id: CGDirectDisplayID, active: Bool = true, asleep: Bool = false) -> DisplaySleep.Online {
+        .init(id: id, active: active, asleep: asleep, virtual: true)
+    }
+
+    @Test func sleepIsJudgedOnActiveAndAsleepPhysicalDisplays() {
+        // P0 after a wake expired: external (vendor 19501) inactive and asleep, built-in (vendor 1552) inactive, not asleep.
+        #expect(DisplaySleep.state([physical(1, active: false, asleep: false), physical(2, active: false, asleep: true)]) == .asleep)
+        // P0 earlier: both physical inactive and asleep, leftover virtual displays active and awake.
+        #expect(DisplaySleep.state([physical(1, active: false, asleep: true), physical(2, active: false, asleep: true),
+                                    virtual(352, active: false), virtual(355)]) == .asleep)
+        // Normal use: an active, awake display.
+        #expect(DisplaySleep.state([physical(1, active: true, asleep: false)]) == .awake)
+        #expect(DisplaySleep.state([physical(1, active: true, asleep: false), physical(2, active: true, asleep: false), virtual(900)]) == .awake)
+        // Closed lid with an external display in use: the idle built-in panel does not count.
+        #expect(DisplaySleep.state([physical(1, active: false, asleep: false), physical(2, active: true, asleep: false)]) == .awake)
+        // Hardware mirroring: the secondary is online but not active.
+        #expect(DisplaySleep.state([physical(1, active: true, asleep: false), physical(2, active: false, asleep: false)]) == .awake)
+        // One display asleep beside one in use is not display sleep.
+        #expect(DisplaySleep.state([physical(1, active: true, asleep: false), physical(2, active: false, asleep: true)]) == .awake)
+        // Every physical display inactive and none says asleep: not proved either way, and not headless.
+        #expect(DisplaySleep.state([physical(1, active: false, asleep: false), virtual(355)])
+                == .unknown("no physical display is active, and none reports asleep"))
+        // No physical display at all: headless, on purpose; virtual displays' own state does not matter.
+        #expect(DisplaySleep.state([virtual(352, active: false, asleep: true)]) == .awake)
+        #expect(DisplaySleep.state([]) == .awake)
         #expect(DisplaySleep.state(nil) == .unknown("the online displays could not be listed"), "an unreadable list proves nothing")
     }
 
