@@ -710,7 +710,7 @@ test('a task submitted by a CLI that exits is finished by the detached worker; a
 
     const stops: string[] = [];
     const runner = new FakeRunner(e.store);
-    e.daemon(runner, { verifyActorExit: registryVerifier(e.dir, stops) });
+    e.daemon(runner, { verifyActorExit: registryVerifier(e.dir, stops), verifyTimeoutMs: 5_000 });
     const orphan = await until('the orphan to be paused', async () => {
       const t = await e.store.getTask(second.taskId);
       return t?.status === 'paused' ? t : undefined;
@@ -742,8 +742,17 @@ test('a stalled old daemon with a live detached actor: the new owner decides not
     reg = await until('the actor to be registered', () => readRegistry(e.dir, long.taskId)?.pid !== undefined && readRegistry(e.dir, long.taskId), 15_000);
     assert.ok(await beating(reg.beat!));
 
-    // The old daemon stalls; its actor, in its own group, keeps going.
-    process.kill(-workerGroup!, 'SIGSTOP');
+    // The old daemon stalls; its actor, in its own group, keeps going. A stall
+    // inside one of its ledger writes would hold SQLite's write lock (nobody
+    // could act at all), so the stall is retried until the ledger stays writable.
+    for (let attempt = 0; ; attempt++) {
+      process.kill(-workerGroup!, 'SIGSTOP');
+      await sleep(50);
+      const writable = await e.store.appendEvent({ taskId: long.taskId, type: 'probe', at: new Date().toISOString() }).then(() => true, () => false);
+      if (writable || attempt >= 5) break;
+      process.kill(-workerGroup!, 'SIGCONT');
+      await sleep(30);
+    }
     const runner = new FakeRunner(e.store);
     const owner = e.daemon(runner);
     await until('the new daemon to own the ledger after the old lease expired', () => owner.isOwner(), 10_000);
@@ -795,7 +804,7 @@ test('a killed worker whose detached actor survives stays unresolved; a verifier
     await blind.shutdown();
 
     const stops: string[] = [];
-    e.daemon(new FakeRunner(e.store), { verifyActorExit: registryVerifier(e.dir, stops) });
+    e.daemon(new FakeRunner(e.store), { verifyActorExit: registryVerifier(e.dir, stops), verifyTimeoutMs: 5_000 });
     await until('the orphan to be paused', async () => (await statusOf(e.store, long.taskId)) === 'paused', 10_000);
     assert.deepEqual(stops, [String(reg.pgid)], 'only the registered, identity-checked group was stopped');
     assert.equal(processIdentity(reg.pid!, reg.processStartedAt), 'gone');
@@ -831,7 +840,7 @@ test('a worker whose actor would not exit records that it does not know; the can
     process.kill(workerGroup!, 'SIGTERM');
     await until('the worker to exit', () => !groupAlive(workerGroup!), 10_000);
     const stops: string[] = [];
-    e.daemon(new FakeRunner(e.store), { verifyActorExit: registryVerifier(e.dir, stops) });
+    e.daemon(new FakeRunner(e.store), { verifyActorExit: registryVerifier(e.dir, stops), verifyTimeoutMs: 5_000 });
     await until('the cancel to be confirmed', async () => (await statusOf(e.store, long.taskId)) === 'cancelled', 10_000);
     assert.deepEqual(stops, [String(reg.pgid)]);
     assert.equal(processIdentity(reg.pid!, reg.processStartedAt), 'gone');
@@ -881,6 +890,92 @@ test('a transient ledger error while renewing is not a lost lease: the worker ke
     assert.equal(failures < 0, true, 'renewals did fail');
     assert.equal(runner.runs, 1);
     assert.ok(!(await controlTypes(e.store, taskId)).includes('orphan_recovered'));
+  } finally {
+    await e.cleanup();
+  }
+});
+
+test('a terminal task whose last actor is unproven still blocks the queue until its exit is proven', async () => {
+  const e = await env();
+  try {
+    // Moved to an end state by an older version or by hand, while its worker's exit was never recorded.
+    const leftover = await plantRunning(e, { epoch: 'epoch-terminal' });
+    await e.store.transitionTask(leftover.taskId, 'failed', { terminationReason: 'fatal_error' }, 'running');
+    let verdict: Awaited<ReturnType<ActorExitVerifier>> = { stopped: false, reason: 'bridge group still alive' };
+    const runner = new FakeRunner(e.store);
+    const daemon = e.daemon(runner, { verifyActorExit: async () => verdict });
+    const next = await daemon.submit(SPEC.id, e.input());
+    await until('the unproven exit on record', async () => (await controlTypes(e.store, leftover.taskId)).includes('actor_exit_unproven'));
+    await sleep(250);
+    assert.equal(await statusOf(e.store, next.taskId), 'queued', 'no new actor while the old one may still act');
+    assert.equal(runner.runs, 0);
+    assert.equal(await statusOf(e.store, leftover.taskId), 'failed', 'the terminal status itself is left alone');
+
+    verdict = { stopped: true, evidence: 'owner and bridge groups gone by start time' };
+    await until('the queued task to run', async () => (await statusOf(e.store, next.taskId)) === 'succeeded');
+    assert.ok((await controlTypes(e.store, leftover.taskId)).includes('actor_exit_verified'));
+  } finally {
+    await e.cleanup();
+  }
+});
+
+test('a daemon whose ownership lapses during a slow verifier decides nothing and starts no actor', async () => {
+  const e = await env();
+  // A competing daemon on its own connection, whose clock is far ahead: it sees the first daemon's lease as expired.
+  const ahead: Clock = { now: () => new Date(Date.now() + 60 * 60 * 1000) };
+  const otherStore = await openTaskStore({ path: e.dbPath, clock: ahead });
+  let competitor: TaskDaemon | undefined;
+  try {
+    const orphan = await plantRunning(e, { epoch: 'epoch-slow' });
+    const queued = await e.store.createTask(SPEC, e.input());
+    await e.store.appendEvent({ taskId: queued.id, itemId: CONTROL_ITEM, type: 'task_published', at: new Date().toISOString() });
+
+    let verifying!: () => void;
+    const started = new Promise<void>((r) => (verifying = r));
+    let release!: () => void;
+    const answer = new Promise<void>((r) => (release = r));
+    const staleRunner = new FakeRunner(e.store);
+    const stale = e.daemon(staleRunner, {
+      verifyTimeoutMs: 5_000,
+      verifyActorExit: async () => {
+        verifying();
+        await answer;
+        return { stopped: true, evidence: 'everything gone (but this daemon no longer owns the ledger)' };
+      },
+    });
+    await started;
+    assert.ok(stale.isOwner());
+
+    const otherRunner = new FakeRunner(otherStore);
+    competitor = createTaskDaemon({ store: otherStore, runner: otherRunner, specs: () => SPEC, pollMs: 30, leaseTtlMs: 600, clock: ahead });
+    await until('the competitor to take the ledger', () => competitor!.isOwner());
+    release();
+    await until('the stale daemon to notice', () => !stale.isOwner());
+    await sleep(300);
+
+    assert.equal(staleRunner.runs, 0, 'the stale daemon started nothing');
+    assert.equal(otherRunner.runs, 0, 'the competitor has no proof either');
+    assert.equal(await statusOf(e.store, orphan.taskId), 'running', 'no decision on a lapsed lease');
+    assert.equal(await statusOf(e.store, queued.id), 'queued');
+    assert.ok(!(await controlTypes(e.store, orphan.taskId)).includes('actor_exit_verified'), 'a non-owner records no finding');
+  } finally {
+    await competitor?.shutdown();
+    await otherStore.close();
+    await e.cleanup();
+  }
+});
+
+test('a verifier that never answers is cut off and counts as unproven', async () => {
+  const e = await env();
+  try {
+    const orphan = await plantRunning(e, { epoch: 'epoch-hang' });
+    const runner = new FakeRunner(e.store);
+    e.daemon(runner, { verifyTimeoutMs: 100, verifyActorExit: () => new Promise(() => undefined) });
+    const unproven = await until('the unproven exit on record', async () =>
+      (await e.store.listEvents(orphan.taskId, { itemId: CONTROL_ITEM })).find((ev) => ev.type === 'actor_exit_unproven'));
+    assert.match(String(unproven.detail?.reason), /did not answer within 100 ms/);
+    assert.equal(await statusOf(e.store, orphan.taskId), 'running');
+    assert.equal(runner.runs, 0);
   } finally {
     await e.cleanup();
   }

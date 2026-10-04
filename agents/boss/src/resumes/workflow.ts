@@ -31,9 +31,9 @@ import { findRows, identify, identityIncomplete, listCandidates, listContinues, 
 import {
   ATTACHMENT_ROUTE_OFF,
   captureOnlineResume,
+  confirmResumeIdentity,
   dismissRequestDialog,
   fetchAttachment,
-  overlayShowsName,
   type AttachmentRoute,
   type CaptureLimits,
 } from './capture.ts';
@@ -285,7 +285,11 @@ export function createBossResumesWorkflowWith(options: BossResumesOptions): Boss
     if (!name) throw new RuntimeError('invalid_input', 'open_resume needs a candidate');
     let o = await look(session, env, signal);
     const open = resumeOverlay(o);
-    if (open && !open.loading && overlayShowsName(o, open, name)) return result(true, trace, o);
+    // Already open: kept only if its header, read now without waiting, names this candidate; otherwise reopened at its top.
+    if (open && !open.loading) {
+      const mine = await confirmResumeIdentity(session, env, signal, o, name, { timeoutMs: 0, limits: options.capture });
+      if (mine.ok) return result(true, trace, mine.observation);
+    }
     if (open || requestDialog(o)) o = await closeOverlays(context, trace);
     if (o.pageClass !== 'conversation_detail') return result(false, trace, o, 'conversation_not_open');
     const link = (o.elements ?? []).find((e) => e.role === 'AXLink' && text(e) === '在线简历')
@@ -304,9 +308,9 @@ export function createBossResumesWorkflowWith(options: BossResumesOptions): Boss
       return result(false, trace, await look(session, env, signal), 'request_dialog');
     }
     if (shown.value !== 'open') return result(false, trace, shown.observation, shown.observation.pageClass === 'loading' ? 'resume_load_timeout' : 'resume_not_open');
-    const overlay = resumeOverlay(shown.observation)!;
-    if (!overlayShowsName(shown.observation, overlay, name)) return result(false, trace, shown.observation, 'resume_identity_unconfirmed');
-    return result(true, trace, shown.observation);
+    // BOSS 1.7.4 names nobody beside the resume; its image header does, read from this pane, waiting a bounded time for it to draw.
+    const mine = await confirmResumeIdentity(session, env, signal, shown.observation, name, { timeoutMs: openTimeoutMs, limits: options.capture });
+    return mine.ok ? result(true, trace, mine.observation) : result(false, trace, mine.observation, mine.reason);
   }
 
   async function advanceList(context: UnitContext): Promise<UnitRunResult> {
@@ -368,6 +372,8 @@ export function createBossResumesWorkflowWith(options: BossResumesOptions): Boss
       // available: the online resume stands in for a missing attachment.
     }
 
+    // The online resume is an image: without local OCR neither its identity nor its text can be read.
+    if (!env.vision) return { status: 'failed', reason: 'local_vision_missing: the online resume is an image and needs local OCR' };
     let o = await look(session, env, signal);
     if (requestDialog(o)) {
       const dismissed = await dismissRequestDialog(session, env, o, trace, signal);
@@ -392,7 +398,7 @@ export function createBossResumesWorkflowWith(options: BossResumesOptions): Boss
     readAccount: () => undefined,
     listCandidates: (observation, account) => listCandidates(observation, account, collisions),
     identify: (observation, ref, account) => identify(observation, ref, account, collisions),
-    verifyUnit: (unit, context, observation): Promise<CheckResult> => verifyUnit(unit, context, observation, memory),
+    verifyUnit: (unit, context, observation): Promise<CheckResult> => verifyUnit(unit, context, observation, memory, { env, limits: options.capture }),
     runScripted(unit, context) {
       switch (unit) {
         case 'select_source':

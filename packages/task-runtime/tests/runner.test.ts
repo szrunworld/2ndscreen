@@ -1245,6 +1245,20 @@ test('a run whose session cannot be closed rejects, so no one may treat its acto
     const taskId = await h.submit({ requestedCount: 2 });
     world.closeFails = true;
     await assert.rejects(run(h, taskId), /could not be released/);
+    // The work itself was done, but with the actor's stop unproven nothing claims the task ended.
+    const task = (await h.store.getTask(taskId))!;
+    assert.equal(task.status, 'running', 'not published as succeeded');
+    assert.equal(task.terminationReason, undefined);
+    assert.equal(task.counts.committed, 2);
+    const failed = (await h.store.listEvents(taskId)).find((e) => e.type === 'session_close_failed')!;
+    assert.equal(failed.detail?.stop, 'end');
+    assert.ok(!(await h.store.listEvents(taskId)).some((e) => e.type === 'run_finished'));
+
+    // The same for a wait: the login page would make it waiting_user, but not without a proven stop.
+    const other = await h.submit({ requestedCount: 2 });
+    world.page = 'login';
+    await assert.rejects(run(h, other), /could not be released/);
+    assert.equal((await h.store.getTask(other))!.status, 'running', 'not published as waiting_user');
   } finally {
     await h.cleanup();
   }
