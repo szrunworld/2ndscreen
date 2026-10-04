@@ -19,7 +19,8 @@ Sources/SecondScreenCore/LocalVision.swift for fields.
   echo '{"v":1,"op":"ocr","image":"/abs/shot.png","languages":["zh-Hans","en-US"]}' | 2ndscreen vision
 """
 
-/// The partial compose file to delete if the runtime cancels us with SIGTERM.
+/// The partial compose file this process created, to delete if the runtime
+/// cancels us with SIGTERM. It is set only once the file is ours.
 private final class PartialFile: @unchecked Sendable {
     private let lock = NSLock()
     private var path: String?

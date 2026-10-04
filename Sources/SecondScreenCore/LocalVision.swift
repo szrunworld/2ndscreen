@@ -418,12 +418,18 @@ public enum LocalVision {
     /// skipped; a screen with no proven overlap is appended whole and marked
     /// a gap, which the caller must treat as an incomplete capture.
     ///
-    /// The PNG is written to a hidden `.partial` file next to `output` and
-    /// renamed into place, so `output` only ever holds a whole image.
-    /// `tempFile` hears the partial path while it exists, for a signal
-    /// handler to delete; `isCancelled` is checked between screens.
+    /// The PNG is written to a hidden partial file next to `output`, named
+    /// by this call's `nonce`, and linked into place, so `output` only ever
+    /// holds a whole image and is never replaced. Only a partial file this
+    /// call created itself is ever deleted: one that already exists, from
+    /// any other compose, is a conflict and is left alone. The runtime
+    /// passes its own nonce so it can delete exactly this call's partial
+    /// file if it had to SIGKILL the helper. `tempFile` hears the partial
+    /// path once this call owns it, for a signal handler to delete;
+    /// `isCancelled` is checked between screens.
     public static func compose(_ frames: [String], output: String, roi: RequestedRect? = nil,
                                minOverlap: Int = defaultMinOverlap, limits: Limits = Limits(),
+                               nonce: String = UUID().uuidString,
                                isCancelled: () -> Bool = { false },
                                tempFile: (String?) -> Void = { _ in }) throws -> Composed {
         guard !frames.isEmpty, frames.count <= limits.maxFrames else {
@@ -439,7 +445,8 @@ public enum LocalVision {
         guard !FileManager.default.fileExists(atPath: outputURL.path) else {
             throw Failure("conflict", "\(outputURL.path) already exists")
         }
-        let partial = partialPath(for: outputURL.path)
+        guard isValidNonce(nonce) else { throw Failure("invalid_input", "nonce must be 8 to 64 letters, digits or dashes") }
+        let partial = partialPath(for: outputURL.path, nonce: nonce)
 
         // Pass 1: placements from grey copies, two screens in memory at a time.
         var placements: [ComposedFrame] = []
@@ -508,18 +515,28 @@ public enum LocalVision {
 
         let data: Data
         do { data = try Images.png(image) } catch { throw Failure("io", "cannot encode the composed PNG") }
+        // O_EXCL: the partial file is created by this call or not at all.
+        let fd = open(partial, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o644)
+        guard fd >= 0 else {
+            if errno == EEXIST { throw Failure("conflict", "\(partial) already exists; it belongs to another compose") }
+            throw Failure("io", "cannot create \(partial): \(String(cString: strerror(errno)))")
+        }
         tempFile(partial)
-        // Left only by a compose that was killed; it is ours to replace.
-        try? FileManager.default.removeItem(atPath: partial)
         defer {
-            try? FileManager.default.removeItem(atPath: partial)
+            unlink(partial)
             tempFile(nil)
         }
-        do {
-            try data.write(to: URL(fileURLWithPath: partial), options: [.withoutOverwriting])
-        } catch {
-            throw Failure("io", "cannot write \(partial): \(error.localizedDescription)")
+        let written = data.withUnsafeBytes { raw -> Bool in
+            var offset = 0
+            while offset < raw.count {
+                let n = write(fd, raw.baseAddress! + offset, raw.count - offset)
+                if n < 0 { if errno == EINTR { continue }; return false }
+                offset += n
+            }
+            return fsync(fd) == 0
         }
+        let closed = close(fd) == 0
+        guard written, closed else { throw Failure("io", "cannot write \(partial): \(String(cString: strerror(errno)))") }
         // link(2) fails when the target exists, unlike rename, so a file that
         // appeared meanwhile is never replaced.
         guard link(partial, outputURL.path) == 0 else {
@@ -529,10 +546,15 @@ public enum LocalVision {
         return Composed(path: outputURL.path, widthPx: region.width, heightPx: height, sha256: sha256(data), frames: placements)
     }
 
-    /// Where `compose` writes before renaming: hidden, next to the output.
-    public static func partialPath(for output: String) -> String {
+    /// Where the compose with `nonce` writes before linking: hidden, next to
+    /// the output. The runtime computes the same path to clean up after a kill.
+    public static func partialPath(for output: String, nonce: String) -> String {
         let url = URL(fileURLWithPath: output)
-        return url.deletingLastPathComponent().appendingPathComponent(".\(url.lastPathComponent).partial").path
+        return url.deletingLastPathComponent().appendingPathComponent(".\(url.lastPathComponent).\(nonce).partial").path
+    }
+
+    static func isValidNonce(_ nonce: String) -> Bool {
+        (8...64).contains(nonce.count) && nonce.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }
     }
 }
 
@@ -542,7 +564,7 @@ public enum LocalVision {
 ///
 ///   {"v":1,"op":"ocr","image":"/abs.png","roi":{"x":0,"y":0,"width":10,"height":10},"languages":["zh-Hans"]}
 ///   {"v":1,"op":"compare","before":"/a.png","after":"/b.png","roi":{...},"minOverlapPx":48}
-///   {"v":1,"op":"compose","frames":["/a.png","/b.png"],"output":"/out.png","roi":{...},"minOverlapPx":48}
+///   {"v":1,"op":"compose","frames":["/a.png","/b.png"],"output":"/out.png","roi":{...},"minOverlapPx":48,"nonce":"<uuid>"}
 ///   {"v":1,"op":"metadata","image":"/abs.png"}
 ///
 /// Replies are {"v":1,"ok":true,"result":{...}} or
@@ -603,10 +625,11 @@ extension LocalVision {
             if let diff = comparison.overlapMeanDiff { result["overlapMeanDiff"] = round(diff, 4) }
             return result
         case "compose":
-            try fields.only(["v", "op", "frames", "output", "roi", "minOverlapPx"])
+            try fields.only(["v", "op", "frames", "output", "roi", "minOverlapPx", "nonce"])
             guard let frames = try fields.strings("frames") else { throw Failure("invalid_input", "frames is required") }
             let composed = try compose(frames, output: try fields.string("output"), roi: try fields.rect("roi"),
                                        minOverlap: try fields.minOverlap(), limits: limits,
+                                       nonce: try fields.optionalString("nonce") ?? UUID().uuidString,
                                        isCancelled: isCancelled, tempFile: tempFile)
             return [
                 "path": composed.path,
@@ -642,6 +665,12 @@ extension LocalVision {
         func string(_ key: String) throws -> String {
             guard let value = raw[key] as? String, !value.isEmpty else { throw Failure("invalid_input", "\(key) must be a path") }
             return value
+        }
+
+        func optionalString(_ key: String) throws -> String? {
+            guard let value = raw[key] else { return nil }
+            guard let string = value as? String else { throw Failure("invalid_input", "\(key) must be a string") }
+            return string
         }
 
         func strings(_ key: String) throws -> [String]? {

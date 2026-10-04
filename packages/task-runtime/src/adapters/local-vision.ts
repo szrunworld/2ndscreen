@@ -14,6 +14,7 @@
 // partial compose file and exits), then SIGKILL after a grace period; a call
 // settles only after the process has exited.
 
+import { randomUUID } from 'node:crypto';
 import { rm } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 import {
@@ -176,11 +177,14 @@ export function createLocalVision(options: LocalVisionOptions): LocalVisionClien
       }
       const output = checkPath(outputPath, 'outputPath');
       if (!/\.png$/i.test(output)) throw new RuntimeError('invalid_input', 'outputPath must end in .png');
-      const body: Record<string, unknown> = { frames: framePaths.map((p, i) => checkPath(p, `framePaths[${i}]`)), output };
+      // The nonce names this call's partial file, so a cleanup after SIGKILL
+      // can only ever remove the file this call's helper created.
+      const nonce = randomUUID();
+      const body: Record<string, unknown> = { frames: framePaths.map((p, i) => checkPath(p, `framePaths[${i}]`)), output, nonce };
       if (opts?.roi !== undefined) body.roi = checkRect(opts.roi);
       if (opts?.minOverlapPx !== undefined) body.minOverlapPx = checkMinOverlap(opts.minOverlapPx);
-      // A helper killed before it could clean up leaves only its hidden partial file.
-      const removePartial = () => rm(partialComposePath(output), { force: true });
+      // A helper killed before it could clean up leaves only its own hidden partial file.
+      const removePartial = () => rm(partialComposePath(output, nonce), { force: true });
       const result = toComposed(await call('compose', body, signal, removePartial), framePaths.length);
       if (result.path !== output) throw new RuntimeError('io', `local vision wrote ${result.path}, not ${output}`);
       return result;
@@ -199,9 +203,9 @@ export function createLocalVision(options: LocalVisionOptions): LocalVisionClien
   };
 }
 
-/** Where the helper writes a compose before renaming it: hidden, next to the output. */
-export function partialComposePath(outputPath: string): string {
-  return join(dirname(outputPath), `.${basename(outputPath)}.partial`);
+/** Where the helper writes the compose with `nonce` before linking it into place: hidden, next to the output. */
+export function partialComposePath(outputPath: string, nonce: string): string {
+  return join(dirname(outputPath), `.${basename(outputPath)}.${nonce}.partial`);
 }
 
 // ---------------------------------------------------------------------------

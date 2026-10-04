@@ -76,6 +76,10 @@ private enum Fixture {
     }
 }
 
+private func partials(in dir: URL) throws -> [String] {
+    try FileManager.default.contentsOfDirectory(atPath: dir.path).filter { $0.hasSuffix(".partial") }
+}
+
 private func expectFailure(_ code: String, _ body: () throws -> Void) {
     do {
         try body()
@@ -268,7 +272,7 @@ private func expectFailure(_ code: String, _ body: () throws -> Void) {
         #expect(try grey(output).pixels == LocalVision.Grey(page, region: .init(x: 0, y: 0, width: 240, height: 1400)).pixels)
         let data = try Data(contentsOf: URL(fileURLWithPath: output))
         #expect(composed.sha256 == SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined())
-        #expect(!FileManager.default.fileExists(atPath: LocalVision.partialPath(for: output)))
+        #expect(try partials(in: dir).isEmpty)
     }
 
     @Test func aScreenWithNoProvenOverlapIsAGap() throws {
@@ -321,7 +325,7 @@ private func expectFailure(_ code: String, _ body: () throws -> Void) {
             _ = try LocalVision.compose(frames, output: output, isCancelled: { checks += 1; return checks > 2 })
         }
         #expect(!FileManager.default.fileExists(atPath: output))
-        #expect(!FileManager.default.fileExists(atPath: LocalVision.partialPath(for: output)))
+        #expect(try partials(in: dir).isEmpty)
     }
 
     @Test func reportsThePartialFileWhileItExists() throws {
@@ -329,8 +333,56 @@ private func expectFailure(_ code: String, _ body: () throws -> Void) {
         let frame = try Fixture.write(Fixture.rows(page, from: 0, count: 100), dir, "a.png")
         let output = dir.appendingPathComponent("out.png").path
         var seen: [String?] = []
-        _ = try LocalVision.compose([frame], output: output, tempFile: { seen.append($0) })
-        #expect(seen == [LocalVision.partialPath(for: output), nil])
+        _ = try LocalVision.compose([frame], output: output, nonce: "nonce-0001", tempFile: { seen.append($0) })
+        #expect(seen == [LocalVision.partialPath(for: output, nonce: "nonce-0001"), nil])
+        #expect(seen[0]?.hasPrefix(dir.path + "/.out.png.") == true, "the partial file stays in the output directory")
+    }
+
+    @Test func partialFilesItDidNotCreateAreLeftAlone() throws {
+        let dir = try Fixture.directory()
+        let frame = try Fixture.write(Fixture.rows(page, from: 0, count: 100), dir, "a.png")
+        let output = dir.appendingPathComponent("out.png").path
+        // Another compose's files: the old fixed name and another nonce.
+        let legacy = dir.appendingPathComponent(".out.png.partial").path
+        let other = LocalVision.partialPath(for: output, nonce: "other-nonce-1")
+        for path in [legacy, other] { try Data("someone else's".utf8).write(to: URL(fileURLWithPath: path)) }
+
+        // A nonce whose partial file already exists is a conflict, and that file survives.
+        expectFailure("conflict") { _ = try LocalVision.compose([frame], output: output, nonce: "other-nonce-1") }
+        #expect(!FileManager.default.fileExists(atPath: output))
+        _ = try LocalVision.compose([frame], output: output, nonce: "mine-nonce-1")
+        expectFailure("conflict") { _ = try LocalVision.compose([frame], output: output, nonce: "mine-nonce-2") }
+        for path in [legacy, other] {
+            #expect(try Data(contentsOf: URL(fileURLWithPath: path)) == Data("someone else's".utf8))
+        }
+        #expect(try partials(in: dir).sorted() == [".out.png.other-nonce-1.partial", ".out.png.partial"])
+        expectFailure("invalid_input") { _ = try LocalVision.compose([frame], output: dir.appendingPathComponent("b.png").path, nonce: "../../x") }
+        expectFailure("invalid_input") { _ = try LocalVision.compose([frame], output: dir.appendingPathComponent("b.png").path, nonce: "short") }
+    }
+
+    @Test func concurrentComposesToOneOutputNeverOverwrite() throws {
+        let dir = try Fixture.directory()
+        let frames = try [0, 200].enumerated().map { try Fixture.write(Fixture.rows(page, from: $1, count: 300), dir, "f\($0).png") }
+        let output = dir.appendingPathComponent("out.png").path
+        let lock = NSLock()
+        var outcomes: [Result<LocalVision.Composed, LocalVision.Failure>] = []
+        DispatchQueue.concurrentPerform(iterations: 4) { index in
+            let outcome: Result<LocalVision.Composed, LocalVision.Failure>
+            do {
+                outcome = .success(try LocalVision.compose(frames, output: output, nonce: "racer-000\(index)"))
+            } catch let failure as LocalVision.Failure {
+                outcome = .failure(failure)
+            } catch {
+                outcome = .failure(.init("io", "\(error)"))
+            }
+            lock.lock(); outcomes.append(outcome); lock.unlock()
+        }
+        let winners = outcomes.compactMap { try? $0.get() }
+        #expect(winners.count == 1)
+        for case .failure(let failure) in outcomes { #expect(failure.code == "conflict", "\(failure)") }
+        let data = try Data(contentsOf: URL(fileURLWithPath: output))
+        #expect(LocalVision.sha256(data) == winners.first?.sha256)
+        #expect(try partials(in: dir).isEmpty)
     }
 }
 

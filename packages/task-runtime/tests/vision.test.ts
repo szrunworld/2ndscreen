@@ -151,7 +151,9 @@ test('compose sends frames and output and checks the reply against the request',
   const frames = ['/stage/p0.png', '/stage/p1.png', '/stage/p2.png', '/stage/p3.png'];
   const out = await vision.compose(frames, '/stage/resume.png', { roi: { x: 0, y: 0, width: 1400, height: 1500 }, minOverlapPx: 64 });
   assert.deepEqual(out, composed);
-  assert.deepEqual(JSON.parse(spawned[0]!.child.written[0]!), {
+  const { nonce, ...sent } = JSON.parse(spawned[0]!.child.written[0]!);
+  assert.match(nonce, /^[0-9a-f-]{36}$/);
+  assert.deepEqual(sent, {
     v: 1,
     op: 'compose',
     frames,
@@ -250,21 +252,38 @@ test('a helper that ignores SIGTERM is killed after the grace period', async () 
   assert.ok(Date.now() - started >= 45);
 });
 
-test('a cancelled compose removes the partial file a killed helper left', async () => {
+test('a cancelled compose removes only the partial file its own helper made', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'local-vision-'));
   const output = join(dir, 'resume.png');
-  const { spawn } = fakeSpawner(async () => {
-    await writeFile(partialComposePath(output), 'half a png');
+  // Another compose of the same output, and the old fixed name: never ours to delete.
+  const legacy = join(dir, '.resume.png.partial');
+  const other = partialComposePath(output, 'other-compose-nonce');
+  await writeFile(legacy, 'theirs');
+  await writeFile(other, 'theirs');
+  let mine = '';
+  const { spawn, spawned } = fakeSpawner(async (_child, request) => {
+    assert.match(String(request.nonce), /^[0-9a-f-]{36}$/);
+    mine = partialComposePath(output, String(request.nonce));
+    await writeFile(mine, 'half a png');
   }, { ignoreTerm: true });
   const vision = createLocalVision({ helper: 'h', spawn, killGraceMs: 5 });
   const controller = new AbortController();
   const pending = vision.compose([join(dir, 'a.png')], output, undefined, controller.signal);
   await new Promise((r) => setTimeout(r, 20));
-  assert.ok(existsSync(partialComposePath(output)));
+  assert.ok(existsSync(mine));
   controller.abort();
   await rejects(pending, 'cancelled');
-  assert.equal(existsSync(partialComposePath(output)), false);
+  assert.deepEqual(spawned[0]!.child.signals, ['SIGTERM', 'SIGKILL']);
+  assert.equal(existsSync(mine), false);
+  assert.equal(await readFile(legacy, 'utf8'), 'theirs');
+  assert.equal(await readFile(other, 'utf8'), 'theirs');
   assert.equal(existsSync(output), false);
+
+  // Each call names a fresh partial file.
+  const nonces = new Set<string>();
+  const v2 = createLocalVision({ helper: 'h', spawn: fakeSpawner((c, req) => { nonces.add(String(req.nonce)); c.exit(1); }).spawn });
+  for (let i = 0; i < 3; i++) await rejects(v2.compose(['/a.png'], output), 'io');
+  assert.equal(nonces.size, 3);
 });
 
 test('close stops running calls and refuses new ones', async () => {
