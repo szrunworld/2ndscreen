@@ -1,6 +1,6 @@
 # 招聘 Monitor 服务端 HTTP 接口
 
-版本 0.3.2，与 `monitor_contracts` 0.3.2 对应。机器可读的定义在 [`monitor/contracts/openapi.yaml`](../../monitor/contracts/openapi.yaml)（OpenAPI 3.1，已通过 `openapi-spec-validator` 校验）。本文写给实现者（F1–F3、G、I1/I2、D2）看，冲突时以 openapi.yaml 为准。消息体的字段含义见 [contracts.md](contracts.md)。
+版本 0.3.3，与 `monitor_contracts` 0.3.3 对应。机器可读的定义在 [`monitor/contracts/openapi.yaml`](../../monitor/contracts/openapi.yaml)（OpenAPI 3.1，已通过 `openapi-spec-validator` 校验）。本文写给实现者（F1–F3、G、I1/I2、D2）看，冲突时以 openapi.yaml 为准。消息体的字段含义见 [contracts.md](contracts.md)。
 
 ## 一、通用规则
 
@@ -13,6 +13,8 @@
 | `deviceToken` | Monitor | `POST /devices` 返回，只出现一次；服务端只存哈希；可吊销，吊销后返回 401。路径里的 `device_id` 必须与令牌所属设备一致，否则 403 |
 | `consoleSession` | 控制台 | 服务端从中取得 actor，写入人工处理记录和二维码查看记录 |
 | `serviceToken` | 邮件接入（G） | 写简历文档与邮件记录、提交核对结果、查询求简历记录；0.3.2 起可只读调用 `GET /resume-documents` 与 `GET /accounts/{id}/policy`（读 `mail_retention_days`、`resume_mail_timeout_days`）。服务令牌不属于某个账户，多账户时取哪个账户的值仍未裁决 |
+
+控制台会话令牌与服务令牌由部署方配置（F5，缺陷 M-4）：`python -m app.main serve` 从环境变量 `MONITOR_CONSOLE_TOKENS` / `MONITOR_SERVICE_TOKENS`（`令牌=操作者` 逗号分隔）、令牌文件（`--console-tokens-file` / `--service-tokens-file`，每行一个）或命令行 `--console-token` / `--service-token`（会出现在 `ps` 里，仅调试用）读取，多个来源合并；没有控制台令牌时拒绝启动。令牌不写进仓库，启动日志只打印操作者名与个数。待办通知 Webhook 用 `MONITOR_WEBHOOK_URL`、`MONITOR_WEBHOOK_SECRET`。说明见 `monitor/server/app/serve.py`。
 
 **幂等**：所有写接口（POST / PUT）必须带 `Idempotency-Key` 头，格式为 `^[A-Za-z0-9._:-]{8,128}$`。
 
@@ -70,17 +72,24 @@
 
 1. 用户在控制台选择模式，生成注册码（`POST /device-enrollments`）。
 2. 执行 `monitor install` 时，Monitor 以 `device_registration` 为请求体调用 `POST /devices`，拿到 `device_token` 后存入 keychain 或 0600 文件。注册码只能用一次。若 `contracts_version` 不兼容，返回 409。
-3. 用户在控制台确认这台设备绑定的招聘账户（`PUT /devices/{id}/account-binding`），Monitor 把绑定的 `account_id` 保存在本地，此后心跳上报这个值。绑定确认之前，或心跳中的账户与服务端记录的绑定不一致时，领取接口返回空列表，心跳响应中 `account_confirmed=false`。
+3. 用户在控制台确认这台设备绑定的招聘账户（`PUT /devices/{id}/account-binding`）。
+4. **设备以心跳回执中的绑定为准**（0.3.3）：每次心跳的响应 `HeartbeatAck.account_binding` 是服务端记录的、经控制台确认的绑定 `{account_id, bound_at, confirmed_by}`，没有确认的绑定时为 `null`；它与心跳里报的 `account_id` 无关，如实返回。Monitor 收到非空绑定且与本机不同时，把它写入本机（`monitor_state.account_binding`，字段相同），此后心跳和领取都用这个 `account_id`。安装时不需要、也不应该手工输入账户。
+   - 控制台再次 `PUT` 另一个账户即变更绑定：下一次回执返回新账户，Monitor 按新账户改写本机绑定。改写之前心跳里仍是旧账户，`account_confirmed=false`、领取为空，不会用旧账户执行新绑定下的指令。
+   - 回执里为 `null` 表示服务端没有确认的绑定（尚未确认；v1 没有解绑接口，以后若增加解绑，也通过 `null` 反映）。Monitor 不据此自行编造账户；本机已有的绑定如何处理由客户端（D2d）决定，但服务端不会为不一致的账户下发指令。
+   - 回执里没有 `account_binding` 字段说明服务端早于 0.3.3，Monitor 保持本机绑定不变。
+5. 绑定确认之前，或心跳中的账户与服务端记录的绑定不一致时，领取接口返回空列表，心跳响应中 `account_confirmed=false`、`policy_version=null`。
 
-**账户来源（0.2.0）**：BOSS 客户端窗口里读不到当前登录账户（P0 与任务 B 均已确认），所以 v1 的 `account_id` 只来自安装时的绑定，Monitor 不从界面读取。心跳里的 `account_id` 表示"绑定账户"，不是"观察到的账户"；与服务端绑定不一致说明是配置问题（例如重装后未重新绑定），不说明用户在 BOSS 里换了账户。结果 reason `account_mismatch` 保留，但 v1 只在有证据时使用（例如界面出现账户切换提示）；目前没有检测手段，用户直接在 BOSS 里切换账户时 Monitor 察觉不到，列入 N 待验证。
+**账户来源（0.2.0）**：BOSS 客户端窗口里读不到当前登录账户（P0 与任务 B 均已确认），所以 v1 的 `account_id` 只来自控制台确认的绑定（0.3.3 起经心跳回执下发，见上文第 4 步），Monitor 不从界面读取。心跳里的 `account_id` 表示"绑定账户"，不是"观察到的账户"；与服务端绑定不一致说明是配置问题（例如重装后未重新绑定），不说明用户在 BOSS 里换了账户。结果 reason `account_mismatch` 保留，但 v1 只在有证据时使用（例如界面出现账户切换提示）；目前没有检测手段，用户直接在 BOSS 里切换账户时 Monitor 察觉不到，列入 N 待验证。
 
 ### 3.2 心跳
 
-`POST /devices/{id}/heartbeat`，请求体为 `device_heartbeat`，默认 30 秒一次。响应 `HeartbeatAck`：
+`POST /devices/{id}/heartbeat`，请求体为 `device_heartbeat`，默认 30 秒一次。响应 `HeartbeatAck`（0.3.3 起是契约 `heartbeat_ack`，可用 `validate_heartbeat_ack` 校验）：
 
 - `paused`：服务端要求的暂停状态（控制台点了暂停）。Monitor 按它停止领取和新的对外动作，已经发生的动作仍然完成记录与回传。
 - `policy_version`：与本地不同时，Monitor 重新 `GET /accounts/{account_id}/policy`。
 - `cancellations[]`：已领取但被取消的 `command_id`，规则见 3.4。
+- `account_confirmed`：心跳里的 `account_id` 是否等于服务端记录的绑定。
+- `account_binding`（0.3.3，必有，可为 null）：服务端确认的绑定，规则见 3.1 第 4 步。
 
 服务端超过 90 秒没有收到心跳时，把设备显示为 offline。
 

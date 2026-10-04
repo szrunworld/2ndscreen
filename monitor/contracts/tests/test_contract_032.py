@@ -48,8 +48,9 @@ def _ops():
     }
 
 
-def test_version_is_032():
-    assert mc.__version__ == "0.3.2"
+def test_version_is_at_least_032():
+    # 精确版本号由 test_schemas.test_version_is_consistent 检查
+    assert tuple(int(x) for x in mc.__version__.split(".")) >= (0, 3, 2)
 
 
 def test_server_yaml_gaps_are_filled():

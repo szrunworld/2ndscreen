@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.3.2"
+__version__ = "0.3.3"
 
 from .driver import (
     DRIVER_ERROR_CODES,
@@ -74,6 +74,8 @@ from .models import (
     EvidenceItem,
     Fact,
     Frame,
+    HeartbeatAccountBinding,
+    HeartbeatAck,
     LoginQr,
     MailCheck,
     MailMessage,
@@ -130,6 +132,7 @@ from .validate import (
     validate_device_heartbeat,
     validate_device_registration,
     validate_event,
+    validate_heartbeat_ack,
     validate_login_qr,
     validate_mail_message,
     validate_mail_verification,

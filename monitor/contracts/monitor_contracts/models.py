@@ -879,6 +879,33 @@ class DeviceHeartbeat(ContractModel):
         return self
 
 
+class HeartbeatAccountBinding(ContractModel):
+    """心跳回执里的绑定账户（0.3.3），字段与本机 monitor_state.account_binding 一致。"""
+
+    account_id: AccountId
+    bound_at: AwareDatetime
+    confirmed_by: Annotated[str, StringConstraints(min_length=1, max_length=128)]
+
+
+class HeartbeatAck(ContractModel):
+    """心跳响应（0.3.3 纳入契约）。account_binding 是服务端记录的确认绑定，设备以它为准。"""
+
+    server_time: AwareDatetime
+    paused: bool
+    policy_version: Annotated[int, Field(ge=1)] | None
+    cancellations: list[UUID]
+    account_confirmed: bool | None = None
+    account_binding: HeartbeatAccountBinding | None
+
+    @model_validator(mode="after")
+    def _check(self) -> HeartbeatAck:
+        if self.account_confirmed and self.account_binding is None:
+            raise _fail("account_binding", "account_confirmed=true 时 account_binding 不能为 null")
+        if self.policy_version is not None and self.account_binding is None:
+            raise _fail("policy_version", "没有确认的绑定账户时 policy_version 必须为 null")
+        return self
+
+
 class LoginQr(ContractModel):
     device_id: DeviceId
     account_id: AccountId | None

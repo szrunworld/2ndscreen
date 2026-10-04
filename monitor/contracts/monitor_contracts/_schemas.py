@@ -24,6 +24,7 @@ CONTRACT_SCHEMAS: dict[str, str] = {
     "policy": "policy.json",
     "device_registration": "device_registration.json",
     "device_heartbeat": "device_heartbeat.json",
+    "heartbeat_ack": "heartbeat_ack.json",
     "login_qr": "login_qr.json",
     "mail_message": "mail_message.json",
     "mail_verification": "mail_verification.json",

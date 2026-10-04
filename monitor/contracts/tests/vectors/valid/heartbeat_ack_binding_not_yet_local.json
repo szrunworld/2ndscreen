@@ -1,0 +1,16 @@
+{
+  "contract": "heartbeat_ack",
+  "description": "服务端已确认绑定、设备本机还没有（心跳 account_id 为 null）：account_confirmed=false 但带绑定，设备据此写入本机绑定（0.3.3）",
+  "data": {
+    "server_time": "2026-10-04T09:31:20+08:00",
+    "paused": false,
+    "policy_version": null,
+    "cancellations": [],
+    "account_confirmed": false,
+    "account_binding": {
+      "account_id": "acct_demo",
+      "bound_at": "2026-10-04T09:00:00+08:00",
+      "confirmed_by": "ops_li"
+    }
+  }
+}
