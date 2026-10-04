@@ -133,6 +133,11 @@ class MonitorRuntime:
         self._next_heartbeat: datetime | None = None
         self._next_observe: datetime | None = None
         self._recovery_pending = False
+        # 观察器（任务 E）由 create_observer() 无参构造，事件需要的 device_id 与
+        # heartbeat.last_error 通道在这里注入。
+        attach = getattr(observer, "attach", None)
+        if callable(attach):
+            attach(device_id=config.device_id, report=self.record_error)
         self._unacked: dict[UUID, tuple[str, datetime]] = {}
         self._parked_results: set[UUID] = set()
         self._parked_events: set[str] = set()
@@ -530,10 +535,14 @@ class MonitorRuntime:
         baseline = self.state.baseline.model_copy(deep=True)
         if self.state.needs_baseline and baseline.established:
             baseline = Baseline(account_id=self.account_id, established=False, generation=baseline.generation + 1)
+        elif baseline.account_id is None and self.account_id is not None:
+            # 首次启动的默认基线不带账户；观察器在 account_id 为空时不产生事件。
+            baseline.account_id = self.account_id
         with self.gui_lock.hold(OBSERVE, timeout=0) as ok:
             if not ok:
                 return
-            guarded = GuardedDriver(self.driver, mode="read_only")
+            # 观察只允许导航（切到『新招呼』页签、滚动），禁止输入、按键与对外动作。
+            guarded = GuardedDriver(self.driver, mode="verify")
             try:
                 events = self.observer.observe(guarded, baseline)
             except DriverError as exc:

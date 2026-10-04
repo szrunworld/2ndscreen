@@ -221,17 +221,47 @@ def test_observer_errors_recorded_not_fatal(exc, code, state):
     assert env.server.heartbeats[-1]["last_error"]["code"] == code
 
 
-def test_observer_cannot_write():
-    class Writer(ScriptedObserver):
-        def observe(self, driver, baseline):
-            from monitor_contracts import Locator
+def test_observer_may_navigate_but_not_type():
+    """观察用 verify 守卫：允许点击切页签（导航），禁止输入与按键。"""
+    from monitor_contracts import Locator
 
-            driver.click(Locator(text="发送"))
+    class Navigator(ScriptedObserver):
+        def observe(self, driver, baseline):
+            driver.click(Locator(text="新招呼"))
+            return super().observe(driver, baseline)
+
+    env = make_env(observer=Navigator())
+    env.run()
+    assert [w.method for w in env.driver.writes] == ["click"]
+    assert env.runtime.state.baseline.established
+
+    class Typer(ScriptedObserver):
+        def observe(self, driver, baseline):
+            driver.type_text(Locator(text="搜索"), "x")
             return []
 
-    env = make_env(observer=Writer())
+    env = make_env(observer=Typer())
     env.run()
     assert env.driver.writes == [] and env.runtime.last_error.code == "driver_error"
+
+
+def test_observer_attach_receives_device_id_and_reporter():
+    class Attachable(ScriptedObserver):
+        def attach(self, *, device_id=None, report=None):
+            self.device_id, self.report = device_id, report
+
+    obs = Attachable()
+    env = make_env(observer=obs)
+    assert obs.device_id == env.runtime.config.device_id
+    obs.report("unsupported_presentation", "测试", "conversation_list")
+    assert env.runtime.last_error.code == "unsupported_presentation"
+
+
+def test_first_baseline_carries_bound_account():
+    obs = ScriptedObserver()
+    env = make_env(observer=obs)
+    env.run()
+    assert obs.calls[0].account_id == env.runtime.account_id is not None
 
 
 def test_observer_that_cannot_establish_keeps_needs_baseline():

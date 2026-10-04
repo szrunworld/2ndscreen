@@ -13,7 +13,7 @@
 | C | Driver 适配器 | ctx_3dfbecec466d（已释放） | monitor-C | 已合（ecfe9da；client 入工作区 + relock，contracts+client 351 tests） | ec6aed9 | 定位器 text 同时匹配 label/value（比契约宽），0.2.0 契约里追认；CliDriver 未在 BOSS 上真机跑过 → N |
 | D1 | 本地账本 | 已释放 | monitor-D1 | 已合（079107c + 0.2.0 适配 69a9855） | 3a3a5b4 | 已回传数据保留期限待产品决定 |
 | D2 | 指令客户端与执行管线 | ctx_be925b1cfd1f（已释放） | monitor-D2 | 已合（810c993；relock httpx；contracts+client 464 tests） | dc26e24 | 工厂入口：D1 open_ledger(path)、E create_observer()、H create_handlers()；0.2.0 合并后跟进 core/write_flags.py 与 guard.py |
-| E | 观察模块 | ctx_ba5accc0228d / monitor-E | monitor-E | 进行 | — | — |
+| E | 观察模块 | 已释放 | monitor-E | 已合（a139f20；协调者同时改 core：观察用 verify 守卫、attach 注入、首个基线带账户；全量 884 tests） | e002670 | 待 N：点页签后列表刷新、处理过的会话是否移出新招呼、更多时间文案形态 |
 | F1 | 服务端基础 | 已释放 | monitor-F1 | 已合（2b1dff2 + 0.2.0 适配 8abbf54） | c7bbc4b | openapi 缺 401/422/403 → A3 |
 | F2 | 服务端业务 | — | — | 未派 | — | — |
 | F3 | 服务端扩展 | — | — | 未派 | — | — |
