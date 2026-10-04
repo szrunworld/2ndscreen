@@ -266,7 +266,7 @@ export function createLocalVision(options: {
 
 要求：只读取已有图片，不截图、不发送输入、不调用模型；`roi` 与返回框均为图片像素；`compare` 给出相似度与竖直位移，供滚动进度和底部检查使用；未实现 `findTemplate` 时 template 定位器报 `capability_missing`。
 
-可选 `compose`（A8 追加，经协调者批准）：`compose(framePaths, outputPath, { roi?, minOverlapPx? }, signal)` 把同一滚动区域的多屏截图自上而下拼成一张 PNG，返回 `ComposedImage`（尺寸、sha256、每帧 `first/placed/duplicate/gap` 及其输出行、`hasGap`）。每帧只在与上一帧有已验证的重叠（默认 ≥48 行且有纹理、无歧义）时追加新行；无新行的帧为 duplicate；无法证明重叠的帧整帧追加并标 gap，调用方应记 `CaptureEvidence.stop = 'stitch_gap'`。`outputPath` 必须是绝对 `.png` 路径、父目录存在、文件不存在；输出整张写入或完全不写。单帧加 roi 即裁剪。拼接干净不等于采集完整，完整性仍只由 `captureCompleteness` 判定；连续相同截图只是“无进展”。
+可选 `compose`（A8 追加，经协调者批准）：`compose(framePaths, outputPath, { roi?, minOverlapPx? }, signal)` 把同一滚动区域的多屏截图自上而下拼成一张 PNG，返回 `ComposedImage`（尺寸、sha256、每帧 `first/placed/duplicate/gap` 及其输出行、`hasGap`）。每帧只在与上一帧有已验证的重叠（默认 ≥48 行、有纹理、无歧义，且重叠区逐行一致）时追加新行；只有在有纹理内容上证明未移动且未变化的帧才是 duplicate；其余帧（包括完全相同的空白帧或重复内容帧、重叠区有局部变化的帧）一律整帧追加并标 gap，`hasGap = true`，调用方应记 `CaptureEvidence.stop = 'stitch_gap'`。像素相同本身不证明连续。`outputPath` 必须是绝对 `.png` 路径、父目录存在、文件不存在；输出整张写入或完全不写。单帧加 roi 即裁剪。拼接干净不等于采集完整，完整性仍只由 `captureCompleteness` 判定；连续相同截图只是“无进展”。
 
 Swift 侧：`Sources/SecondScreenCore/LocalVision.swift`（实现与协议）、`Sources/ScreenCLI/LocalVision.swift` 提供 `runLocalVision(args)`，由 A7 在 main.swift 的帮助检查之前注册为 `2ndscreen vision`。协议为 stdin 一行请求、stdout 一行回复，退出码 0 成功、1 失败、2 请求无效。上限：每个输入文件 ≤64 MB、单边 ≤16384 px、≤64M 像素，拼接 ≤64 帧、输出 ≤60M 像素。
 
