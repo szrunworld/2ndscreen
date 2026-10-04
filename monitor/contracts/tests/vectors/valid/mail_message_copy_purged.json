@@ -1,0 +1,22 @@
+{
+  "contract": "mail_message",
+  "description": "我方副本按保留期清理后只留元数据",
+  "data": {
+    "mail_message_id": "mail:3f6c2a9e-1b4d-4e8a-9c7f-2d5e8b1a0c44",
+    "provider": "remotedesk-mail",
+    "provider_message_id": "3f6c2a9e-1b4d-4e8a-9c7f-2d5e8b1a0c44",
+    "webhook_delivery_id": "6f1c9d2e-0a7b-4c3e-8f21-5b9a4d7e1c30",
+    "mailbox": "zhaopin@remotedesk.io",
+    "message_id": "<20261004100200.abc123@mail.zhipin.example>",
+    "received_at": "2026-10-04T10:02:00+08:00",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "raw_storage_uri": null,
+    "copy_purged_at": "2026-11-03T10:05:00+08:00",
+    "from_address": "noreply@zhipin.example",
+    "subject": "候选人A 的简历（后端工程师）",
+    "status": "processed",
+    "attempts": 0,
+    "error": null,
+    "updated_at": "2026-11-03T10:05:00+08:00"
+  }
+}

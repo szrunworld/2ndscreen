@@ -33,6 +33,16 @@
 
 明确不做：自动交换联系方式与交换电话（只人工触发换微信）；截屏 + OCR 读取简历正文；读取附件 PDF 预览的文字层（其中含电话与邮箱，用户 2026-10-04 确认）；自动翻页的全量搜索；撤回已发送的消息；跨账号批量操作。
 
+## 一·五、与 ATS 的分工（用户 2026-10-04 确认）
+
+招聘业务的权威是 ATS（仓库 amplifistudio/remotedesk-recruiting，`docs/recruiting-module-design.md` 等）。两边规划冲突时以 ATS 为准。ATS 已把"2ndscreen 的 BOSS 直聘助手"定为 BOSS 渠道的**执行器**（设计 §P2：ATS 下发渠道任务，执行器拉取、执行、回传，每个执行器单独发 key）。据此：
+
+- **Monitor 负责（保留）**：本机端全部——观察、动作、Driver、本地账本与 outbox、状态窗口、本地硬上限、登录接力；以及一层**薄桥接服务**——设备注册与令牌、指令队列（领取 / 确认 / 回报，指令创建与状态更新同事务）、事件接收。
+- **ATS 负责（Monitor 不再扩展）**：候选人档案与去重、招聘流程（`application` + `application_event`）、简历存储与解析、通知、候选人流程页与总览、品牌化简历。Monitor 已合入的 `recruitment_cases`、策略、总览代码（任务 F2）冻结，不再扩展，对接 ATS 时替换为向 ATS 写 `application_event` 的映射。
+- **交给服务器端**：邮件收简历（任务 G，见 handover-mail-ingestion.md）；设备、登录、执行记录管理页放在 ATS 门户（见 handover-device-console.md），Monitor 不自建控制台。
+- **时间路线 A**：Monitor 先独立运行（指令来自 Monitor 桥接服务），ATS 到 P2 定义执行器契约（channel_task）后切换指令来源。
+- **待定**：BOSS 站内搜索、人工换微信暂留在 Monitor 桥接服务，等 ATS 需要时作为渠道任务类型接入。
+
 ## 二、与既有工作的关系
 
 ss-runtime-integration 已经交付并验收了一套"截屏 + OCR 采集在线简历"的运行时（runner / session / store / 2ndscreen adapter）。Monitor 不再走这条数据路径，但沿用它的三项结论：
@@ -188,7 +198,7 @@ GUI 调度锁：观察与动作共用一把锁，动作优先；观察按配置�
 6. **核对（verify）**：每小时检查 pending 超过 30 分钟为 0、processed 的副本存在且哈希一致、needs_review/failed 与人工队列一致、"求简历成功但超过 3 天未收到"的流程提醒、本次清理数量；并对账 mail 的 webhook 投递台账（失败/落死的投递，必要时按窗口重放）。mail 目前没有给 integration key 的"列出邮件"接口，要做到"mail 有、我方没有"的完整对账，需要在 mail 增加 `GET /v1/integration/messages?since=`（接口请求，见任务 G0）。
 6. **关联**：账户（邮箱或主题中的招聘账户）+ 岗位 + 候选人姓名，在该账户"求简历已成功"的流程里查找，结合 `request_resume` 的执行时间窗。只有唯一命中才自动关联；同名、多岗位或找不到时进入人工关联队列，不按姓名硬匹配。
 7. 关联成功后建立 `resume_document` 版本（同一候选人多份简历保留版本，不覆盖），流程进入 `resume_linked`，再解析 PDF 文本；扫描版第一版不做 OCR。收到并正确关联即可按策略触发联系方式请求。
-8. **品牌化简历**（用户 2026-10-04 要求）：对外使用的简历版本套用公司模板与 logo。服务端从候选人附件解析出结构化字段，用公司模板渲染为新 PDF，作为派生版本（`variant=branded`）保存，原件始终保留。模板、logo、字段取舍由用户提供。
+8. **品牌化简历**（已移出本项目，由 ATS 实现；用户 2026-10-04）：对外使用的简历版本套用公司模板与 logo。服务端从候选人附件解析出结构化字段，用公司模板渲染为新 PDF，作为派生版本（`variant=branded`）保存，原件始终保留。模板、logo、字段取舍由用户提供。
 
 附件哈希只用于文件去重，不作为候选人身份。
 
@@ -240,7 +250,7 @@ GUI 调度锁：观察与动作共用一把锁，动作优先；观察按配置�
 
 本机 SQLite 三张表：`command_ledger`（指令、阶段、结果、回传状态）、`event_outbox`（未确认事件）、`monitor_state`（账户绑定、观察基线、读取进度、暂停状态）。
 
-## 十、控制台页面
+## 十、控制台页面（已撤销：管理页放服务器端，见 handover-device-console.md；以下保留作需求参考）
 
 五个服务端页面加一个本机状态窗口，结构见线框图。关键规则：
 

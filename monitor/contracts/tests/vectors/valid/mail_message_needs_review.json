@@ -2,19 +2,21 @@
   "contract": "mail_message",
   "description": "关联歧义，进入人工关联队列",
   "data": {
-    "mail_message_id": "mail:9c59c0a2ba05acc7bcff0c0a1d228e19",
-    "mailbox": "hr@example.com",
-    "message_id": "<20261004093000.abc123@mail.zhipin.example>",
-    "uidvalidity": 1700000000,
-    "uid": 4211,
+    "mail_message_id": "mail:3f6c2a9e-1b4d-4e8a-9c7f-2d5e8b1a0c44",
+    "provider": "remotedesk-mail",
+    "provider_message_id": "3f6c2a9e-1b4d-4e8a-9c7f-2d5e8b1a0c44",
+    "webhook_delivery_id": "6f1c9d2e-0a7b-4c3e-8f21-5b9a4d7e1c30",
+    "mailbox": "zhaopin@remotedesk.io",
+    "message_id": "<20261004100200.abc123@mail.zhipin.example>",
     "received_at": "2026-10-04T10:02:00+08:00",
     "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "raw_storage_uri": "file:///var/monitor/mail/2026/10/04/4211.eml",
+    "raw_storage_uri": "file:///var/monitor/mail/2026/10/04/3f6c2a9e.eml",
+    "copy_purged_at": null,
     "from_address": "noreply@zhipin.example",
     "subject": "候选人A 的简历（后端工程师）",
     "status": "needs_review",
-    "attempts": 1,
+    "attempts": 0,
     "error": "同名候选人在两个岗位下都有求简历记录",
-    "updated_at": "2026-10-04T10:02:05+08:00"
+    "updated_at": "2026-10-04T10:02:40+08:00"
   }
 }

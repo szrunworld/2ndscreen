@@ -1,0 +1,100 @@
+{
+  "contract": "command_result",
+  "description": "搜索成功但 outbound_action_performed=false（0.3.2：搜索算对外动作）",
+  "data": {
+    "command_id": "00000000-0000-4000-8000-000000000006",
+    "action": "search_candidates",
+    "status": "succeeded",
+    "reason": null,
+    "observed": {
+      "before": [],
+      "after": []
+    },
+    "evidence": [],
+    "navigation_performed": true,
+    "outbound_action_performed": false,
+    "externally_visible_side_effect": true,
+    "executed_at": "2026-10-04T09:31:05+08:00",
+    "reported_at": "2026-10-04T09:31:20+08:00",
+    "output": {
+      "snapshot": {
+        "search_id": "s_42",
+        "query": "golang 后端",
+        "scope": "current_page",
+        "coverage": "complete",
+        "items": [
+          {
+            "result_ref": "s_42:item_1",
+            "position": 1,
+            "masked_name": "王**",
+            "fields": [
+              {
+                "label": null,
+                "text": "王**"
+              },
+              {
+                "label": null,
+                "text": "5年"
+              },
+              {
+                "label": null,
+                "text": "本科"
+              },
+              {
+                "label": null,
+                "text": "28岁"
+              },
+              {
+                "label": null,
+                "text": "刚刚活跃"
+              },
+              {
+                "label": "期望",
+                "text": "北京 · Go 开发 · 25-35K"
+              },
+              {
+                "label": null,
+                "text": "Go"
+              },
+              {
+                "label": null,
+                "text": "微服务"
+              }
+            ],
+            "prop_card_texts": [
+              "使用道具查看"
+            ]
+          },
+          {
+            "result_ref": "s_42:item_2",
+            "position": 2,
+            "masked_name": "李**",
+            "fields": [
+              {
+                "label": null,
+                "text": "李**"
+              },
+              {
+                "label": null,
+                "text": "3年"
+              },
+              {
+                "label": null,
+                "text": "硕士"
+              },
+              {
+                "label": null,
+                "text": "3日内活跃"
+              }
+            ],
+            "prop_card_texts": []
+          }
+        ],
+        "captured_at": "2026-10-04T09:31:05+08:00"
+      }
+    }
+  },
+  "expected_error_paths": [
+    "outbound_action_performed"
+  ]
+}

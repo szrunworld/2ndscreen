@@ -1,0 +1,65 @@
+{
+  "contract": "policy",
+  "description": "副本保留期至少 1 天",
+  "data": {
+    "account_id": "acct_demo",
+    "policy_version": 3,
+    "allowed_actions": [
+      "send_greeting",
+      "request_resume"
+    ],
+    "job_scope": {
+      "mode": "listed",
+      "job_titles": [
+        "后端工程师"
+      ]
+    },
+    "greeting": {
+      "enabled": true,
+      "template": "{candidate_name} 你好，方便发一份简历吗？"
+    },
+    "auto_request_resume": true,
+    "after_resume_received": {
+      "action": "none",
+      "wait_for_parse": true
+    },
+    "resume_mail_timeout_days": 3,
+    "company_mailbox": "zhaopin@remotedesk.io",
+    "mail_retention_days": 0,
+    "work_hours": {
+      "timezone": "Asia/Shanghai",
+      "windows": [
+        {
+          "days": [
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "start": "09:00",
+          "end": "18:30"
+        }
+      ]
+    },
+    "daily_limits": {
+      "send_greeting": 30,
+      "request_resume": 30,
+      "request_contact_exchange": 10,
+      "search_candidates": 20
+    },
+    "min_interval_seconds": {
+      "send_greeting": 60,
+      "request_resume": 60,
+      "request_contact_exchange": 60,
+      "search_candidates": 60
+    },
+    "pause_on_anomaly": true,
+    "paused": false,
+    "updated_at": "2026-10-04T09:30:00+08:00",
+    "updated_by": "recruiter@example.com"
+  },
+  "expected_error_paths": [
+    "mail_retention_days"
+  ]
+}

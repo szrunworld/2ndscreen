@@ -291,8 +291,265 @@ def h() -> Harness:
     harness.store.close()
 
 
+# ---------------------------------------------------------------------------
+# F3 助手：事件、策略、邮件记录、简历文档的请求体（只追加，不改上面已有的行为）
+# ---------------------------------------------------------------------------
+
+
+def make_event(device_id: str, name: str, *, account_id: Any = "keep", bucket: str | None = None, **payload: Any) -> dict[str, Any]:
+    """取 A 的合法事件向量，换成本设备；可改 account_id / bucket / payload 字段，event_id 随之重算。"""
+    event = vector(name)
+    event["device_id"] = device_id
+    if account_id != "keep":
+        event["account_id"] = account_id
+    if bucket is not None:
+        event["bucket"] = bucket
+    event["payload"].update(payload)
+    event["event_id"] = mc.compute_event_id(event["account_id"], event["kind"], event["conversation"], event["bucket"])
+    return event
+
+
+def login_ok_event(device_id: str, bucket: str = "2026-10-04T01:00:00Z/3600") -> dict[str, Any]:
+    """契约向量里没有 login_ok，按 event.json 构造一个。"""
+    event = {
+        "device_id": device_id,
+        "account_id": None,
+        "kind": "login_ok",
+        "conversation": None,
+        "bucket": bucket,
+        "observed_at": "2026-10-04T09:31:05+08:00",
+        "payload": {"mode": "remote", "account_display": None},
+    }
+    event["event_id"] = mc.compute_event_id(None, "login_ok", None, bucket)
+    return event
+
+
+def post_events(h: Harness, device_id: str, token: str, events: list[dict[str, Any]]) -> Any:
+    resp = h.post("/events", {"device_id": device_id, "events": events}, token=token)
+    assert resp.status_code == 200, resp.text
+    return resp
+
+
+def search_policy(account_id: str = ACCOUNT, **overrides: Any) -> dict[str, Any]:
+    """开启搜索的策略（线上 policy 形状）。"""
+    policy = vector("policy_default")
+    policy["account_id"] = account_id
+    policy["allowed_actions"] = ["send_greeting", "request_resume", "search_candidates"]
+    # 搜索受工作时段约束（0.3.2）；默认每天 09:00–18:00（上海），可控时钟起点正好在时段内
+    policy["work_hours"] = copy.deepcopy(ALL_DAYS)
+    policy.update(overrides)
+    return policy
+
+
+def mail_body(name: str = "mail_message_pending", provider_message_id: str | None = None, **overrides: Any) -> dict[str, Any]:
+    """邮件记录请求体（取契约向量）；换 provider_message_id 时主键随之重算。"""
+    body = vector(name)
+    if provider_message_id is not None:
+        body["provider_message_id"] = provider_message_id
+        body["mail_message_id"] = mc.compute_mail_message_id(provider_message_id)
+    body.update(overrides)
+    return body
+
+
+def put_mail(h: Harness, body: dict[str, Any], *, token: str | None = SERVICE_TOKEN, key: str | None = "auto") -> Any:
+    return h.post(f"/mail-messages/{body['mail_message_id']}", body, token=token, key=key, method="PUT")
+
+
+def resume_body(
+    mail_message_id: str,
+    *,
+    sha: str = "b" * 64,
+    method: str = "none",
+    case_id: str | None = None,
+    command_id: str | None = None,
+    candidates: list[str] | None = None,
+    **overrides: Any,
+) -> dict[str, Any]:
+    """原件 POST /resume-documents 请求体。"""
+    body: dict[str, Any] = {
+        "variant": "original",
+        "mail_message_id": mail_message_id,
+        "mail": {
+            "mailbox": "zhaopin@remotedesk.io",
+            "message_id": "<x@mail.example>",
+            "received_at": "2026-10-04T10:02:00+08:00",
+            "subject": "候选人A 的简历（后端工程师）",
+            "from_address": "noreply@zhipin.example",
+            "raw_storage_uri": "file:///tmp/m.json",
+        },
+        "attachment": {
+            "filename": "resume.pdf",
+            "sha256": sha,
+            "size_bytes": 1024,
+            "content_type": "application/pdf",
+            "storage_uri": f"file:///tmp/{sha[:8]}.pdf",
+        },
+        "link": {"method": method, "case_id": case_id, "command_id": command_id, "candidate_case_ids": candidates or []},
+    }
+    body.update(overrides)
+    return body
+
+
 # 测试模块用 `from server_testkit import ...` 取公共助手。pytest 总是先加载 conftest，这里把本模块
 # 以唯一的名字登记到 sys.modules：不依赖 sys.path / import 模式 / rootdir，在 server 目录下和
 # monitor/ 下（`uv run pytest server`、`uv run pytest contracts server`）都一样，也不会和其他
 # 成员将来的 conftest 重名。
 sys.modules.setdefault("server_testkit", sys.modules[__name__])
+
+
+# ---------------------------------------------------------------------------
+# F2 助手（追加）：策略、事件、任意动作的结果、领取并回报
+# ---------------------------------------------------------------------------
+
+ALL_DAYS = {"timezone": "Asia/Shanghai", "windows": [{"days": [1, 2, 3, 4, 5, 6, 7], "start": "09:00", "end": "18:00"}]}
+
+
+def policy_body(h: Harness, account_id: str = ACCOUNT) -> dict[str, Any]:
+    resp = h.get(f"/accounts/{account_id}/policy")
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+def set_policy(h: Harness, account_id: str = ACCOUNT, **changes: Any) -> dict[str, Any]:
+    """读当前策略、改字段、带 If-Match 保存，返回保存后的策略。"""
+    body = policy_body(h, account_id)
+    version = body["policy_version"]
+    body.update(changes)
+    resp = h.client.put(
+        f"{API}/accounts/{account_id}/policy",
+        json=body,
+        headers={**h.auth(CONSOLE_TOKEN), "Idempotency-Key": h.key(), "If-Match": str(version)},
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+def auto_policy(h: Harness, account_id: str = ACCOUNT, *, greeting: bool = True, **changes: Any) -> dict[str, Any]:
+    """开启问候与求简历（白名单含换微信），工作时段为每天 09:00–18:00（上海）。"""
+    values: dict[str, Any] = {
+        "allowed_actions": ["send_greeting", "request_resume", "request_contact_exchange"],
+        "greeting": {"enabled": greeting, "template": "{candidate_name} 你好，{job_title} 岗位方便发份简历吗？"},
+        "auto_request_resume": True,
+        "work_hours": ALL_DAYS,
+    }
+    values.update(changes)
+    return set_policy(h, account_id, **values)
+
+
+def conversation(name: str = "候选人A", job: str = "后端工程师", hints: list[str] | None = None) -> dict[str, Any]:
+    return {"candidate_name": name, "job_title": job, "hints": ["本科", "上海"] if hints is None else hints}
+
+
+def make_case_event(
+    h: Harness,
+    device_id: str,
+    kind: str = "application_observed",
+    conv: dict[str, Any] | None = None,
+    *,
+    bucket: str = "2026-10-04T01:00:00Z/3600",
+    account_id: str = ACCOUNT,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    vec = {
+        "application_observed": "event_application_observed",
+        "attachment_available": "event_attachment_available",
+        "contact_exchange_updated": "event_contact_updated",
+        "conversation_ambiguous": "event_conversation_ambiguous",
+    }[kind]
+    body = vector(vec)
+    conv = conv or conversation()
+    body.update(device_id=device_id, account_id=account_id, conversation=conv, bucket=bucket)
+    body["observed_at"] = iso(h.clock.now())
+    if payload is not None:
+        body["payload"] = payload
+    body["event_id"] = mc.compute_event_id(account_id, kind, conv, bucket)
+    return body
+
+
+def send_events(h: Harness, device_id: str, token: str, events: list[dict[str, Any]]) -> Any:
+    resp = h.post("/events", {"device_id": device_id, "events": events}, token=token)
+    assert resp.status_code == 200, resp.text
+    return resp.json()["results"]
+
+
+def observe(h: Harness, device_id: str, token: str, conv: dict[str, Any] | None = None, **kw: Any) -> dict[str, Any]:
+    """上报一条新投递事件，返回事件体。"""
+    event = make_case_event(h, device_id, "application_observed", conv, **kw)
+    send_events(h, device_id, token, [event])
+    return event
+
+
+_DEFAULT_REASON = {
+    "failed": "target_not_found",
+    "unknown": "crash_recovery",
+    "skipped_precondition": "precondition_already_done",
+}
+
+
+def result_for(h: Harness, command: dict[str, Any], status: str = "succeeded", **overrides: Any) -> dict[str, Any]:
+    """为任意会话类动作构造一个合法的 command_result。"""
+    now = iso(h.clock.now())
+    mode = command.get("execution_mode", "execute")
+    final = status not in ("cancelled", "expired")
+    outbound = mode == "execute" and status in ("succeeded", "unknown")
+    reason = _DEFAULT_REASON.get(status)
+    if mode == "verify_only" and status == "failed":
+        reason = "verification_failed"
+    output = None
+    if command["action"] == "request_contact_exchange" and status in ("succeeded", "skipped_precondition"):
+        output = {
+            "exchange_type": "wechat",
+            "exchange_state": "requested" if status == "succeeded" else "pending_acceptance",
+        }
+    body: dict[str, Any] = {
+        "command_id": command["command_id"],
+        "action": command["action"],
+        "execution_mode": mode,
+        "status": status,
+        "reason": reason,
+        "observed": {"before": [], "after": []},
+        "evidence": [],
+        "navigation_performed": final,
+        "outbound_action_performed": outbound,
+        "externally_visible_side_effect": final,
+        "executed_at": now if final else None,
+        "reported_at": now,
+        "output": output,
+    }
+    body.update(overrides)
+    return body
+
+
+def claim_all(h: Harness, device_id: str, token: str, account_id: str = ACCOUNT) -> list[dict[str, Any]]:
+    resp = h.claim(device_id, token, account_id, max_commands=10)
+    assert resp.status_code == 200, resp.text
+    return resp.json()["commands"]
+
+
+def run_command(
+    h: Harness, device_id: str, token: str, command: dict[str, Any], status: str = "succeeded", **overrides: Any
+) -> Any:
+    """ack 并回报一条已领取的指令。"""
+    assert h.ack(command["command_id"], device_id, token).status_code == 200
+    resp = h.post(f"/commands/{command['command_id']}/result", result_for(h, command, status, **overrides), token=token)
+    assert resp.status_code == 200, resp.text
+    return resp
+
+
+def case_commands(h: Harness, case_id: str) -> list[dict[str, Any]]:
+    return [r["command"] for r in h.ctx.cases.detail(case_id)["commands"]]
+
+
+def only_case(h: Harness) -> dict[str, Any]:
+    resp = h.get("/cases")
+    assert resp.status_code == 200, resp.text
+    items = resp.json()["items"]
+    assert len(items) == 1, items
+    return items[0]
+
+
+@pytest.fixture
+def no_subscriber_errors(h: Harness):
+    """事件总线会吞掉订阅者异常；F2 的测试结束时断言编排没有抛过异常。"""
+    yield
+    assert h.bus.failures == 0, "F2 订阅者处理消息时抛出了异常（见日志）"

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
+import pickle
 import subprocess
 from pathlib import Path
 
@@ -43,6 +45,7 @@ EXPECTED = {
     "state_window_lost_wid": _cli.WINDOW_LOST,
     "click_window_lost": _cli.WINDOW_LOST,
     "window_move_bad_pid": _cli.WINDOW_LOST,
+    "window_release_gone": _cli.WINDOW_LOST,
     "state_bad_window_id": _cli.WINDOW_LOST,
     "state_no_screen": _cli.SCREEN_LOST,
     "screenshot_no_screen": _cli.SCREEN_LOST,
@@ -152,6 +155,8 @@ def test_not_running_on_stderr():
         ('window 42 is not on screen "monitor-c"; move it there first', _cli.WINDOW_LOST),
         ("TextEdit does not expose window 42 to accessibility", _cli.WINDOW_LOST),
         ("the window is on no screen", _cli.WINDOW_LOST),
+        ('pid 4242 has no matching window on screen "monitor"', _cli.WINDOW_LOST),
+        ("1 window(s) refused to move", _cli.CLI_FAILED),
         ("no screen monitor-c", _cli.SCREEN_LOST),
         ("2ndscreen needs the Accessibility permission to read and drive apps", _cli.CLI_FAILED),
     ],
@@ -159,6 +164,69 @@ def test_not_running_on_stderr():
 def test_classify_source_messages(message, kind):
     # 这些文案来自 CLI 源码，未在样例中复现。
     assert _cli.classify_error(message) == kind
+
+
+# ---- CliFailure 穿过 contextmanager ----
+
+
+@contextlib.contextmanager
+def _hold():
+    """模拟 core 的 GuiLock.hold：用 contextmanager 写的 with。"""
+    yield
+
+
+def test_cli_failure_survives_contextmanager_with():
+    # frozen dataclass 时 contextlib 设 __traceback__ 会抛 FrozenInstanceError 替换原异常。
+    with pytest.raises(CliFailure) as info:
+        with _hold():
+            interpret(["x", "state"], 1, json.dumps({"ok": False, "error": "no screen named \"m\""}), "")
+    failure = info.value
+    assert type(failure) is CliFailure
+    assert failure.kind == _cli.SCREEN_LOST
+    assert failure.message == 'no screen named "m"'
+    assert failure.argv == ("x", "state")
+    assert failure.exit_code == 1
+    assert failure.payload == {"ok": False, "error": 'no screen named "m"'}
+    assert failure.__traceback__ is not None
+
+
+def test_cli_failure_reraised_from_contextmanager_except():
+    # contextmanager 里 except 后原样 raise，外层仍拿到同一个对象。
+    @contextlib.contextmanager
+    def logging_hold():
+        try:
+            yield
+        except CliFailure:
+            raise
+
+    original = CliFailure(kind=_cli.TIMEOUT, message="state 超过 1 秒未返回", argv=("x", "state"), stderr="e")
+    with pytest.raises(CliFailure) as info:
+        with logging_hold():
+            raise original
+    assert info.value is original
+    assert (info.value.kind, info.value.stderr) == (_cli.TIMEOUT, "e")
+
+
+def test_cli_failure_fields_are_read_only():
+    failure = CliFailure(kind=_cli.CLI_FAILED, message="m")
+    assert (failure.argv, failure.exit_code, failure.payload, failure.stderr) == ((), None, None, "")
+    assert str(failure) == "cli_failed: m"
+    with pytest.raises(AttributeError):
+        failure.kind = _cli.TIMEOUT  # type: ignore[misc]
+    assert failure.kind == _cli.CLI_FAILED
+
+
+def test_cli_failure_pickles_with_all_fields():
+    failure = CliFailure(_cli.WINDOW_LOST, "gone", ["x", "click"], 1, {"ok": False}, "err")
+    copy = pickle.loads(pickle.dumps(failure))
+    assert (copy.kind, copy.message, copy.argv, copy.exit_code, copy.payload, copy.stderr) == (
+        _cli.WINDOW_LOST,
+        "gone",
+        ("x", "click"),
+        1,
+        {"ok": False},
+        "err",
+    )
 
 
 def test_parse_state_missing_fields():

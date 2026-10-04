@@ -199,7 +199,7 @@
 
 验收：过期二维码接口返回 410；查看记录可查询；搜索快照 `unreadable` 与 `empty_confirmed` 分别可查。
 
-### G0 邮件服务接口补充（仓库 amplifistudio/remotedesk-resend，需用户同意跨仓修改）
+### G0 邮件服务接口补充（已取消：用户 2026-10-04 决定不做，上游收信完整性由邮件服务侧的监控负责）
 
 为 Monitor 的对账补一个 integration 接口：`GET /v1/integration/messages?since=&cursor=&limit=`（`mail.read`，只列 key 绑定的邮箱，返回 message_id、received_at、from、has_attachments、scan 状态、purged），按该仓既有的 ACL、审计、迁移与测试规范实现。可选：`POST /v1/integration/messages/{id}/archive`（新 scope `mail.organize`，只移动文件夹到 archive，便于人工在门户看出哪些已处理）。不提供删除接口：销毁只走留存任务。
 
@@ -277,7 +277,7 @@
 5. 确认 send_greeting 的目标只能是会话（v1 无搜索结果目标），在文档写明。
 6. openapi 补 F1 报告列出的缺失 401/422。
 
-### R 品牌化简历渲染
+### R 品牌化简历渲染（已移出：属于 ATS，用户 2026-10-04）
 
 目标：把邮件里的原始简历转换成公司样式的 PDF。范围：输入原始文件（PDF 文字层或邮件正文 HTML，按 N 的实测）→ 结构化字段（基本信息、求职意向、工作经历、项目经历、教育经历、技能）→ 套用公司模板（HTML/CSS 模板 + logo，渲染为 PDF）→ 作为 `variant=branded` 写回 `resume_document`，`derived_from` 指向原件。字段取舍可配置（是否包含联系方式、是否剔除平台水印与"BOSS直聘"字样）。解析失败或字段缺失时不输出残缺版本，标记 `branding_failed` 并保留原件。不做：OCR（扫描版不处理）。验收：对 N 实测得到的脱敏邮件样本与合成样本，输出 PDF 字段完整、样式符合模板；原件不被修改。启动条件：用户提供模板与 logo，N 实测邮件格式。
 

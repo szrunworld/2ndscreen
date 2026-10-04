@@ -1,0 +1,1 @@
+{"note": "window release 时窗口已不在该屏（按 2ndscreen 源码 AgentScreens.swift releaseWindows 的文案构造，未实测：采集需要新建一块 agent 屏幕，会改动用户的显示器布局）", "argv": ["window", "release", "--screen", "monitor-c", "--pid", "59225"], "exit_code": 1, "stdout": {"error": "pid 59225 has no matching window on screen \"monitor-c\"", "ok": false}, "stderr": ""}

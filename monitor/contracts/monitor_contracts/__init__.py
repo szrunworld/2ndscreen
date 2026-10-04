@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.3.0"
+__version__ = "0.3.2"
 
 from .driver import (
     DRIVER_ERROR_CODES,
@@ -45,12 +45,13 @@ from .idempotency import (
     mail_verification_key,
     resume_document_key,
 )
-from .mail_id import MAIL_MESSAGE_ID_PATTERN, compute_mail_message_id, normalize_mailbox, normalize_message_id
+from .mail_id import MAIL_MESSAGE_ID_PATTERN, MAIL_PROVIDER, compute_mail_message_id, normalize_mailbox, normalize_message_id
 from .models import (
     ACTIONS,
     CONVERSATION_ACTIONS,
     CONVERSATION_EVENT_KINDS,
     EVENT_KINDS,
+    INPUT_REQUEST_TTL_SECONDS,
     MAIL_CHECK_CODES,
     MAIL_STATUSES,
     OUTWARD_ACTIONS,

@@ -11,6 +11,10 @@
 手机号、微信号、邮箱（见 redact.py）。夹具里的 ``redaction`` 三项声明恒为 true，这是对
 "已经做过脱敏"的声明：姓名只有调用方给了替换表才会被替换，提交前仍需人工抽查。
 元素的 snapshot_id 不写入夹具（schema 不允许）。写出前用契约的 validate_ax_fixture 校验。
+
+附件 PDF 预览的子树（文字层含电话、邮箱）在写入前一律剔除，不论快照来自哪个 Driver、
+是否已经剔除过（见 pdf_preview.py）；剔除改变了元素位置时，标注里的
+``conversations[].element_index`` 与 ``is_new_application`` 按新位置换算。``x_`` 扩展标注不换算。
 """
 
 from __future__ import annotations
@@ -23,7 +27,29 @@ from typing import Any
 
 from monitor_contracts import AxFixture, Snapshot, StepAnnotations, validate_ax_fixture
 
+from .pdf_preview import strip_pdf_preview
 from .redact import redact_text
+
+
+def _remap_annotations(annotations: Mapping[str, Any] | None, mapping: Mapping[int, int]) -> dict[str, Any] | None:
+    """剔除 PDF 预览后，把标注里的元素位置换成新位置；引用了被剔除的元素时报错。"""
+    if annotations is None:
+        return None
+    out = dict(annotations)
+
+    def move(index: int, where: str) -> int:
+        if index not in mapping:
+            raise ValueError(f"标注 {where} 引用的元素 {index} 在 PDF 预览子树里，已被剔除")
+        return mapping[index]
+
+    if out.get("conversations"):
+        out["conversations"] = [
+            {**c, "element_index": move(c["element_index"], f"conversations[{i}]")}
+            for i, c in enumerate(out["conversations"])
+        ]
+    if out.get("is_new_application"):
+        out["is_new_application"] = [move(v, f"is_new_application[{i}]") for i, v in enumerate(out["is_new_application"])]
+    return out
 
 
 class FixtureRecorder:
@@ -57,8 +83,10 @@ class FixtureRecorder:
         """把一次快照脱敏后追加为一步。annotations 缺省为 ``{"page": "other"}``。"""
         if isinstance(annotations, StepAnnotations):
             annotations = annotations.model_dump(mode="json", exclude_none=True)
+        kept, mapping = strip_pdf_preview(snapshot.elements)
+        annotations = _remap_annotations(annotations, mapping) if len(kept) != len(snapshot.elements) else annotations
         elements = []
-        for element in snapshot.elements:
+        for element in kept:
             data = element.model_dump(mode="json", exclude={"snapshot_id"})
             data["label"] = self._redact(element.label)
             data["value"] = self._redact(element.value)

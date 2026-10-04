@@ -1,0 +1,73 @@
+{
+  "contract": "mail_verification",
+  "description": "未执行的检查必须说明原因",
+  "data": {
+    "verification_id": "verify-20261004T1100",
+    "mailbox": "zhaopin@remotedesk.io",
+    "started_at": "2026-10-04T11:00:00+08:00",
+    "finished_at": "2026-10-04T11:00:12+08:00",
+    "outcome": "ok",
+    "error": null,
+    "checks": [
+      {
+        "code": "pending_backlog",
+        "count": 0,
+        "unavailable_reason": null,
+        "refs": []
+      },
+      {
+        "code": "copy_missing",
+        "count": 0,
+        "unavailable_reason": null,
+        "refs": []
+      },
+      {
+        "code": "hash_mismatch",
+        "count": 0,
+        "unavailable_reason": null,
+        "refs": []
+      },
+      {
+        "code": "document_without_copy",
+        "count": 0,
+        "unavailable_reason": null,
+        "refs": []
+      },
+      {
+        "code": "needs_review_mismatch",
+        "count": 0,
+        "unavailable_reason": null,
+        "refs": []
+      },
+      {
+        "code": "failed_mismatch",
+        "count": 0,
+        "unavailable_reason": null,
+        "refs": []
+      },
+      {
+        "code": "webhook_delivery_failed",
+        "count": 0,
+        "unavailable_reason": null,
+        "refs": []
+      },
+      {
+        "code": "upstream_missing",
+        "count": null,
+        "refs": []
+      }
+    ],
+    "overdue_resume_requests": [
+      {
+        "case_id": "case_007",
+        "command_id": "00000000-0000-4000-8000-000000000031",
+        "requested_at": "2026-10-01T09:30:00+08:00",
+        "days_waiting": 3
+      }
+    ],
+    "purged_copies": 4
+  },
+  "expected_error_paths": [
+    "checks[7].unavailable_reason"
+  ]
+}

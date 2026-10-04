@@ -20,6 +20,7 @@
     },
     "resume_mail_timeout_days": 3,
     "company_mailbox": null,
+    "mail_retention_days": 30,
     "work_hours": {
       "timezone": "Asia/Shanghai",
       "windows": []

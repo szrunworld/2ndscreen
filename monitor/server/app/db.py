@@ -13,7 +13,7 @@ import json
 import sqlite3
 import threading
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -275,6 +275,11 @@ class Store(Protocol):
     def put_idempotency(self, row: IdempotencyRow) -> None: ...
     def purge_idempotency(self, older_than: str) -> int: ...
 
+    # 调用方事务（F2b）
+    def transaction(self) -> AbstractContextManager[None]:
+        """块内的写方法加入同一个事务，一起提交或一起回滚（可嵌套）。"""
+        ...
+
 
 # ---------------------------------------------------------------------------
 # SQLite 实现
@@ -377,6 +382,188 @@ MIGRATIONS: list[str] = [
         PRIMARY KEY (principal, method, path, key)
     );
     """,
+    # v2：F2 招聘流程、时间线、策略、自动流程指令登记、简历关联摘要
+    """
+    CREATE TABLE recruitment_cases (
+        seq                    INTEGER PRIMARY KEY AUTOINCREMENT,
+        case_id                TEXT NOT NULL UNIQUE,
+        account_id             TEXT NOT NULL,
+        candidate_name         TEXT NOT NULL,
+        job_title              TEXT NOT NULL,
+        conversation_hints_json TEXT NOT NULL,
+        stage                  TEXT NOT NULL,
+        needs_human_reason     TEXT,
+        contact_status         TEXT NOT NULL DEFAULT 'not_requested',
+        next_action            TEXT,
+        next_depends_on        TEXT,
+        blocked_reason         TEXT,
+        resume_requested_at    TEXT,
+        created_at             TEXT NOT NULL,
+        updated_at             TEXT NOT NULL,
+        UNIQUE (account_id, candidate_name, job_title)
+    );
+    CREATE INDEX recruitment_cases_account ON recruitment_cases (account_id, seq);
+    CREATE INDEX recruitment_cases_next ON recruitment_cases (next_action);
+    CREATE TABLE case_timeline (
+        seq        INTEGER PRIMARY KEY AUTOINCREMENT,
+        case_id    TEXT NOT NULL,
+        at         TEXT NOT NULL,
+        type       TEXT NOT NULL,
+        ref_id     TEXT NOT NULL,
+        stage_from TEXT,
+        stage_to   TEXT,
+        summary    TEXT NOT NULL
+    );
+    CREATE INDEX case_timeline_case ON case_timeline (case_id, seq);
+    CREATE INDEX case_timeline_at ON case_timeline (type, at);
+    CREATE TABLE case_commands (
+        command_id TEXT PRIMARY KEY,
+        case_id    TEXT NOT NULL,
+        origin     TEXT NOT NULL CHECK (origin IN ('auto', 'manual', 'recheck')),
+        created_at TEXT NOT NULL
+    );
+    CREATE INDEX case_commands_case ON case_commands (case_id);
+    CREATE TABLE case_resume_links (
+        doc_id    TEXT PRIMARY KEY,
+        case_id   TEXT NOT NULL,
+        linked_at TEXT NOT NULL,
+        parsed_at TEXT
+    );
+    CREATE INDEX case_resume_links_case ON case_resume_links (case_id);
+    CREATE TABLE policies (
+        account_id     TEXT PRIMARY KEY,
+        policy_version INTEGER NOT NULL,
+        policy_json    TEXT NOT NULL,
+        updated_at     TEXT NOT NULL
+    );
+    """,
+    # v3：F3 搜索任务、登录二维码与查看记录、人工输入请求、通知待办与投递记录、邮件记录、核对结果、简历文档
+    """
+    CREATE TABLE search_runs (
+        seq                INTEGER PRIMARY KEY AUTOINCREMENT,
+        search_id          TEXT NOT NULL UNIQUE,
+        account_id         TEXT NOT NULL,
+        query              TEXT NOT NULL,
+        max_results        INTEGER NOT NULL,
+        command_id         TEXT NOT NULL UNIQUE,
+        created_by         TEXT NOT NULL,
+        created_at         TEXT NOT NULL,
+        expires_at         TEXT NOT NULL,
+        snapshot_json      TEXT,
+        outcome            TEXT CHECK (outcome IN ('results', 'no_results', 'unreadable')),
+        snapshot_at        TEXT
+    );
+    CREATE INDEX search_runs_account ON search_runs (account_id, seq);
+    CREATE TABLE login_qrs (
+        device_id     TEXT PRIMARY KEY,
+        account_id    TEXT,
+        qr_payload    TEXT,
+        qr_seq        INTEGER NOT NULL,
+        captured_at   TEXT NOT NULL,
+        expires_at    TEXT NOT NULL,
+        decoder       TEXT NOT NULL,
+        uploaded_at   TEXT NOT NULL,
+        withdrawn_at  TEXT,
+        withdrawn_by  TEXT
+    );
+    CREATE TABLE login_qr_views (
+        seq        INTEGER PRIMARY KEY AUTOINCREMENT,
+        device_id  TEXT NOT NULL,
+        viewer     TEXT NOT NULL,
+        viewed_at  TEXT NOT NULL,
+        qr_seq     INTEGER NOT NULL
+    );
+    CREATE INDEX login_qr_views_device ON login_qr_views (device_id, seq);
+    CREATE TABLE input_requests (
+        input_request_id TEXT PRIMARY KEY,
+        device_id        TEXT NOT NULL,
+        account_id       TEXT,
+        event_id         TEXT NOT NULL,
+        input_kind       TEXT NOT NULL,
+        prompt_text      TEXT NOT NULL,
+        can_fill         INTEGER NOT NULL,
+        created_at       TEXT NOT NULL,
+        expires_at       TEXT NOT NULL,
+        command_id       TEXT,
+        responded_by     TEXT,
+        responded_at     TEXT
+    );
+    CREATE TABLE notifications (
+        seq             INTEGER PRIMARY KEY AUTOINCREMENT,
+        notification_id TEXT NOT NULL UNIQUE,
+        kind            TEXT NOT NULL,
+        severity        TEXT NOT NULL,
+        title           TEXT NOT NULL,
+        body            TEXT NOT NULL,
+        account_id      TEXT,
+        device_id       TEXT,
+        ref_kind        TEXT NOT NULL,
+        ref_id          TEXT NOT NULL,
+        created_at      TEXT NOT NULL,
+        resolved_at     TEXT,
+        resolved_by     TEXT
+    );
+    CREATE INDEX notifications_open ON notifications (resolved_at, seq);
+    CREATE TABLE notification_deliveries (
+        seq             INTEGER PRIMARY KEY AUTOINCREMENT,
+        notification_id TEXT NOT NULL,
+        channel         TEXT NOT NULL,
+        status          TEXT NOT NULL CHECK (status IN ('delivered', 'failed')),
+        attempts        INTEGER NOT NULL,
+        last_error      TEXT,
+        at              TEXT NOT NULL
+    );
+    CREATE INDEX notification_deliveries_id ON notification_deliveries (notification_id);
+    CREATE TABLE mail_messages (
+        seq             INTEGER PRIMARY KEY AUTOINCREMENT,
+        mail_message_id TEXT NOT NULL UNIQUE,
+        mailbox         TEXT NOT NULL,
+        message_id      TEXT,
+        received_at     TEXT NOT NULL,
+        status          TEXT NOT NULL,
+        record_json     TEXT NOT NULL,
+        created_at      TEXT NOT NULL,
+        updated_at      TEXT NOT NULL
+    );
+    CREATE INDEX mail_messages_received ON mail_messages (received_at, seq);
+    CREATE INDEX mail_messages_status ON mail_messages (status);
+    CREATE TABLE mail_verifications (
+        seq               INTEGER PRIMARY KEY AUTOINCREMENT,
+        verification_id   TEXT NOT NULL UNIQUE,
+        mailbox           TEXT NOT NULL,
+        outcome           TEXT NOT NULL,
+        finished_at       TEXT NOT NULL,
+        verification_json TEXT NOT NULL,
+        received_at       TEXT NOT NULL
+    );
+    CREATE INDEX mail_verifications_finished ON mail_verifications (finished_at, seq);
+    CREATE TABLE resume_documents (
+        seq             INTEGER PRIMARY KEY AUTOINCREMENT,
+        doc_id          TEXT NOT NULL UNIQUE,
+        variant         TEXT NOT NULL CHECK (variant IN ('original', 'branded')),
+        derived_from    TEXT,
+        mail_message_id TEXT,
+        case_id         TEXT,
+        link_status     TEXT NOT NULL CHECK (link_status IN ('linked', 'needs_manual', 'unlinked')),
+        link_method     TEXT NOT NULL,
+        link_json       TEXT,
+        version         INTEGER NOT NULL,
+        sha256          TEXT NOT NULL,
+        filename        TEXT NOT NULL,
+        message_id      TEXT,
+        mail_json       TEXT,
+        attachment_json TEXT NOT NULL,
+        parse_json      TEXT,
+        parse_status    TEXT NOT NULL,
+        created_at      TEXT NOT NULL,
+        updated_at      TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX resume_documents_original ON resume_documents (mail_message_id, sha256)
+        WHERE variant = 'original';
+    CREATE UNIQUE INDEX resume_documents_branded ON resume_documents (derived_from, sha256)
+        WHERE variant = 'branded';
+    CREATE INDEX resume_documents_case ON resume_documents (case_id);
+    """,
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)
@@ -422,6 +609,7 @@ class SqliteStore:
         self._conn = sqlite3.connect(str(path), check_same_thread=False, isolation_level=None)
         self._conn.row_factory = sqlite3.Row
         self._lock = threading.RLock()
+        self._depth = 0  # 当前线程（持有 _lock 者）的事务嵌套层数
         with self._lock:
             if str(path) != ":memory:":
                 self._conn.execute("PRAGMA journal_mode=WAL")
@@ -440,14 +628,35 @@ class SqliteStore:
 
     @contextmanager
     def _tx(self) -> Iterator[sqlite3.Connection]:
+        """写事务。已在 transaction() / _tx() 内时以 SAVEPOINT 嵌套：内层失败只回滚内层，
+        外层失败整体回滚；只有最外层提交时才真正落盘。"""
         with self._lock:
-            self._conn.execute("BEGIN IMMEDIATE")
+            if self._depth == 0:
+                self._conn.execute("BEGIN IMMEDIATE")
+                begin, rollback, commit = None, "ROLLBACK", "COMMIT"
+            else:
+                name = f"sp_{self._depth}"
+                begin, rollback, commit = f"SAVEPOINT {name}", f"ROLLBACK TO {name}; RELEASE {name}", f"RELEASE {name}"
+            if begin is not None:
+                self._conn.execute(begin)
+            self._depth += 1
             try:
                 yield self._conn
             except BaseException:
-                self._conn.execute("ROLLBACK")
+                self._depth -= 1
+                for stmt in rollback.split("; "):
+                    self._conn.execute(stmt)
                 raise
-            self._conn.execute("COMMIT")
+            self._depth -= 1
+            self._conn.execute(commit)
+
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        """调用方事务：块内调用的所有写方法（insert_command、insert_manual_action 等，以及
+        F2 的流程表写入）加入同一个事务，块正常结束时一起提交，抛异常时一起回滚。
+        块内持有存储锁，其他线程的读写会等待，块要尽量短。"""
+        with self._tx():
+            yield
 
     def _one(self, sql: str, args: Sequence[Any] = ()) -> sqlite3.Row | None:
         with self._lock:
@@ -669,8 +878,10 @@ class SqliteStore:
                      AND c.server_status = 'pending' AND c.cancel_requested = 0 AND c.result_json IS NULL
                      AND c.expires_at > ?
                      AND (c.depends_on IS NULL OR d.server_status = 'succeeded')
+                     -- issued_at 还没到的指令（例如工作时段外人工换微信，顺延到下一个工作时段）暂不下发
+                     AND julianday(json_extract(c.command_json, '$.issued_at')) <= julianday(?)
                    ORDER BY c.seq LIMIT ?""",
-                (account_id, device_id, now, max_commands),
+                (account_id, device_id, now, now, max_commands),
             ).fetchall()
             ids = [r["command_id"] for r in rows]
             for command_id in ids:

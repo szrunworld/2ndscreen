@@ -38,6 +38,16 @@ if TYPE_CHECKING:
     from .commands import CommandNotifier, CommandService
     from .devices import DeviceService
     from .events import EventBus, EventService
+    from .cases import CaseService
+    from .manual import ManualService
+    from .orchestrator import Orchestrator
+    from .overview import OverviewService
+    from .policy import PolicyService
+    from .login_relay import LoginRelayService
+    from .mail_endpoints import MailService
+    from .notify import NotificationService, Notifier
+    from .resume_documents import ResumeDocumentService
+    from .search import SearchService
 
 API_PREFIX = "/api/v1"
 PROBLEM_MEDIA_TYPE = "application/problem+json"
@@ -386,6 +396,18 @@ class AppContext:
     policy_version: Callable[[str], int | None] = field(default=lambda account_id: None)
     login_qr_active: Callable[[str], bool] = field(default=lambda device_id: False)
     idempotency_locks: _KeyedLocks = field(default_factory=_KeyedLocks)
+    # F2：招聘流程、策略、编排、人工处理、总览（create_app 中装配）
+    policies: PolicyService = field(init=False)
+    cases: CaseService = field(init=False)
+    orchestrator: Orchestrator = field(init=False)
+    manual: ManualService = field(init=False)
+    overview: OverviewService = field(init=False)
+    # F3：搜索、登录接力、通知、邮件记录、简历文档（create_app 中装配）
+    search: SearchService = field(init=False)
+    login_relay: LoginRelayService = field(init=False)
+    notifications: NotificationService = field(init=False)
+    mail: MailService = field(init=False)
+    resume_documents: ResumeDocumentService = field(init=False)
 
 
 Ctx = Annotated[AppContext, Depends(get_ctx)]
@@ -401,11 +423,17 @@ def create_app(
     bus: EventBus | None = None,
     policy_version: Callable[[str], int | None] | None = None,
     login_qr_active: Callable[[str], bool] | None = None,
+    policy_lookup: Callable[[str], Any] | None = None,
+    case_exists: Callable[[str], bool] | None = None,
+    notifiers: list[Notifier] | None = None,
 ) -> FastAPI:
     """创建应用。所有依赖可注入；未给出时用默认实现（内存 SQLite、系统时钟、进程内事件总线）。
 
     policy_version(account_id)：心跳响应里的策略版本，F2 注入；默认 None。
-    login_qr_active(device_id)：设备卡片上是否有有效二维码，F3 注入；默认 False。
+    login_qr_active(device_id)：设备卡片上是否有有效二维码；默认由 F3 的登录接力判断。
+    policy_lookup(account_id)：F3 搜索读取账户策略；默认 ctx.policies.get（F2）。
+    case_exists(case_id)：F3 简历关联时检查流程是否存在；默认查 ctx.cases（F2）。
+    notifiers：F3 通知的额外适配器（例如 WebhookNotifier）；控制台待办总是启用。
     """
     from . import commands, devices, events
 
@@ -425,6 +453,29 @@ def create_app(
     ctx.events = events.EventService(ctx)
     ctx.commands = commands.CommandService(ctx)
     ctx.devices = devices.DeviceService(ctx)
+    # F2 装配：策略 → 流程 → 编排（订阅事件总线）→ 人工处理 → 总览
+    from . import cases, manual, orchestrator, overview, policy
+
+    ctx.policies = policy.PolicyService(ctx)
+    ctx.cases = cases.CaseService(ctx)
+    ctx.orchestrator = orchestrator.Orchestrator(ctx)
+    ctx.manual = manual.ManualService(ctx)
+    ctx.overview = overview.OverviewService(ctx)
+    if policy_version is None:
+        ctx.policy_version = ctx.policies.version
+    # F3 装配（在 F2 之后：简历关联调用 ctx.cases，搜索读 ctx.policies）：邮件记录 → 简历文档 → 搜索 → 登录接力 → 通知
+    from . import login_relay, mail_endpoints, notify, resume_documents, search
+
+    ctx.mail = mail_endpoints.MailService(ctx)
+    ctx.resume_documents = resume_documents.ResumeDocumentService(
+        ctx, case_exists=case_exists or (lambda case_id: ctx.cases.get(case_id) is not None)
+    )
+    ctx.cases.resume_documents_provider = ctx.resume_documents.list_for_case
+    ctx.search = search.SearchService(ctx, policy_lookup=policy_lookup or ctx.policies.get)
+    ctx.login_relay = login_relay.LoginRelayService(ctx)
+    ctx.notifications = notify.NotificationService(ctx, notifiers=notifiers)
+    if login_qr_active is None:
+        ctx.login_qr_active = ctx.login_relay.is_active
 
     app = FastAPI(
         title="招聘 Monitor 服务端 API",
@@ -436,6 +487,16 @@ def create_app(
     app.include_router(devices.router, prefix=API_PREFIX)
     app.include_router(commands.router, prefix=API_PREFIX)
     app.include_router(events.router, prefix=API_PREFIX)
+    app.include_router(cases.router, prefix=API_PREFIX)
+    app.include_router(manual.router, prefix=API_PREFIX)
+    app.include_router(policy.router, prefix=API_PREFIX)
+    app.include_router(overview.router, prefix=API_PREFIX)
+    # 应用启动（uvicorn 的 lifespan）时开启编排的后台定时推进；测试不进入 lifespan，直接调用 tick()
+    app.router.lifespan_context = orchestrator.with_background_tick(ctx.orchestrator, app.router.lifespan_context)
+    app.include_router(search.router, prefix=API_PREFIX)
+    app.include_router(login_relay.router, prefix=API_PREFIX)
+    app.include_router(mail_endpoints.router, prefix=API_PREFIX)
+    app.include_router(resume_documents.router, prefix=API_PREFIX)
     app.openapi = lambda: _cached_openapi(app)  # type: ignore[method-assign]
     return app
 

@@ -2,7 +2,7 @@
 # 成员由各任务在交付时加入 members；任务 A 只建立根与 contracts。
 # 在本目录执行 `uv sync` 会安装全部成员与 dev 依赖组。
 [tool.uv.workspace]
-members = ["contracts", "client", "server"]
+members = ["contracts", "client", "server", "mail"]
 
 [tool.uv]
 # Monitor 统一使用 Python 3.12（成员各自声明 requires-python = "==3.12.*"）。

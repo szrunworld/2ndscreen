@@ -37,13 +37,17 @@ IMPLEMENTED = {
     "cancelCommand",
     "postEvents",
     "listEvents",
-}
-
-# yaml 中已定义、server 尚未实现的操作（由 F2/F3/G 等后续任务实现）。实现一个就把它从这里移到
-# IMPLEMENTED；契约新增操作时也要登记到这里，否则 test_unimplemented_operations_are_listed 失败。
-NOT_YET_IMPLEMENTED = {
+    # F2：招聘流程、人工处理、策略、总览
+    "listCases",
+    "getCase",
+    "stopCase",
+    "requestWechatExchange",
     "confirmCommandSent",
     "recheckCommand",
+    "getPolicy",
+    "putPolicy",
+    "getOverview",
+    # F3：搜索、登录接力、邮件记录、简历文档
     "createResumeDocument",
     "listResumeDocuments",
     "getResumeDocument",
@@ -56,24 +60,25 @@ NOT_YET_IMPLEMENTED = {
     "createSearchRun",
     "listSearchRuns",
     "getSearchRun",
-    "listCases",
-    "getCase",
-    "stopCase",
-    "requestWechatExchange",
     "postLoginQr",
     "getLoginQr",
     "withdrawLoginQr",
     "listLoginQrViews",
     "respondInputRequest",
-    "getPolicy",
-    "putPolicy",
-    "getOverview",
 }
 
-# 已知的 yaml 缺口：代码如实声明、运行时会返回，但 contracts/openapi.yaml 0.2.0 还没列出的响应码。
-# 由下一版契约任务统一补（清单见 agent-reports/F1.md「0.2.0 适配」）；补上后从这里删除对应条目，
-# 测试会因白名单条目已不再是差异而失败（KNOWN_YAML_GAPS 必须与实际差异完全一致）。
-KNOWN_YAML_GAPS: dict[str, set[str]] = {}  # 契约 0.3.0 已补齐 401/403/422
+# yaml 中已定义、server 尚未实现的操作（由 F2/F3/G 等后续任务实现）。实现一个就把它从这里移到
+# IMPLEMENTED；契约新增操作时也要登记到这里，否则 test_unimplemented_operations_are_listed 失败。
+NOT_YET_IMPLEMENTED: set[str] = set()
+
+# 已知的 yaml 缺口：代码如实声明、运行时会返回，但 contracts/openapi.yaml 还没列出的响应码。
+# 契约 0.3.2 已补齐 F1/F2/F3 的全部缺口，当前为空；以后出现新缺口时按 operationId 登记，
+# 契约补上后删除（KNOWN_YAML_GAPS 必须与实际差异完全一致）。
+KNOWN_YAML_GAPS: dict[str, set[str]] = {}
+
+# 已知的认证缺口：代码比 yaml 多接受的令牌。结构同上，必须与实际差异完全一致。
+# 契约 0.3.2 已为 listResumeDocuments、getPolicy 补上 serviceToken，当前为空。
+KNOWN_SECURITY_GAPS: dict[str, set[frozenset[str]]] = {}
 
 _KEEP = (
     "format",
@@ -214,13 +219,36 @@ def test_operation_consistent_with_yaml(specs, op_id: str):
     _, _, c = operations(code)[op_id]
     _, _, y = operations(yaml_spec)[op_id]
     assert params(c, code) == params(y, yaml_spec), "参数不一致"
-    assert security(c, code) == security(y, yaml_spec), "认证方式不一致"
+    c_sec, y_sec = security(c, code), security(y, yaml_spec)
+    assert y_sec <= c_sec, "缺少 yaml 要求的认证方式"
+    assert c_sec - y_sec == KNOWN_SECURITY_GAPS.get(op_id, set()), "认证方式与已知缺口白名单不一致"
     assert body_schema(c, code) == body_schema(y, yaml_spec), "请求体不一致"
     c_resp, y_resp = response_schemas(c, code), response_schemas(y, yaml_spec)
     for status, content in y_resp.items():
         assert status in c_resp, f"缺少响应码 {status}"
         assert c_resp[status] == content, f"响应 {status} 不一致"
     assert set(c_resp) - set(y_resp) == KNOWN_YAML_GAPS.get(op_id, set()), "与已知 yaml 缺口白名单不一致"
+
+
+def test_known_gap_entries_name_real_operations(specs):
+    """白名单里的 operationId 必须真实存在，防止拼错后悄悄失效。"""
+    _, yaml_spec = specs
+    ops = set(operations(yaml_spec))
+    assert set(KNOWN_YAML_GAPS) <= ops
+    assert set(KNOWN_SECURITY_GAPS) <= ops
+
+
+def test_service_token_read_only_in_export(specs):
+    """0.3.2：serviceToken 只读 getPolicy、listResumeDocuments；导出的 openapi 直接由路由依赖生成
+    （不再靠 dependency_overrides），写接口不带 serviceToken。"""
+    code, _ = specs
+    ops = operations(code)
+    service = frozenset({"serviceToken"})
+    for op_id in ("getPolicy", "listResumeDocuments"):
+        assert service in security(ops[op_id][2], code), op_id
+    for op_id in ("putPolicy", "linkResumeDocument"):
+        assert service not in security(ops[op_id][2], code), op_id
+    assert not create_app().dependency_overrides
 
 
 def test_comparison_detects_differences(specs):

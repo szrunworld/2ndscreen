@@ -12,8 +12,8 @@
     },
     "evidence": [],
     "navigation_performed": true,
-    "outbound_action_performed": false,
-    "externally_visible_side_effect": false,
+    "outbound_action_performed": true,
+    "externally_visible_side_effect": true,
     "executed_at": "2026-10-04T09:31:05+08:00",
     "reported_at": "2026-10-04T09:31:20+08:00",
     "output": {

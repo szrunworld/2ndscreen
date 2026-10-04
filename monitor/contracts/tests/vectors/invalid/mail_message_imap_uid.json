@@ -1,0 +1,26 @@
+{
+  "contract": "mail_message",
+  "description": "0.3.1 不再有 IMAP UID 字段",
+  "data": {
+    "mail_message_id": "mail:3f6c2a9e-1b4d-4e8a-9c7f-2d5e8b1a0c44",
+    "provider": "remotedesk-mail",
+    "provider_message_id": "3f6c2a9e-1b4d-4e8a-9c7f-2d5e8b1a0c44",
+    "webhook_delivery_id": "6f1c9d2e-0a7b-4c3e-8f21-5b9a4d7e1c30",
+    "mailbox": "zhaopin@remotedesk.io",
+    "message_id": null,
+    "received_at": "2026-10-04T10:02:00+08:00",
+    "sha256": null,
+    "raw_storage_uri": null,
+    "copy_purged_at": null,
+    "from_address": null,
+    "subject": null,
+    "status": "pending",
+    "attempts": 0,
+    "error": null,
+    "updated_at": "2026-10-04T10:02:01+08:00",
+    "uid": 4211
+  },
+  "expected_error_paths": [
+    "uid"
+  ]
+}

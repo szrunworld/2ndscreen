@@ -41,7 +41,8 @@ def test_events_accepted_stored_and_published(h: Harness):
         (1, e2["event_id"], "accepted"),
     ]
     stored = h.store.get_event(e1["event_id"])
-    assert stored is not None and stored.event == e1 and stored.case_id is None
+    # F2 的订阅者会把新投递关联到 recruitment_case（case_id 由 F2 写入，见 test_cases.py）
+    assert stored is not None and stored.event == e1
     msgs = received(h)
     assert [m.event_id for m in msgs] == [e1["event_id"], e2["event_id"]]
     assert msgs[0].kind == "application_observed" and msgs[0].account_id == ACCOUNT
