@@ -12,8 +12,10 @@ import {
   parseProcessStart,
   type CommandSpawn,
   pngSize,
+  rasterCoversFrame,
+  rectWithin,
 } from '../src/adapters/second-screen.ts';
-import { RuntimeError, isRuntimeError, type CommandResult, type CommandRunner, type WindowBinding, type WindowProfile } from '../src/contracts.ts';
+import { RuntimeError, isRuntimeError, type CommandResult, type CommandRunner, type Rect, type WindowBinding, type WindowProfile } from '../src/contracts.ts';
 
 // A synthetic 2ndscreen: every program the adapter runs goes to a handler
 // here, so no real screen, app or BOSS account is touched.
@@ -246,10 +248,174 @@ test('bindApp attaches to an app already on its screen without launching or movi
   );
 });
 
+// Geometry: a bound window must lie wholly within its screen (P0: an accepted window reached past
+// its 1440x900 screen, and pane screenshots came back 913x1102 instead of 1468x1750).
+
+/** An app already running on the screen whose window reads as `frames()`; `move` records refits. */
+function placedApp(frames: () => Rect, screens: () => Rect[] = () => [SCREEN.frame], onMove: () => void = () => {}) {
+  let listed = 0;
+  return fakeRunner({
+    cli: (args) => {
+      switch (verb(args)) {
+        case 'screen list': {
+          const all = screens();
+          return { ok: true, screens: [{ ...SCREEN, frame: all[Math.min(listed++, all.length - 1)] }] };
+        }
+        case 'state':
+          return { ok: true, pid: 4242, windowID: 77, app: 'Synthetic', windowFrame: frames() };
+        case 'window move':
+          onMove();
+          return { ok: true };
+      }
+      return { ok: false, error: 'unexpected' };
+    },
+    tools: { ...identityTools, lsappinfo: (args) => (args.includes('bundleID') ? { stdout: `"CFBundleIdentifier"="${BUNDLE}"` } : { stdout: '"pid"=4242' }) },
+  });
+}
+
+test('geometry helpers: containment up to rounding, and a raster that covers its frame at its scale', () => {
+  const screen = SCREEN.frame;
+  assert.equal(rectWithin(MAIN, screen), true, 'below the menu bar, narrower than the screen');
+  assert.equal(rectWithin({ x: 3000, y: 25, width: 1440, height: 875 }, screen), true, 'the full visible area');
+  assert.equal(rectWithin({ x: 3000.5, y: 25, width: 1440, height: 875 }, screen), true, 'half a point of rounding');
+  assert.equal(rectWithin({ x: 3200, y: 25, width: 1360, height: 848 }, screen), false, 'past the right edge');
+  assert.equal(rectWithin({ x: 2960, y: -10, width: 1520, height: 950 }, screen), false, 'oversized, centred');
+  assert.equal(rasterCoversFrame({ width: 2880, height: 1750 }, { x: 3000, y: 25, width: 1440, height: 875 }, 2), true);
+  assert.equal(rasterCoversFrame({ width: 2721, height: 1696 }, MAIN, 2), true, 'outward rounding by one pixel');
+  assert.equal(rasterCoversFrame({ width: 2480, height: 1696 }, { x: 3200, y: 25, width: 1360, height: 848 }, 2), false, 'clipped at the screen edge');
+  assert.equal(rasterCoversFrame({ width: 1360, height: 848 }, MAIN, 2), false, 'a 1x image of a 2x window');
+});
+
+test('bindApp refuses a window reaching past its screen without takeOver, and does not touch it', async () => {
+  for (const frame of [{ x: 3200, y: 25, width: 1360, height: 848 }, { x: 2960, y: -10, width: 1520, height: 950 }]) {
+    let moves = 0;
+    const { run, calls } = placedApp(() => frame, undefined, () => moves++);
+    const adapter = createSecondScreenAdapter({ cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' });
+    await assert.rejects(adapter.bindApp(profile.id, profile, { takeOver: false }), (e) => {
+      assert.ok(isRuntimeError(e, 'conflict'));
+      assert.match(e.message, /reaches past screen .* pass takeOver to refit it/);
+      assert.deepEqual(e.details?.frame, frame);
+      assert.deepEqual(e.details?.screenFrame, SCREEN.frame);
+      return true;
+    });
+    assert.equal(moves, 0);
+    assert.ok(!calls.some((c) => ['window move', 'app launch'].includes(verb(c.args))), 'nothing was moved or launched');
+  }
+});
+
+test('bindApp with takeOver refits an oversized window once and binds it where it settled', async () => {
+  let frame: Rect = { x: 2960, y: -10, width: 1520, height: 950 };
+  const { run, calls } = placedApp(() => frame, undefined, () => (frame = { x: 3000, y: 25, width: 1440, height: 875 }));
+  const bound = await createSecondScreenAdapter({ cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' }).bindApp(profile.id, profile, { takeOver: true });
+  assert.deepEqual(bound.window.frame, { x: 3000, y: 25, width: 1440, height: 875 });
+  const moves = calls.filter((c) => verb(c.args) === 'window move');
+  assert.equal(moves.length, 1);
+  assert.deepEqual(moves[0]!.args, ['window', 'move', '--screen', profile.id, '--pid', '4242', '--window-id', '77', '--fill']);
+});
+
+test('bindApp refits a window it launched itself without needing takeOver', async () => {
+  let frame: Rect = { x: 3200, y: 25, width: 1360, height: 848 };
+  const { run, calls } = fakeRunner({
+    cli: (args) => {
+      switch (verb(args)) {
+        case 'screen list':
+          return { ok: true, screens: [SCREEN] };
+        case 'app launch':
+          return { ok: true, pid: 4242 };
+        case 'state':
+          return { ok: true, pid: 4242, windowID: 77, app: 'Synthetic', windowFrame: frame };
+        case 'window move':
+          frame = MAIN;
+          return { ok: true };
+      }
+      return { ok: false, error: 'unexpected' };
+    },
+    tools: identityTools,
+  });
+  const bound = await createSecondScreenAdapter({ cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' }).bindApp(profile.id, profile, { takeOver: false });
+  assert.equal(bound.launchedByRuntime, true);
+  assert.deepEqual(bound.window.frame, MAIN);
+  assert.equal(calls.filter((c) => verb(c.args) === 'window move').length, 1);
+});
+
+test('bindApp gives up honestly when refitting does not bring the window inside', async () => {
+  const frame = { x: 2960, y: -10, width: 1520, height: 950 };
+  let moves = 0;
+  const { run } = placedApp(() => frame, undefined, () => moves++);
+  await assert.rejects(
+    createSecondScreenAdapter({ cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' }).bindApp(profile.id, profile, { takeOver: true }),
+    (e) => isRuntimeError(e, 'conflict') && /still reaches past screen .* after 2 refits/.test(e.message),
+  );
+  assert.equal(moves, 2, 'bounded');
+});
+
+test('bindApp checks the window against the screen as it is now, not where it was', async () => {
+  // The display moved between the first read and the bind: the window sits wholly in the new place.
+  const moved = { x: 5000, y: 0, width: 1440, height: 900 };
+  const frame = { x: 5000, y: 25, width: 1360, height: 848 };
+  const { run, calls } = placedApp(() => frame, () => [SCREEN.frame, moved]);
+  const bound = await createSecondScreenAdapter({ cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' }).bindApp(profile.id, profile, { takeOver: false });
+  assert.deepEqual(bound.window.frame, frame);
+  assert.ok(!calls.some((c) => verb(c.args) === 'window move'));
+});
+
+test('observe refuses a screenshot of a window not wholly on its screen as the screen is now, or of the wrong size', async () => {
+  await withDir(async (dir) => {
+    let frame: Rect = { x: 3200, y: 25, width: 1360, height: 848 };
+    let screenFrame: Rect = SCREEN.frame;
+    let pixels = { width: (4440 - 3200) * 2, height: 848 * 2 };
+    const { run, calls } = fakeRunner({
+      cli: async (args) => {
+        if (verb(args) === 'screen list') return { ok: true, screens: [{ ...SCREEN, frame: screenFrame }] };
+        const shot = flag(args, '--screenshot');
+        if (shot) await writeFile(shot, png(pixels.width, pixels.height));
+        return { ok: true, pid: 4242, windowID: 77, app: 'Synthetic', windowFrame: frame, screenshot: shot, elements: [] };
+      },
+      tools: {
+        sips: async (args) => {
+          await writeFile(args[args.length - 1]!, png(Number(args[2]), Number(args[1])));
+          return { code: 0 };
+        },
+      },
+    });
+    const adapter = createSecondScreenAdapter({ cli: 'cli', socket: SOCKET, run, screenshotDir: dir });
+    const refused = async (pattern: RegExp) => {
+      await assert.rejects(adapter.observe(binding, { screenshot: true, region: { x: 3300, y: 100, width: 734, height: 700 } }), (e) => {
+        assert.ok(isRuntimeError(e, 'window_lost'));
+        assert.match(e.message, pattern);
+        return true;
+      });
+      assert.ok(!calls.some((c) => c.file === 'sips'), 'no region was cut from a clipped image');
+    };
+    // Drifted past the right edge after binding; the CLI's crop stops at the screen.
+    await refused(/the window 3200,25 1360x848 reaches past screen synthetic-1440x900 \(3000,0 1440x900\)/);
+    // The image happens to have the full size, but the display moved and the window is no longer on it.
+    frame = MAIN;
+    pixels = { width: 2720, height: 1696 };
+    screenFrame = { x: 5000, y: 0, width: 1440, height: 900 };
+    await refused(/reaches past screen .*5000,0 1440x900/);
+    // Inside its screen, but the image is not the frame at the bound scale.
+    screenFrame = SCREEN.frame;
+    pixels = { width: 1360, height: 848 };
+    await refused(/the screenshot is 1360x848 px, not the whole window 3000,25 1360x848 at 2x/);
+    // Inside and the right size: the region is cut and covers what it shows.
+    pixels = { width: 2720, height: 1696 };
+    const ok = await adapter.observe(binding, { screenshot: true, region: { x: 3300, y: 100, width: 734, height: 700 } });
+    assert.deepEqual(ok.screenshot?.covers, { x: 3300, y: 100, width: 734, height: 700 });
+    // Without a screenshot nothing can be clipped: the frame is reported as it is, with no screen read.
+    frame = { x: 3200, y: 25, width: 1360, height: 848 };
+    const before = calls.filter((c) => verb(c.args) === 'screen list').length;
+    const plain = await adapter.observe(binding, { screenshot: false });
+    assert.deepEqual(plain.window.frame, frame);
+    assert.equal(calls.filter((c) => verb(c.args) === 'screen list').length, before);
+  });
+});
+
 test('observe returns typed elements, text and a measured screenshot, and a cropped region with true covers', async () => {
   await withDir(async (dir) => {
     const { run, calls } = fakeRunner({
       cli: async (args) => {
+        if (verb(args) === 'screen list') return { ok: true, screens: [SCREEN] };
         const shot = flag(args, '--screenshot');
         // The window is 1360x848 pt; its shot is 2720x1696 px.
         if (shot) await writeFile(shot, png(2720, 1696));
@@ -541,7 +707,8 @@ test('session and adapter together map window fractions against the window as it
       cli: async (args) => {
         switch (verb(args)) {
           case 'screen list':
-            return { ok: true, screens: [{ ...SCREEN, ownerPID: process.pid }] };
+            // The screen (a display rearranged) moves with the window, which stays wholly on it.
+            return { ok: true, screens: [{ ...SCREEN, ownerPID: process.pid, frame: { x: frame.x, y: frame.y - 25, width: 1440, height: 900 } }] };
           case 'state': {
             const shot = flag(args, '--screenshot');
             if (shot) await writeFile(shot, png(frame.width * 2, frame.height * 2));
