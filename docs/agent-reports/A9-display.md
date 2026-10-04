@@ -75,13 +75,14 @@ P0 的采样显示它阻塞在 `SLSCompleteDisplayConfigurationWithOption`。主
 - 新增 `AgentScreenAdmission.failure`（Core），统一检查数量上限、名字（空、重名、`2ndscreen`）和 owner 进程是否存活。`create` 在等待前查一次；`createDisplay` 在等待后、构造显示器前**再查一次**。从这次复查到 `screens.append` 之间没有任何挂起点：构造和换序列号都是同步的。
 - 屏幕按**对象身份**而不是名字处理：
   - 新增 `remove(_ screen:)`，只移除这个对象。它已经不在了就什么都不做，即使有别的屏幕用了同一个名字。
-  - 创建失败时的清理和显示器的 `onTerminate` 都改为按身份移除。`onTerminate` 通过一个弱引用盒子指向本次创建的屏幕；换序列号时被丢弃的显示器不会移除任何屏幕。
+  - 创建失败时的清理和显示器的 `onTerminate` 都改为按身份移除。每次换序列号的尝试各有一个弱引用盒子，只有最终选中的那个显示器的盒子会指向屏幕；被丢弃的显示器即使之后被 macOS 终止，也不会移除任何屏幕。
   - `remove(named:)` 只保留给按名字的 `destroy`，以及过期回收（它拿到的是当前列表里的对象）。
 - 每次 await 之后都确认屏幕仍在登记中（`isRegistered`，身份比较）：
   - **创建**：稳定循环之后、`keepArrangement` 之后各查一次。屏幕已被销毁（名字可能已被新屏幕占用）时，返回 “the screen … was destroyed while it was being created”，不会报告成功，也不会返回新屏幕的信息。
   - **`screen resize`**：等待之后，调用 `apply` 之前查一次，不在就返回 “… was destroyed or replaced before the resize finished”；`apply` 失败时也区分是被销毁还是 macOS 没切换。
   - **按窗口自动调整大小**：等待之后不在登记中就不调用 `apply`；结束后不在就不再摆放窗口；`resizing` 标志始终会复位。
-  - **`apply`**：稳定循环之后不在登记中就返回 false，也不触发 `onResize`。
+  - **`apply`**：稳定循环之后不在登记中就返回 false，也不触发 `onResize`。`isSettled` 读的是显示器最新一次的请求，所以 `apply` 还要求显示器当前的模式和 HiDPI 仍是本次请求的值；被更新的调整大小取代时返回 false，`screen resize` 报 “another request resized the screen to … before this resize finished”，不会报成功。
+  - **创建成功前**：稳定之后、`keepArrangement` 之后都确认模式和 HiDPI 仍是请求值。若期间被别的请求改了大小，返回 “was created but another request resized it … it still exists”，屏幕保留，由改它的那个请求负责其大小。
 
 限制：
 - 这些保护只针对 `AgentScreens` 自己的 await 点。
