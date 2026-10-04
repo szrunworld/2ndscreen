@@ -31,7 +31,7 @@
 | I2 | 控制台候选人流程、执行记录、搜索 | — | — | 撤销（同上） | — | — |
 | J | 安装、模式、launchd、状态窗口 | 已释放 | monitor-J | 已合（2420f09；其分支上 982 tests；合并后受 0.3.0 limits 影响由 X 修） | 3a33e4d | 真机验证步骤见 J.md 第七节；接口请求：CliFailure 冻结 bug、window release 分类（→ C2）、python -m monitor install 分发（→ X 之后） |
 | K | 登录接力 | — | — | 未派 | — | — |
-| M | 集成、混沌测试、运维手册 | — | — | 未派 | — | — |
+| M | 集成、混沌测试、运维手册 | ctx_445a0f75c087 / monitor-M | monitor-M | 进行 | — | 依赖 D2c/D2d 的部分先 xfail |
 | N | 写操作验证与真机验收 | 监督者 | — | 未开始（待用户授权） | — | — |
 
 ## 契约版本
