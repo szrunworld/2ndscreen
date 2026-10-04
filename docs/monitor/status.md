@@ -10,7 +10,7 @@
 | A3 | 契约 0.3.0：邮箱路线与搜索收敛 | 已释放 | monitor-A3 | 已合（fbf6f3a，contracts 266 tests）；A3b 补充中；client/server 适配由 X 处理 | 76e93e8 | — |
 | A3b | 契约 0.3.1（换微信阶段、mail 服务字段） | 已释放 | monitor-A3 | 已合（e57b411，contracts 281）；协调者补测试夹具 mail_retention_days，全量 1152 | b90ccf4 | — |
 | X | client/server 适配 0.3.0 | 已释放 | monitor-X | 已合（813e25a；全量 1137 tests） | 2a9653d | server 一致性测试 NOT_YET_IMPLEMENTED 白名单 26 项，F2/F3/G 实现时逐项移出 |
-| C2 | Driver 修复（CliFailure 冻结、window release 分类、PDF 子树过滤） | ctx_e08c23aa3891 / monitor-C2 | monitor-C2 | 进行 | — | — |
+| C2 | Driver 修复（CliFailure 冻结、window release 分类、PDF 子树过滤） | 已释放 | monitor-C2 | 已合（f9dbc1e；全量 1181） | b99a2db | 窗口归还文案按源码构造未实测；开着 PDF 预览时快照 index 与 CLI index 不同（driver 内部映射） |
 | D2c | 管线三处小改（入口分发、status()、suspend_gui） | ctx_f53c25d0358d / monitor-D2c | monitor-D2c | 进行 | — | — |
 | R | 品牌化简历渲染 | — | — | 未派（待用户模板与 logo、N 邮件格式） | — | — |
 | B | 只读可行性验证与夹具 | ctx_1b25ee64eab9（已释放） | monitor-B | 已合（898edbd） | 201001d | 登录/二维码、新招呼首次打开、电话待同意/已交换/已拒绝、邮件转发内容、搜索输入后结果 → 留给 N/K |
