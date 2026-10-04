@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- 招聘 Monitor 常驻进程（用户级 LaunchAgent）。由 monitor/launchd/install.sh 渲染，不要手改安装后的副本。 -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>@LABEL@</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>@PYTHON@</string>
+    <string>-m</string>
+    <string>monitor.bootstrap</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>@WORKDIR@</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>MONITOR_2NDSCREEN_CLI</key>
+    <string>@CLI@</string>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <!-- 崩溃或异常退出时由 launchd 重启；正常退出（用户关闭）不重启 -->
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+  <!-- 只在图形登录会话里运行：状态窗口与 2ndscreen 都需要 Aqua 会话 -->
+  <key>LimitLoadToSessionType</key>
+  <string>Aqua</string>
+  <key>ProcessType</key>
+  <string>Interactive</string>
+  <key>StandardOutPath</key>
+  <string>@LOGDIR@/monitor.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>@LOGDIR@/monitor.err.log</string>
+</dict>
+</plist>
