@@ -10,6 +10,7 @@ import {
   createCommandRunner,
   createSecondScreenAdapter,
   parseProcessStart,
+  type CommandSpawn,
   pngSize,
 } from '../src/adapters/second-screen.ts';
 import { RuntimeError, isRuntimeError, type CommandResult, type CommandRunner, type WindowBinding, type WindowProfile } from '../src/contracts.ts';
@@ -661,4 +662,91 @@ test('createCommandRunner settles a stopped child only after it has exited, kill
     await assert.rejects(quick, (e) => isRuntimeError(e, 'cancelled'));
     assert.ok(Date.now() - t < 1_500);
   });
+});
+
+// ---------------------------------------------------------------------------
+// Spawn hooks: real child processes, nothing outside the scratch directory.
+
+/** Whether any process is left in group `pgid`. */
+const groupAlive = (pgid: number) => {
+  try {
+    process.kill(-pgid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== 'ESRCH';
+  }
+};
+
+const waitGone = async (pgid: number) => {
+  for (let i = 0; i < 50 && groupAlive(pgid); i++) await new Promise((r) => setTimeout(r, 50));
+  return !groupAlive(pgid);
+};
+
+test('onSpawn reports the child pid as its group with times around the spawn, before the run settles, and onSettled once after close', async () => {
+  const events: Array<[string, CommandSpawn]> = [];
+  let clock = 1_000;
+  const run = createCommandRunner({
+    now: () => ++clock,
+    onSpawn: (s) => void events.push(['spawn', { ...s }]),
+    onSettled: (s) => void events.push(['settled', { ...s }]),
+  });
+  const pending = run('/bin/sh', ['-c', 'echo $$'], { timeoutMs: 5_000 });
+  assert.deepEqual(events.map((e) => e[0]), ['spawn'], 'onSpawn ran before the runner returned its promise');
+  const result = await pending;
+  assert.equal(result.code, 0);
+  assert.deepEqual(events.map((e) => e[0]), ['spawn', 'settled']);
+  const spawn = events[0]![1];
+  assert.deepEqual(spawn, { pid: Number(result.stdout.trim()), file: '/bin/sh', spawnedAfterMs: 1_001, spawnedBeforeMs: 1_002 });
+  assert.deepEqual(events[1]![1], spawn);
+  // Without hooks nothing changes.
+  assert.equal((await createCommandRunner()('/bin/sh', ['-c', 'exit 3'], { timeoutMs: 5_000 })).code, 3);
+});
+
+test('a normal exit settles while a descendant is still in the group: settling says nothing about the group', async () => {
+  let spawned: CommandSpawn | undefined;
+  let aliveAtSettle: boolean | undefined;
+  const run = createCommandRunner({ onSpawn: (s) => void (spawned = s), onSettled: (s) => void (aliveAtSettle = groupAlive(s.pid)) });
+  const result = await run('/bin/sh', ['-c', 'sleep 30 >/dev/null 2>&1 & exit 0'], { timeoutMs: 5_000 });
+  assert.equal(result.code, 0);
+  try {
+    assert.equal(aliveAtSettle, true, 'the background sleep was still in the group when the run settled');
+    assert.equal(groupAlive(spawned!.pid), true);
+  } finally {
+    process.kill(-spawned!.pid, 'SIGKILL');
+  }
+  assert.equal(await waitGone(spawned!.pid), true);
+});
+
+test('a failing onSpawn kills and reaps the whole group before rejecting', async () => {
+  await withDir(async (dir) => {
+    const pids = join(dir, 'pids');
+    for (const fail of [() => { throw new Error('registry write failed'); }, () => Promise.resolve()] as Array<(s: CommandSpawn) => void>) {
+      let spawned: CommandSpawn | undefined;
+      const settled: CommandSpawn[] = [];
+      const run = createCommandRunner({ onSpawn: (s) => { spawned = s; return fail(s); }, onSettled: (s) => void settled.push(s) });
+      // A background descendant in the same group, and a leader that would run for 30 s.
+      const started = Date.now();
+      const pending = run('/bin/sh', ['-c', `sleep 30 >/dev/null 2>&1 & echo "$!" > ${pids}; sleep 30`], { timeoutMs: 20_000 });
+      await assert.rejects(pending, (e) => isRuntimeError(e, 'io') && /onSpawn hook failed/.test(e.message) && e.details?.pgid === spawned!.pid);
+      assert.ok(Date.now() - started < 2_000, 'killed at once, not after a grace');
+      assert.equal(settled.length, 1, 'the reaped child is still reported settled');
+      assert.equal(await waitGone(spawned!.pid), true, 'leader and descendant are both gone');
+      await rm(pids, { force: true });
+    }
+  });
+});
+
+test('a program that never starts calls no hook, and a failing onSettled rejects instead of throwing unhandled', async () => {
+  const calls: string[] = [];
+  const hooks = { onSpawn: () => void calls.push('spawn'), onSettled: () => void calls.push('settled') };
+  await assert.rejects(createCommandRunner(hooks)('/nonexistent/program', [], { timeoutMs: 1_000 }), (e) => isRuntimeError(e, 'capability_missing'));
+  assert.deepEqual(calls, []);
+
+  for (const fail of [() => { throw new Error('registry gone'); }, () => Promise.reject(new Error('async'))] as Array<() => void>) {
+    const run = createCommandRunner({ onSettled: fail });
+    await assert.rejects(run('/bin/sh', ['-c', 'exit 0'], { timeoutMs: 5_000 }), (e) => isRuntimeError(e, 'io') && /onSettled hook failed/.test(e.message));
+  }
+  // A timeout still stops the group and wins over a failing onSettled.
+  const timed = createCommandRunner({ onSettled: () => { throw new Error('late'); } });
+  await assert.rejects(timed('/bin/sleep', ['30'], { timeoutMs: 100 }), (e) => isRuntimeError(e, 'timeout'));
 });
