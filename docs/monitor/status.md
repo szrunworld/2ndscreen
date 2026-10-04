@@ -7,18 +7,18 @@
 | A | 契约、协议与 API 规范 | ctx_0786c7296951→ctx_edd92e2bd40f（已释放） | monitor-A | 已合（928dc10，契约 0.1.1，170 tests） | ffd598b | — |
 | A2 | 契约 0.2.0 审查修正（写操作标志拆分、账户不可读、定位器语义） | ctx_6b7c4980f328（已释放） | monitor-A2 | 已合（contracts 191 tests）；合并后 client/core 41 个测试待 D2b 适配 | dadf00b | — |
 | D2b | 管线适配契约 0.2.0 + 硬上限 | 已释放 | monitor-D2b | 已合（9d74827）；全量 703 tests | 0c4f3be | 执行中取消需另一线程调 pipeline.cancel（→ J）；崩溃恢复 unknown 时 outbound 保守取 true |
-| A3 | 契约 0.3.0：邮箱路线与搜索收敛 | — | — | 未派（排队，等有名额） | — | — |
+| A3 | 契约 0.3.0：邮箱路线与搜索收敛 | ctx_aaf77e574cb6 / monitor-A3 | monitor-A3 | 进行 | — | exchange_type 等用户确认后 0.3.1 |
 | R | 品牌化简历渲染 | — | — | 未派（待用户模板与 logo、N 邮件格式） | — | — |
 | B | 只读可行性验证与夹具 | ctx_1b25ee64eab9（已释放） | monitor-B | 已合（898edbd） | 201001d | 登录/二维码、新招呼首次打开、电话待同意/已交换/已拒绝、邮件转发内容、搜索输入后结果 → 留给 N/K |
 | C | Driver 适配器 | ctx_3dfbecec466d（已释放） | monitor-C | 已合（ecfe9da；client 入工作区 + relock，contracts+client 351 tests） | ec6aed9 | 定位器 text 同时匹配 label/value（比契约宽），0.2.0 契约里追认；CliDriver 未在 BOSS 上真机跑过 → N |
 | D1 | 本地账本 | 已释放 | monitor-D1 | 已合（079107c + 0.2.0 适配 69a9855） | 3a3a5b4 | 已回传数据保留期限待产品决定 |
 | D2 | 指令客户端与执行管线 | ctx_be925b1cfd1f（已释放） | monitor-D2 | 已合（810c993；relock httpx；contracts+client 464 tests） | dc26e24 | 工厂入口：D1 open_ledger(path)、E create_observer()、H create_handlers()；0.2.0 合并后跟进 core/write_flags.py 与 guard.py |
-| E | 观察模块 | — | — | 未派 | — | — |
+| E | 观察模块 | ctx_ba5accc0228d / monitor-E | monitor-E | 进行 | — | — |
 | F1 | 服务端基础 | 已释放 | monitor-F1 | 已合（2b1dff2 + 0.2.0 适配 8abbf54） | c7bbc4b | openapi 缺 401/422/403 → A3 |
 | F2 | 服务端业务 | — | — | 未派 | — | — |
 | F3 | 服务端扩展 | — | — | 未派 | — | — |
 | G | 邮件接入 | — | — | 未派 | — | — |
-| H1 | 动作公共层 + 问候 + 求简历 | — | — | 未派 | — | — |
+| H1 | 动作公共层 + 问候 + 求简历 | ctx_7257bb2e7334 / monitor-H1 | monitor-H1 | 进行 | — | 求简历确认流程依赖界面假设，待 N |
 | H2 | 搜索动作 | — | — | 未派 | — | — |
 | H3 | 换联系方式 + 转发简历 | — | — | 未派 | — | — |
 | I1 | 控制台骨架、总览、连接与策略 | — | — | 未派 | — | — |
