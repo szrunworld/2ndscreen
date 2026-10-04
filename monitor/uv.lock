@@ -237,7 +237,7 @@ dev = [{ name = "pytest", specifier = ">=8.3" }]
 
 [[package]]
 name = "monitor-contracts"
-version = "0.3.2"
+version = "0.3.3"
 source = { editable = "contracts" }
 dependencies = [
     { name = "jsonschema" },

@@ -35,7 +35,7 @@
           "type": "null"
         }
       ],
-      "description": "本机保存的绑定账户（安装时绑定，经控制台确认）；未绑定为 null。表示绑定账户，不是从界面观察到的账户：v1 读不到 BOSS 当前登录账户。"
+      "description": "本机保存的绑定账户（控制台确认，0.3.3 起由心跳回执 heartbeat_ack.account_binding 下发）；未绑定为 null。表示绑定账户，不是从界面观察到的账户：v1 读不到 BOSS 当前登录账户。"
     },
     "client_state": {
       "type": "string",
@@ -44,9 +44,10 @@
         "not_running",
         "login_required",
         "blocked_by_dialog",
-        "unknown"
+        "unknown",
+        "suspended"
       ],
-      "description": "BOSS 客户端状态。"
+      "description": "BOSS 客户端状态。suspended（0.3.3）：本机模式下 Monitor 已把 BOSS 窗口归还给用户（或接管失败），GUI 挂起、不观察不执行；与看不到界面的 unknown 区分。"
     },
     "paused": {
       "type": "boolean"

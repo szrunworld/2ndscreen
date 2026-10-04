@@ -9,7 +9,7 @@ event_id 必须等于 compute_event_id 的结果）。语义错误统一用 ``_f
 from __future__ import annotations
 
 import re
-from typing import Annotated, Any, Literal, Union
+from typing import Annotated, Any, Literal, Union, get_args
 from uuid import UUID
 
 from pydantic import (
@@ -858,12 +858,17 @@ class LastError(ContractModel):
         return self
 
 
+# 0.3.3 增加 suspended：本机模式下窗口已归还用户或接管失败，GUI 挂起
+ClientState = Literal["running", "not_running", "login_required", "blocked_by_dialog", "unknown", "suspended"]
+CLIENT_STATES: tuple[str, ...] = get_args(ClientState)
+
+
 class DeviceHeartbeat(ContractModel):
     device_id: DeviceId
     sent_at: AwareDatetime
     mode: Mode
     account_id: AccountId | None
-    client_state: Literal["running", "not_running", "login_required", "blocked_by_dialog", "unknown"]
+    client_state: ClientState
     paused: bool
     pause_reason: PauseReason | None = None
     needs_baseline: bool
@@ -876,6 +881,33 @@ class DeviceHeartbeat(ContractModel):
     def _check(self) -> DeviceHeartbeat:
         if self.paused and self.pause_reason is None:
             raise _fail("pause_reason", "paused=true 时必须给出 pause_reason")
+        return self
+
+
+class HeartbeatAccountBinding(ContractModel):
+    """心跳回执里的绑定账户（0.3.3），字段与本机 monitor_state.account_binding 一致。"""
+
+    account_id: AccountId
+    bound_at: AwareDatetime
+    confirmed_by: Annotated[str, StringConstraints(min_length=1, max_length=128)]
+
+
+class HeartbeatAck(ContractModel):
+    """心跳响应（0.3.3 纳入契约）。account_binding 是服务端记录的确认绑定，设备以它为准。"""
+
+    server_time: AwareDatetime
+    paused: bool
+    policy_version: Annotated[int, Field(ge=1)] | None
+    cancellations: list[UUID]
+    account_confirmed: bool | None = None
+    account_binding: HeartbeatAccountBinding | None
+
+    @model_validator(mode="after")
+    def _check(self) -> HeartbeatAck:
+        if self.account_confirmed and self.account_binding is None:
+            raise _fail("account_binding", "account_confirmed=true 时 account_binding 不能为 null")
+        if self.policy_version is not None and self.account_binding is None:
+            raise _fail("policy_version", "没有确认的绑定账户时 policy_version 必须为 null")
         return self
 
 

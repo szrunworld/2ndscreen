@@ -1,0 +1,16 @@
+{
+  "contract": "heartbeat_ack",
+  "description": "绑定记录缺少 confirmed_by（0.3.3）",
+  "expected_error_paths": ["account_binding.confirmed_by"],
+  "data": {
+    "server_time": "2026-10-04T09:31:20+08:00",
+    "paused": false,
+    "policy_version": null,
+    "cancellations": [],
+    "account_confirmed": false,
+    "account_binding": {
+      "account_id": "acct_demo",
+      "bound_at": "2026-10-04T09:00:00+08:00"
+    }
+  }
+}

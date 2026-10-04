@@ -26,6 +26,7 @@ def test_required_schema_files_exist():
         "policy.json",
         "device_registration.json",
         "device_heartbeat.json",
+        "heartbeat_ack.json",
         "login_qr.json",
         "mail_message.json",
         "mail_verification.json",
@@ -147,7 +148,7 @@ def test_coverage_mode_exchange_enums_match_models():
 
 
 def test_version_is_consistent():
-    assert mc.__version__ == "0.3.2"
+    assert mc.__version__ == "0.3.3"
     pyproject = tomllib.loads((CONTRACTS_DIR / "pyproject.toml").read_text(encoding="utf-8"))
     assert pyproject["project"]["version"] == mc.__version__
 

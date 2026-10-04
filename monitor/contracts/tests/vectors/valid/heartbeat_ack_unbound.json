@@ -1,0 +1,12 @@
+{
+  "contract": "heartbeat_ack",
+  "description": "控制台尚未确认绑定：account_binding 为 null，不下发策略版本（0.3.3）",
+  "data": {
+    "server_time": "2026-10-04T09:31:20+08:00",
+    "paused": false,
+    "policy_version": null,
+    "cancellations": [],
+    "account_confirmed": false,
+    "account_binding": null
+  }
+}

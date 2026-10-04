@@ -1,6 +1,6 @@
 # 招聘 Monitor 契约说明
 
-契约版本：`monitor_contracts.__version__ = "0.3.2"`（2026-10-04）。本文说明 `monitor/contracts/` 的产物，是[方案](monitor-spec.md)第六、七节的落地版本。HTTP 接口见 [api.md](api.md)。
+契约版本：`monitor_contracts.__version__ = "0.3.3"`（2026-10-04）。本文说明 `monitor/contracts/` 的产物，是[方案](monitor-spec.md)第六、七节的落地版本。HTTP 接口见 [api.md](api.md)。
 
 本文中"已验证"只表示 `uv run pytest contracts` 通过的契约层行为，不代表 BOSS 客户端上的任何能力。
 
@@ -12,7 +12,7 @@
 | `monitor_contracts` 包 | `monitor/contracts/monitor_contracts/` | pydantic v2 模型、`validate_*`、状态机、`compute_event_id`、Protocol |
 | 夹具格式 | `monitor/fixtures/schema/ax-fixture.schema.json` | B 录制、C 回放、E/H 测试的脱敏元素树格式 |
 | OpenAPI | `monitor/contracts/openapi.yaml` | 服务端 HTTP 接口；消息体直接 `$ref` 上面的 schema |
-| 测试向量 | `monitor/contracts/tests/vectors/{valid,invalid}/` | 合法 46 个、非法 68 个，其他任务可直接拿来做 fake 数据 |
+| 测试向量 | `monitor/contracts/tests/vectors/{valid,invalid}/` | 合法 50 个、非法 71 个，其他任务可直接拿来做 fake 数据 |
 
 ```sh
 cd monitor && uv sync && uv run pytest contracts
@@ -24,7 +24,7 @@ cd monitor && uv sync && uv run pytest contracts
 
 `validate_<name>(data)` 先跑 JSON Schema（结构、枚举、按 action/kind 的形状），有错就停；结构通过后再跑 pydantic（跨字段语义：时间先后、`result_ref` 前缀、`event_id` 是否等于计算值等）。两层的错误都转成 `FieldError(path, message, code, layer)`，路径形如 `payload.text`、`items[0].result_ref`，任何失败都抛 `ContractValidationError`（`.errors`、`.paths`）。只要错误列表、不想抛异常时用 `check(name, data)`。
 
-可校验的契约名：`command`、`command_result`、`event`、`search_snapshot`、`policy`、`device_registration`、`device_heartbeat`、`login_qr`、`mail_message`、`mail_verification`、`ax_fixture`。
+可校验的契约名：`command`、`command_result`、`event`、`search_snapshot`、`policy`、`device_registration`、`device_heartbeat`、`heartbeat_ack`、`login_qr`、`mail_message`、`mail_verification`、`ax_fixture`。
 
 模型序列化成线上 JSON 用 `model.to_wire()`（即 `model_dump(mode="json")`）。可选字段在线上允许为 `null`。
 
@@ -176,7 +176,8 @@ cd monitor && uv sync && uv run pytest contracts
   - `company_mailbox`：BOSS 账户设置里预留的公司邮箱（zhaopin@remotedesk.io），只读展示，以服务端配置为准；PUT 时服务端忽略请求里的值。未配置时为 null。
   - `mail_retention_days`（0.3.1，默认 30，范围 1–365）：我方邮件副本的保留天数，到期由我方清理任务删除副本、只留元数据。mail 服务里的邮件不归它管（见下文"公司邮箱"）。不加 `resume_route`：v1 只有这一条简历路线。
 - **device_registration**：`POST /devices` 的请求体。字段包括 `enrollment_code`、`device_name`、`mode`、`platform`、`monitor_version`、`contracts_version`、`capabilities`。local 模式不能声明 `login_relay`。
-- **device_heartbeat**：默认 30 秒一次。字段包括 `mode`、`account_id`（绑定账户，见下文"账户来源"）、`client_state`、`paused` + `pause_reason`（paused 时必填）、`needs_baseline`、`current_action`、`queue{queued_commands, undelivered_results, outbox_events}`、`last_error`、`monitor_version`。
+- **device_heartbeat**：默认 30 秒一次。字段包括 `mode`、`account_id`（绑定账户，见下文"账户来源"）、`client_state`（running / not_running / login_required / blocked_by_dialog / unknown / suspended；`suspended` 为 0.3.3 新增：本机模式下 Monitor 已把 BOSS 窗口归还用户或接管失败，GUI 挂起、不观察不执行，与"看不到界面"的 unknown 区分；导出 `ClientState`、`CLIENT_STATES`）、`paused` + `pause_reason`（paused 时必填）、`needs_baseline`、`current_action`、`queue{queued_commands, undelivered_results, outbox_events}`、`last_error`、`monitor_version`。
+- **heartbeat_ack**（0.3.3 纳入契约）：心跳的 200 响应体。字段包括 `server_time`、`paused`（控制台暂停）、`policy_version`（未确认时为 null）、`cancellations[]`、`account_confirmed`（心跳的 account_id 是否等于服务端绑定；可省略，服务端总是给出）、`account_binding`（必有，可为 null）。`account_binding = {account_id, bound_at, confirmed_by}` 是服务端记录的、控制台确认的绑定，字段与本机 `MonitorState.account_binding`（Protocol `AccountBinding`）一致；与心跳里报的账户无关地如实返回，没有确认的绑定时为 null，变更绑定后返回新账户。模型层规则：`account_confirmed=true` 时 `account_binding` 不能为 null；`account_binding` 为 null 时 `policy_version` 必须为 null。
 - **login_qr**：`POST /login-qr` 的请求体。字段包括 `device_id`、`account_id?`、`qr_payload`（本地解码出的文本，不是图片）、`qr_seq`（内容每变一次 +1）、`captured_at`、`expires_at`（必须晚于 captured_at）、`decoder`。
 
 ### 公司邮箱 mail_message / mail_verification（0.3.0，0.3.1 改为 mail 服务订阅方）
@@ -227,7 +228,7 @@ cd monitor && uv sync && uv run pytest contracts
 
 P0 与任务 B 都确认：BOSS 客户端窗口里读不到当前登录的是哪个招聘账户。因此 v1 的规则是：
 
-- `account_id` 来自安装时的绑定：用户在控制台为这台设备确认绑定账户（`PUT /devices/{id}/account-binding`），Monitor 把绑定结果保存在本地。Monitor 不从界面读取账户，也不推断账户。
+- `account_id` 来自控制台确认的绑定：用户在控制台为这台设备确认绑定账户（`PUT /devices/{id}/account-binding`），Monitor 从心跳回执 `heartbeat_ack.account_binding` 得知绑定并保存在本地（0.3.3，**设备以心跳回执中的绑定为准**；此前没有下发途径，见集成缺陷 M-1）。Monitor 不从界面读取账户，也不推断账户。
 - `device_heartbeat.account_id` 表示"本机保存的绑定账户"，不是"观察到的账户"；未绑定时为 null。服务端发现它与服务端记录的绑定不一致时，说明是配置问题（例如重装后未重新绑定），不说明用户在 BOSS 里换了账户。
 - 指令、事件里的 `account_id` 同样是绑定账户。
 - reason `account_mismatch` 和暂停原因 `account_switched` 保留，但 v1 只在有证据时使用（例如界面出现账户切换或被挤下线的提示）。当前没有检测手段，用户在 BOSS 里直接切换账户时 Monitor 察觉不到。这一项列入 N 阶段待验证。
@@ -423,6 +424,8 @@ Locator 的文本匹配（0.2.0 追认任务 C 的实现）：`text` 在规范�
 | 人工关联队列看不到候选流程 | 0.3.2（F3）：`ResumeDocument` 增加 `candidate_case_ids`（可选，默认空列表） |
 | 人工输入请求有效期 | 0.3.2（F3）：`human_input_required.payload.expires_at` 可空，默认 observed_at + 10 分钟；provide_input 指令的 expires_at 等于它 |
 | 副本清理后的 mail_message 写入撞键 | 0.3.2（G）：`mail_message_key` 增加 `revision="purged"`，追认 G 的实现 |
+| GUI 挂起时 client_state 只能报 unknown（D2c 接口请求 1） | 0.3.3（协调者）：`client_state` 枚举增加 `suspended`；服务端如实记录，设备卡片 status 仍为 online（进程在线），控制台从 `last_heartbeat.client_state` 读出挂起；客户端改报 suspended 由 D2d 完成 |
+| 设备得不到控制台确认的绑定（集成缺陷 M-1） | 0.3.3（协调者派 F5）：心跳回执纳入契约 `heartbeat_ack`，增加 `account_binding`（未确认为 null，变更时返回新账户），设备以它为准写入本机绑定；客户端部分由 D2d 完成 |
 
 ### 变更记录
 
@@ -434,3 +437,4 @@ Locator 的文本匹配（0.2.0 追认任务 C 的实现）：`text` 在规范�
 | 0.3.0 | 2026-10-04 | ① 移除 `forward_resume`：action 枚举、payload / output、结果规则、策略白名单与 daily_limits / min_interval_seconds、设备能力；`attachment_available` 只作可选观察。② policy 增加 `company_mailbox`（只读）与 `resume_mail_timeout_days`（默认 3）；`after_resume_received` 默认 `{action: none, wait_for_parse: true}`。③ case 主路径 `resume_requested → resume_linked`，`resume_received` 为可选观察，`resume_requested → needs_human` 用于超时或关联歧义（迁移表未增删边，只改说明）。④ 新增 `mail_message`、`mail_verification` 两个契约与 `MAIL_TRANSITIONS`、`compute_mail_message_id`、`mail_message_key`、`mail_verification_key`；`resume_document_key` 的第一个参数改为来源标识。⑤ 搜索快照卡片改为 `{result_ref, position, fields[], masked_name?, prop_card_texts[]}`，删除 `display_name / summary / stable_candidate_id`；会话目标删除 `result_ref`，v1 搜索结果不能作为指令目标。⑥ openapi：新增 `/mail-messages`、`/mail-verifications`；resume_document 增加 `variant / derived_from / mail_message_id`，`link_method` 的 `forward_record` 改为 `resume_request`；补齐 F1 报告列出的 401 / 403 / 422。⑦ 交换联系方式只换微信：`exchange_type` 枚举改为 `["wechat"]`（指令、结果、`contact_exchange_updated` 事件同步）；只能人工触发：`after_resume_received.action` 只允许 none，新增 `POST /cases/{case_id}:request-wechat`（ManualAction 类型 `request_wechat`，响应 `{manual_action, command}`）。⑧ 已读回执可接受，`externally_visible_side_effect` 说明补充 | D2（限额常量、testing 夹具）、D1（testing 夹具）、F1（一致性白名单清空）、F2（策略默认值、超时转人工、关联方式）、F3（搜索快照存储）、G（mail_messages、核对、关联方式）、H2（卡片形状）、H3（只换微信）、E（contact_exchange_updated 只报 wechat）、I1/I2（策略页邮箱与超时、去掉自动交换选项、流程详情"换微信"按钮、搜索页、邮件队列）、R（branded 版本写入） |
 | 0.3.1 | 2026-10-04 | ① case 迁移表：new_application、greeted、resume_requested、resume_received 各加 `→ contact_requested`（resume_linked、needs_human 原已有），人工换微信除 closed 外都允许；`contact_requested` 之后邮件才到时阶段不回退，关联独立于阶段，openapi TimelineEntry.type 增加 `resume_linked`。② 邮件接入改为公司邮件服务 mail 的订阅方：`mail_message` 增加 `provider`（`remotedesk-mail`）、`provider_message_id`、`webhook_delivery_id`、`copy_purged_at`，删除 `uidvalidity` / `uid`；`mail_message_id = "mail:" + provider_message_id`，`compute_mail_message_id` 签名改为只接收 mail 的 message_id；推送阶段 sha256 可为 null，processed / needs_review 必须有副本；pending 可记录最近一次失败原因。③ `mail_verification` 检查项改为 pending_backlog、copy_missing、hash_mismatch、document_without_copy、needs_review_mismatch、failed_mismatch、webhook_delivery_failed、upstream_missing（即草案中的 provider_missing），`count` 可为 null 加 `unavailable_reason`，新增 `purged_copies`。④ policy 增加 `mail_retention_days`（默认 30）。⑤ openapi：PUT /mail-messages 与 request-wechat 描述更新，ResumeDocumentCreate.mail 去掉 IMAP uid、message_id 可空 | F2（迁移表、request-wechat 阶段、关联不回退、时间线）、F1（ManualAction 枚举，见 A3 报告）、G（订阅方模型、主键、核对项、副本清理）、I1/I2（策略页保留期、时间线、核对展示）、D2（testing 夹具 policy 增加 mail_retention_days） |
 | 0.3.2 | 2026-10-04 | 汇总补丁（协调者指定为修订号；新增字段都是可选的，0.3.x 设备与服务端互相兼容）。① 搜索算对外动作（用户 2026-10-04）：第四节执行标志表把"在搜索框输入关键词"改为对外动作；`search_candidates` + succeeded 三个标志都必须为 true（schema 与模型两层，合法向量 result_search_complete / empty_confirmed 改为全 true，新增非法向量 result_search_success_not_outbound）；搜索受 `policy.work_hours` 约束（policy.json work_hours 补说明，openapi createSearchRun 409 说明更新）。② F2：openapi `ManualCommandCreated` 增加 `scheduled_for`（可空），工作时段外人工换微信时为下一时段开始；写明"`issued_at` 未到不下发"（第三节、claimCommands 说明）。③ F3：openapi 补齐 server 一致性测试 `KNOWN_YAML_GAPS` 列出的 19 个操作的 401 / 403 / 404 / 422；`listResumeDocuments`、`getPolicy` 允许 serviceToken（只读）；`ResumeDocument` 增加 `candidate_case_ids`；`human_input_required.payload` 增加 `expires_at`（可空，默认 observed_at + 10 分钟，导出常量 `INPUT_REQUEST_TTL_SECONDS`），respondInputRequest 说明有效期。④ G：`mail_message_key` 增加 `revision="purged"`（9.2）。⑤ 版本号三处同步为 0.3.2 | server（一致性测试清空 KNOWN_YAML_GAPS / KNOWN_SECURITY_GAPS；ResumeDocument 加 candidate_case_ids；ManualCommandCreated 加 scheduled_for；getPolicy 依赖改 require_policy_reader；搜索门槛加工作时段）、client core（D2d：search 按对外动作计数、崩溃恢复不再强制 outbound=false，解除 H2 的 xfail）、mail（可改用 `mail_message_key(..., revision="purged")`，键不变）、E/D2（human_input_required 可带 expires_at） |
+| 0.3.3 | 2026-10-04 | 修复集成缺陷 M-1 的契约部分（F5）。① 新增契约 `heartbeat_ack`（schema `heartbeat_ack.json`、模型 `HeartbeatAck` / `HeartbeatAccountBinding`、`validate_heartbeat_ack`，合法向量 3 个、非法向量 3 个）：心跳回执原样纳入，并增加必有、可空的 `account_binding {account_id, bound_at, confirmed_by}`。② openapi `components.schemas.HeartbeatAck` 改为 `$ref: ./schemas/heartbeat_ack.json`，postHeartbeat、confirmAccountBinding 说明"设备以心跳回执中的绑定为准"。③ `device_heartbeat.client_state` 增加 `suspended`（D2c 接口请求 1；合法向量 device_heartbeat_suspended），导出 `ClientState`、`CLIENT_STATES`；openapi Device.status 说明挂起时仍为 online。④ 版本号三处同步为 0.3.3。0.3.x 互相兼容（旧服务端会以 422 拒绝 suspended，所以客户端改报 suspended 须在服务端升级到 0.3.3 之后）：旧客户端忽略新字段；新客户端遇到没有 `account_binding` 的旧服务端时保持本机绑定不变 | server（心跳响应填充 account_binding，F5 已完成）、client core（D2d：读取 account_binding 写入本机绑定，解除 integration 的 M-1 xfail，删除 `scripts/bind_account.py` 替代步骤；`_reported_client_state()` 挂起时改报 suspended，`ClientState` 改用契约导出的类型）、I1/I2（可选：设备页提示"等待设备同步绑定"） |

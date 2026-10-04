@@ -7,6 +7,8 @@ import sqlite3
 import pytest
 from server_testkit import ACCOUNT, CONSOLE_TOKEN, SERVICE_TOKEN, Harness, assert_problem, assert_shape
 
+import monitor_contracts as mc
+
 from app.db import MIGRATIONS, SqliteStore, migrate
 from app.devices import contracts_compatible, new_enrollment_code
 from app.main import Settings, StaticTokenAuthenticator, hash_token
@@ -238,6 +240,75 @@ def test_heartbeat_ack_shape_and_account_confirmation(h: Harness):
     assert h.heartbeat(device_id, token).json()["account_confirmed"] is True
     assert h.heartbeat(device_id, token, account_id="acct_switched").json()["account_confirmed"] is False
     assert h.heartbeat(device_id, token, account_id=None).json()["account_confirmed"] is False
+
+
+def test_heartbeat_ack_binding_null_while_unbound(h: Harness):
+    """契约 0.3.3（M-1）：控制台未确认绑定时 account_binding 为 null，无论心跳报的是什么账户。"""
+    device_id, token = h.register()
+    for account_id in (None, ACCOUNT):
+        ack = h.heartbeat(device_id, token, account_id=account_id).json()
+        assert mc.check("heartbeat_ack", ack) == []
+        assert ack["account_binding"] is None
+        assert ack["account_confirmed"] is False
+        assert ack["policy_version"] is None
+
+
+def test_heartbeat_ack_carries_confirmed_binding_before_device_knows_it(h: Harness):
+    """设备本机还没有绑定（心跳 account_id=null）时，回执已给出控制台确认的绑定，设备据此写入本机。"""
+    device_id, token = h.register()
+    h.clock.advance(60)
+    assert h.bind(device_id).status_code == 200
+    h.clock.advance(30)
+    ack = h.heartbeat(device_id, token, account_id=None).json()
+    assert mc.check("heartbeat_ack", ack) == []
+    assert ack["account_binding"] == {"account_id": ACCOUNT, "bound_at": "2026-10-04T01:31:00Z", "confirmed_by": "alice"}
+    assert ack["account_confirmed"] is False and ack["policy_version"] is None
+    # 设备改报绑定账户后确认，开始下发策略版本；绑定记录不变
+    ack = h.heartbeat(device_id, token, account_id=ACCOUNT).json()
+    assert mc.check("heartbeat_ack", ack) == []
+    assert ack["account_confirmed"] is True and ack["policy_version"] is not None
+    assert ack["account_binding"]["account_id"] == ACCOUNT
+    assert ack["account_binding"]["bound_at"] == "2026-10-04T01:31:00Z"
+
+
+def test_heartbeat_ack_reflects_binding_change(h: Harness):
+    """控制台把绑定改到另一个账户：下一次回执如实返回新账户，设备改报之前不算确认、领取为空。"""
+    device_id, token = h.ready_device()
+    h.clock.advance(120)
+    assert h.bind(device_id, "acct_other").status_code == 200
+    ack = h.heartbeat(device_id, token, account_id=ACCOUNT).json()
+    assert mc.check("heartbeat_ack", ack) == []
+    assert ack["account_binding"] == {"account_id": "acct_other", "bound_at": "2026-10-04T01:32:00Z", "confirmed_by": "alice"}
+    assert ack["account_confirmed"] is False and ack["policy_version"] is None
+    h.create(account_id="acct_other")
+    for account_id in (ACCOUNT, "acct_other"):
+        claim = h.claim(device_id, token, account_id)
+        assert claim.status_code == 200 and claim.json()["commands"] == []
+    # 设备按回执写入新绑定、改报新账户后确认，可以领取新账户的指令
+    ack = h.heartbeat(device_id, token, account_id="acct_other").json()
+    assert ack["account_confirmed"] is True
+    assert ack["account_binding"]["account_id"] == "acct_other"
+    assert len(h.claim(device_id, token, "acct_other").json()["commands"]) == 1
+
+
+def test_heartbeat_ack_binding_is_per_device(h: Harness):
+    a_id, a_token = h.ready_device()
+    b_id, b_token = h.register()
+    assert h.heartbeat(b_id, b_token, account_id=None).json()["account_binding"] is None
+    assert h.heartbeat(a_id, a_token).json()["account_binding"]["account_id"] == ACCOUNT
+
+
+def test_suspended_client_state_is_shown_as_reported(h: Harness):
+    """契约 0.3.3：client_state=suspended（窗口已归还用户）如实记录并显示；设备仍在线，不算需要登录。"""
+    device_id, token = h.ready_device()
+    assert h.heartbeat(device_id, token, client_state="suspended").status_code == 200
+    device = h.get(f"/devices/{device_id}").json()
+    assert device["last_heartbeat"]["client_state"] == "suspended"
+    assert device["status"] == "online"
+    listed = {d["device_id"]: d for d in h.get("/devices").json()["items"]}
+    assert listed[device_id]["last_heartbeat"]["client_state"] == "suspended"
+    h.clock.advance(91)
+    assert h.get(f"/devices/{device_id}").json()["status"] == "offline"
 
 
 def test_heartbeat_policy_version_is_injected():

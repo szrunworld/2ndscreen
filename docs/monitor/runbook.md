@@ -36,13 +36,14 @@ console() {  # 用法：console METHOD PATH [JSON]
 
 服务端是 FastAPI + SQLite（`monitor/server`）。只监听 HTTP，**对外必须放在 HTTPS 反向代理后面**（Monitor 拒绝非 https 地址）。
 
-`python -m app.main serve` 不能配置控制台 / 服务令牌（缺陷 M-4，见 [M 报告](agent-reports/M.md)），在正式配置出来之前用 `monitor/scripts/serve.py`：
+正式入口是 `python -m app.main serve`（缺陷 M-4 已由任务 F5 修复）：控制台 / 服务令牌从环境变量、令牌文件或命令行读取，令牌不进日志。`monitor/scripts/serve.py` 现在只是转调这个入口，保留作兼容：
 
 ```sh
 cd monitor && uv sync
 export MONITOR_CONSOLE_TOKENS="<控制台令牌>=<操作者邮箱>"     # 可多个，逗号分隔
 export MONITOR_SERVICE_TOKENS="<邮件接入令牌>=mail-ingest"   # 邮件接入（已交接）用，可省略
-uv run python scripts/serve.py --db /var/lib/monitor/server.db --port 8000
+cd server && uv run python -m app.main serve --db /var/lib/monitor/server.db --port 8000
+# 参数与环境变量的完整说明：uv run python -m app.main serve --help
 # stderr 出现 "monitor-server ready http://127.0.0.1:8000/api/v1" 即就绪
 ```
 
@@ -65,7 +66,7 @@ uv run python scripts/serve.py --db /var/lib/monitor/server.db --port 8000
    cd monitor && uv sync
    uv run python -m monitor.install install --mode local \
        --server "$API" --enrollment-code <注册码> --device-name "招聘部 MacBook"
-   # D2c 合并后也可写作：uv run python -m monitor install ...
+   # 也可写作：uv run python -m monitor install ...（D2c 已合并）
    ```
 
    退出码：0 成功；1 前提缺失（逐项列出，什么都不写）；2 参数或环境问题；3 注册或令牌保存失败（若提示"注册成功但令牌保存失败"，先在控制台吊销该设备再重装）。
@@ -81,7 +82,7 @@ uv run python scripts/serve.py --db /var/lib/monitor/server.db --port 8000
    console PUT /devices/$DEV/account-binding '{"account_id":"<招聘账户 ID>","note":"确认人：李四"}'
    ```
 
-2. **把绑定写进设备**（缺陷 M-1 的替代步骤，必做）：目前 Monitor 无法从服务端得知绑定的账户，状态窗口会一直显示"尚未绑定招聘账户"、不领取任何指令。在设备上，**Monitor 停止时**执行：
+2. **把绑定写进设备**（缺陷 M-1 的替代步骤；任务 D2d 合并后设备会从心跳回执自动取得绑定，这一步将不再需要）：目前 Monitor 无法从服务端得知绑定的账户，状态窗口会一直显示"尚未绑定招聘账户"、不领取任何指令。在设备上，**Monitor 停止时**执行：
 
    ```sh
    launchctl bootout gui/$(id -u)/com.recruit-monitor.monitor 2>/dev/null || true   # 前台运行的话 Ctrl-C

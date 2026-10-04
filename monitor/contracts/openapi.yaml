@@ -1,10 +1,10 @@
 openapi: 3.1.0
 info:
   title: 招聘 Monitor 服务端 API
-  version: 0.3.2
+  version: 0.3.3
   summary: Monitor 设备、指令、事件、简历文档、搜索、人工处理、登录接力与策略接口
   description: |
-    与 monitor_contracts 0.3.2 对应（info.version 与契约版本同步）。说明见 docs/monitor/api.md。
+    与 monitor_contracts 0.3.3 对应（info.version 与契约版本同步）。说明见 docs/monitor/api.md。
 
     - 传输：只暴露 HTTPS。第一版用轮询，领取指令为长轮询（最长 30 秒），不使用 WebSocket。
     - 认证：设备接口用设备令牌（deviceToken）；控制台接口用控制台会话（consoleSession）；
@@ -188,7 +188,11 @@ paths:
       tags: [devices]
       operationId: confirmAccountBinding
       summary: 控制台确认设备与招聘账户的绑定
-      description: 第一版一台设备只绑定一个账户。account_id 来自安装时的绑定，Monitor 不从界面读取（BOSS 窗口读不到当前账户）；心跳的 account_id 是本机保存的绑定账户。它与服务端记录的绑定不一致时（配置问题，例如重装后未重新绑定），服务端停止下发指令。
+      description: |
+        第一版一台设备只绑定一个账户。Monitor 不从界面读取账户（BOSS 窗口读不到当前账户）；心跳的 account_id 是本机保存的绑定账户。
+        0.3.3：设备通过心跳回执 HeartbeatAck.account_binding 得知这里确认的绑定，并以它为准写入本机，此后心跳上报这个 account_id。
+        再次 PUT 另一个 account_id 即变更绑定，下一次心跳回执如实返回新账户；在设备改报新账户之前 account_confirmed=false，领取为空。
+        心跳的 account_id 与服务端记录的绑定不一致时（配置问题，例如重装后尚未收到回执），服务端停止下发指令。
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
@@ -284,6 +288,10 @@ paths:
       tags: [devices]
       operationId: postHeartbeat
       summary: 设备心跳（默认 30 秒）
+      description: |
+        响应体为契约 heartbeat_ack（0.3.3 起纳入契约）。account_binding 是服务端记录的、控制台确认的绑定账户
+        （没有时为 null），与请求里的 account_id 无关地如实返回；设备以它为准更新本机绑定。
+        account_confirmed 表示请求里的 account_id 是否等于该绑定；为 false 时 policy_version 为 null、领取为空。
       security:
         - deviceToken: []
       parameters:
@@ -296,7 +304,7 @@ paths:
               $ref: './schemas/device_heartbeat.json'
       responses:
         '200':
-          description: 已记录；响应携带服务端要求的暂停状态、策略版本与需要取消的指令
+          description: 已记录；响应携带服务端要求的暂停状态、策略版本、需要取消的指令与确认的绑定账户
           content:
             application/json:
               schema:
@@ -1815,7 +1823,7 @@ components:
         status:
           type: string
           enum: [online, offline, needs_login, paused, revoked]
-          description: 服务端综合心跳得出的展示状态；超过 90 秒无心跳为 offline。
+          description: 服务端综合心跳得出的展示状态；超过 90 秒无心跳为 offline。心跳 client_state=suspended（0.3.3，本机模式窗口已归还用户）时仍为 online，控制台从 last_heartbeat.client_state 读出挂起。
         paused:
           type: boolean
         revoked:
@@ -1843,26 +1851,7 @@ components:
           type: boolean
           description: 是否有未过期的登录二维码（仅 remote）
     HeartbeatAck:
-      type: object
-      required: [server_time, paused, policy_version, cancellations]
-      properties:
-        server_time:
-          type: string
-          format: date-time
-        paused:
-          type: boolean
-          description: 服务端要求的暂停状态（控制台暂停）
-        policy_version:
-          type: [integer, 'null']
-          description: 当前策略版本；与本地不同时 Monitor 重新 GET 策略
-        cancellations:
-          type: array
-          description: 已领取但被控制台取消的指令
-          items:
-            type: string
-            format: uuid
-        account_confirmed:
-          type: boolean
+      $ref: './schemas/heartbeat_ack.json'
 
     ClaimRequest:
       type: object
