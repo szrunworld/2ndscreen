@@ -14,7 +14,7 @@ import type {
 import { identify, listCandidates, listEnded, normalize } from './candidates.ts';
 import { look, type Env } from './actions.ts';
 import { DEFAULT_CAPTURE_LIMITS, readResumeHeader, type CaptureLimits, type HeaderReading } from './capture.ts';
-import { ALL_JOBS, classifyPage, jobFilter, listRows, requestDialog, resumeOverlay, text } from './pages.ts';
+import { ALL_JOBS, classifyPage, jobFilter, jobMenu, listRows, requestDialog, resumeOverlay, text } from './pages.ts';
 
 const verdict = (ok: boolean, observation: Observation | undefined, ...evidence: string[]): CheckResult => ({
   ok,
@@ -108,6 +108,8 @@ export async function verifyUnit(unit: BossUnitName, context: UnitContext, obser
     case 'select_source': {
       if (context.task.input.source !== 'conversations') return verdict(false, observation, `source ${context.task.input.source} is not supported on macOS`);
       if (!LIST_PAGES.has(page)) return verdict(false, observation, `page is ${page}, not the message list`);
+      // Open, the menu hides the label; only a closed menu shows what is selected.
+      if (jobMenu(observation)) return verdict(false, observation, 'the job menu is still open');
       const filter = jobFilter(observation);
       const label = filter ? text(filter) : '';
       if (!label || label === ALL_JOBS) return verdict(false, observation, 'no job is selected in the list filter');

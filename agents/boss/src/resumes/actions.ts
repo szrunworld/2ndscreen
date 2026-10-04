@@ -122,6 +122,20 @@ export async function clickElement(
   return result;
 }
 
+/**
+ * Press one element of `observation` through accessibility only (click
+ * method `accessibility`): AXPress on that element or nothing, never an
+ * event, the pointer, focus or keys. For controls verified to need it.
+ */
+export async function pressElement(session: Session, observation: Observation, element: UIElement, trace: Trace, signal: AbortSignal): Promise<ActionResult> {
+  assertSafeLabel(text(element));
+  throwIfAborted(signal);
+  const action: Action = { kind: 'click', target: { kind: 'element', index: element.index }, method: 'accessibility', effect: 'navigation' };
+  const result = await session.act({ actionId: randomUUID(), action, snapshotId: observation.snapshotId }, signal);
+  trace.record(action, result, observation, element);
+  return result;
+}
+
 /** Click a point given in global points, as a fraction of the window now. */
 export async function clickPoint(session: Session, observation: Observation, point: Point, trace: Trace, signal: AbortSignal): Promise<ActionResult> {
   throwIfAborted(signal);

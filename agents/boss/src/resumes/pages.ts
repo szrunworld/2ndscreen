@@ -139,14 +139,82 @@ export function attachmentPreview(observation: Observation): { download?: UIElem
   return { download, pane: pane?.frame };
 }
 
-/** The filter above the message list: 全部职位 or the job it is set to. */
+/** One icon-font glyph (a private-use character), such as the filter's arrow \ue603. */
+const ICON_GLYPH = /^[\uE000-\uF8FF]$/;
+
+/**
+ * The open job menu: while it shows, the filter label is replaced by a
+ * search field across the top of the list column (P0, BOSS 1.7.4: an
+ * AXTextField at window-relative 140,20, 303x34). The menu does not close on
+ * Escape, nor on pressing its arrow again; choosing an option closes it.
+ */
+export function jobMenu(observation: Observation): { search: UIElement } | undefined {
+  const win = observation.window.frame;
+  const search = (observation.elements ?? []).find((e) => e.role === 'AXTextField' && e.frame
+    && e.frame.x - win.x >= 120 && e.frame.x - win.x < 200 && e.frame.y - win.y < 50 && e.frame.width >= 150);
+  return search ? { search } : undefined;
+}
+
+/**
+ * The filter above the message list: 全部职位 or the job it is set to. None
+ * while the job menu is open: the label is gone then, and the first text
+ * left in the bar is the arrow's glyph, which is no job (P0).
+ */
 export function jobFilter(observation: Observation): UIElement | undefined {
+  if (jobMenu(observation)) return undefined;
   const win = observation.window.frame;
   return (observation.elements ?? [])
-    .filter((e) => e.role === 'AXStaticText' && e.frame && text(e) !== '')
+    .filter((e) => e.role === 'AXStaticText' && e.frame && text(e).length > 1 && !ICON_GLYPH.test(text(e)))
     .filter((e) => e.frame!.x - win.x >= 140 && e.frame!.x - win.x < 420 && e.frame!.y - win.y < 50)
     .sort((a, b) => a.frame!.x - b.frame!.x)[0];
 }
+
+/**
+ * The arrow that opens the job menu (P0: an AXGroup at window-relative
+ * 416,31, 12x12, declaring AXPress; a direct AXPress opens the menu, while
+ * event clicks on it, the label or its parent do nothing). Found only inside
+ * the smallest group around the filter label: exactly one small square
+ * group or button right of the label, with no text but at most its glyph.
+ */
+export function jobFilterCaret(observation: Observation): { caret: UIElement } | { reason: 'no_filter' | 'no_filter_group' | 'caret_missing' | 'caret_ambiguous' } {
+  const label = jobFilter(observation);
+  if (!label?.frame) return { reason: 'no_filter' };
+  const win = observation.window.frame;
+  const elements = observation.elements ?? [];
+  const group = elements
+    .filter((e) => e.role === 'AXGroup' && e.frame && e.frame.y - win.y < 60 && e.frame.height <= 60 && e.frame.width < 520
+      && inside(label.frame!, e.frame, 0))
+    .sort((a, b) => area(a.frame!) - area(b.frame!))[0];
+  if (!group?.frame) return { reason: 'no_filter_group' };
+  const right = label.frame.x + label.frame.width;
+  const carets = elements.filter((e) => e !== group && (e.role === 'AXGroup' || e.role === 'AXButton') && e.frame
+    && inside(e.frame, group.frame!, 0) && e.frame.x >= right
+    && e.frame.width >= 6 && e.frame.width <= 24 && Math.abs(e.frame.width - e.frame.height) <= 4
+    && (text(e) === '' || ICON_GLYPH.test(text(e))));
+  if (carets.length !== 1) return { reason: carets.length ? 'caret_ambiguous' : 'caret_missing' };
+  return { caret: carets[0]! };
+}
+
+/**
+ * The open menu's options: texts in its column below the search field (P0:
+ * x 155 relative, under the field). The list's own rows stay in the tree
+ * behind the menu (badges at 166, names at 192, jobs at 240), so the column
+ * and width keep them out, and a caller that saw the menu open also drops
+ * any text that was already there before (`before`, text@place).
+ */
+export function jobMenuOptions(observation: Observation, before?: ReadonlySet<string>): UIElement[] {
+  const menu = jobMenu(observation);
+  if (!menu?.search.frame) return [];
+  const win = observation.window.frame;
+  const below = menu.search.frame.y + menu.search.frame.height;
+  return (observation.elements ?? []).filter((e) => e.role === 'AXStaticText' && e.frame && text(e).length > 1
+    && !ICON_GLYPH.test(text(e)) && e.frame.x - win.x >= 145 && e.frame.x - win.x < 175 && e.frame.width >= 16
+    && e.frame.y >= below && !before?.has(placed(e)));
+}
+
+/** An element's text at its place, to tell a text that appeared from one that was already there. */
+export const placed = (e: Pick<UIElement, 'label' | 'value' | 'frame'>): string =>
+  `${text(e)}@${Math.round(e.frame?.x ?? -1)},${Math.round(e.frame?.y ?? -1)}`;
 
 export const ALL_JOBS = '全部职位';
 

@@ -49,7 +49,7 @@ import {
 } from '../src/contracts.ts';
 import { createArtifactStore } from '../src/artifacts.ts';
 import { createBossResumesWorkflow, createBossResumesWorkflowWith } from '../../../agents/boss/src/resumes/workflow.ts';
-import { classifyPage, resumeOverlay } from '../../../agents/boss/src/resumes/pages.ts';
+import { classifyPage, jobFilter, resumeOverlay } from '../../../agents/boss/src/resumes/pages.ts';
 import { identify, listCandidates, matchJob } from '../../../agents/boss/src/resumes/candidates.ts';
 import { captureOnlineResume, footerVisible, headerShowsName, overlayShowsName, resumeText } from '../../../agents/boss/src/resumes/capture.ts';
 import { Trace } from '../../../agents/boss/src/resumes/actions.ts';
@@ -215,6 +215,16 @@ interface AppOptions {
    * half, then the name and job only, then everything.
    */
   headerDelayMs?: number;
+  /** The side instance or CLI predates ax-press: explicit presses are refused before any input. */
+  axPressUnsupported?: boolean;
+  /** Carets drawn beside the job filter (P0: one). */
+  carets?: number;
+  /** Whether the bar around the filter is reported as a group (P0: yes). */
+  filterGroup?: boolean;
+  /** Texts that sit in the job menu's column behind it, in the tree before and after it opens. */
+  menuColumnBackground?: string[];
+  /** Reads after an option click before the menu closes and the filter shows it. */
+  menuCloseReads?: number;
 }
 
 class FakeBoss implements Session {
@@ -226,6 +236,8 @@ class FakeBoss implements Session {
   jobs: string[];
   filter: string;
   dropdown = false;
+  closeLeft = 0;
+  readonly presses: string[] = [];
   listOffset = 0;
   open?: number;
   overlay: Overlay = 'none';
@@ -298,9 +310,18 @@ class FakeBoss implements Session {
       if (tag) tags.set(e.index, tag);
     };
     // Message list.
-    add('AXStaticText', undefined, { x: 155, y: 29, width: 52, height: 16 }, 'filter', this.filter);
+    // The filter bar as BOSS 1.7.4 reports it (P0): a group around the label and its arrow. While the
+    // job menu is open (it does not close on Escape) the label gives way to a search field, the arrow's
+    // glyph stays, and the options appear in a column under the field while the list stays behind them.
+    if (this.dropdown && this.closeLeft > 0 && --this.closeLeft === 0) this.dropdown = false;
+    if (this.opts.filterGroup !== false) add('AXGroup', '', { x: 140, y: 20, width: 302, height: 34 }, 'filter-group');
+    if (this.dropdown) add('AXTextField', '', { x: 140, y: 20, width: 303, height: 34 }, 'search', '');
+    else add('AXStaticText', undefined, { x: 155, y: 29, width: 52, height: 16 }, 'filter', this.filter);
+    for (let k = 0; k < (this.opts.carets ?? 1); k++) add('AXGroup', '', { x: 416 - 16 * k, y: 31, width: 12, height: 12 }, 'caret');
+    add('AXStaticText', undefined, { x: 416, y: 31, width: 12, height: 12 }, 'glyph', '\ue603');
+    (this.opts.menuColumnBackground ?? []).forEach((t, k) => add('AXStaticText', undefined, { x: 155, y: 620 + 30 * k, width: 150, height: 15 }, '', t));
     for (const tab of ['全部', '新招呼', '沟通中']) add('AXStaticText', undefined, { x: 140 + 50 * ['全部', '新招呼', '沟通中'].indexOf(tab), y: 70, width: 40, height: 16 }, '', tab);
-    if (this.dropdown) this.jobs.forEach((j, k) => add('AXStaticText', undefined, { x: 170, y: 140 + 34 * k, width: 120, height: 16 }, `option:${j}`, j));
+    if (this.dropdown) this.jobs.forEach((j, k) => add('AXStaticText', undefined, { x: 155, y: 122 + 39 * k, width: 177, height: 15 }, `option:${j}`, j));
     const rows = this.visible();
     const limit = this.opts.visibleRows ?? 99;
     rows.slice(0, limit).forEach((p, k) => {
@@ -405,6 +426,19 @@ class FakeBoss implements Session {
     const action = request.action;
     const current = this.current;
     this.current = undefined;
+    if (action.kind === 'click' && action.method === 'accessibility') {
+      const at = new Date().toISOString();
+      const refuse = (message: string): ActionResult => ({ actionId: request.actionId, status: 'failed', startedAt: at, finishedAt: at, route: 'accessibility', error: { code: 'capability_missing', message } });
+      if (this.opts.axPressUnsupported) return refuse('unknown command');
+      if (action.target.kind !== 'element' || action.target.index === undefined) return done('failed');
+      if (!current || request.snapshotId !== current.id) return done('stale_snapshot');
+      const tag = current.tags.get(action.target.index) ?? 'unknown';
+      // Only the arrow and its group declare AXPress; pressing the group does nothing (P0), the arrow opens the menu and keeps it open.
+      if (tag !== 'caret' && tag !== 'filter-group') return refuse(`element ${action.target.index} does not advertise AXPress; nothing was pressed`);
+      this.presses.push(tag);
+      if (tag === 'caret') this.dropdown = true;
+      return { ...done(), route: 'accessibility' };
+    }
     if (action.kind === 'click' && action.target.kind === 'element') {
       if (!current || request.snapshotId !== current.id) return done('stale_snapshot');
       const tag = current.tags.get(action.target.index!) ?? 'unknown';
@@ -444,7 +478,7 @@ class FakeBoss implements Session {
       return done();
     }
     if (action.kind === 'key' && action.key === 'escape') {
-      this.dropdown = false;
+      // The job menu ignores Escape (P0).
       if (this.overlay === 'attachment') this.overlay = 'none';
       return done();
     }
@@ -452,10 +486,12 @@ class FakeBoss implements Session {
   }
 
   click(tag: string): void {
-    if (tag === 'filter') this.dropdown = !this.dropdown;
+    // Event clicks on the filter label, its arrow or their group do nothing (P0).
+    if (tag === 'filter' || tag === 'caret' || tag === 'filter-group') return;
     else if (tag.startsWith('option:')) {
       this.filter = tag.slice('option:'.length);
-      this.dropdown = false;
+      this.closeLeft = this.opts.menuCloseReads ?? 0;
+      this.dropdown = this.closeLeft > 0;
       this.listOffset = 0;
     } else if (tag.startsWith('row|')) {
       const [, name, position, time] = tag.split('|');
@@ -979,7 +1015,8 @@ test('select_source applies a unique job, and stops on an ambiguous one without 
     assert.equal(result.reason, 'job_ambiguous');
     assert.equal(amb.app.filter, '全部职位');
     assert.ok(!amb.app.clicks.some((t) => t.startsWith('option:')), 'no option was picked');
-    assert.equal(amb.app.dropdown, false);
+    assert.equal(amb.app.dropdown, true, 'the menu ignores Escape, so it is left open and reported, not closed blindly');
+    assert.equal((await amb.workflow.verifyUnit('select_source', amb.context(), await amb.app.observe())).ok, false);
   } finally {
     await amb.cleanup();
   }
@@ -988,6 +1025,86 @@ test('select_source applies a unique job, and stops on an ambiguous one without 
     assert.equal((await none.workflow.runScripted('select_source', none.context())!).reason, 'job_not_found');
   } finally {
     await none.cleanup();
+  }
+});
+
+test('select_source opens the job menu only by an explicit AXPress on its one arrow, then clicks the new option', async () => {
+  const r = await rig({ menuCloseReads: 3 });
+  try {
+    const ok = await r.workflow.runScripted('select_source', r.context())!;
+    assert.equal(ok.ok, true, ok.reason);
+    assert.deepEqual(r.app.presses, ['caret'], 'one accessibility press, on the arrow');
+    const sent = r.app.actions.filter((a) => a.action.kind === 'click');
+    assert.equal(sent.length, 2);
+    assert.equal(sent[0]!.action.kind === 'click' && sent[0]!.action.method, 'accessibility');
+    assert.equal(sent[1]!.action.kind === 'click' && sent[1]!.action.method, undefined, 'the option takes an ordinary click');
+    assert.deepEqual(r.app.clicks, ['option:前端工程师'], 'no event click on the label, the arrow or their group');
+    // Selected only once the menu closed and the filter reads the option exactly.
+    assert.equal(r.app.dropdown, false);
+    assert.equal(r.app.filter, '前端工程师');
+    assert.equal((await r.workflow.verifyUnit('select_source', r.context(), ok.observation)).ok, true);
+    assertNothingSent(r.app);
+  } finally {
+    await r.cleanup();
+  }
+});
+
+test('texts already behind the menu are never options: before/after provenance and the menu column', async () => {
+  // A text in the menu's own column, there before the menu opened, would make 前端 ambiguous if taken for an option.
+  const r = await rig({ jobs: ['前端工程师', '后端工程师'], menuColumnBackground: ['高级前端工程师'] }, { input: { job: '前端' } });
+  try {
+    const ok = await r.workflow.runScripted('select_source', r.context())!;
+    assert.equal(ok.ok, true, ok.reason);
+    assert.equal(r.app.filter, '前端工程师');
+    // The list's own job labels (x 240) and badges stay in the tree too and are never options.
+    assert.ok(r.app.persons.some((p) => p.position === '前端工程师'));
+  } finally {
+    await r.cleanup();
+  }
+});
+
+test('while the job menu is open nothing reads as the selected job, and an open menu is chosen from as it is', async () => {
+  const r = await rig();
+  try {
+    r.app.dropdown = true;
+    const open = await r.app.observe();
+    const glyph = open.elements!.find((e) => e.value === '')!;
+    assert.ok(glyph, 'the arrow glyph is the first text left in the bar');
+    assert.equal(jobFilter(open), undefined);
+    assert.equal((await r.workflow.verifyUnit('select_source', r.context(), open)).ok, false);
+    assert.equal(listCandidates(open, ACCOUNT).candidates.length, people().length, 'the glyph filters no rows out');
+    // Already open: no second press (it would not toggle it), the shown options are used.
+    const ok = await r.workflow.runScripted('select_source', r.context())!;
+    assert.equal(ok.ok, true, ok.reason);
+    assert.deepEqual(r.app.presses, []);
+    assert.equal(r.app.filter, '前端工程师');
+    assert.equal(r.app.dropdown, false);
+  } finally {
+    await r.cleanup();
+  }
+});
+
+test('a missing or ambiguous arrow, an unpressable host or a menu that never closes fails honestly, never by another route', async () => {
+  const cases: Array<[string, Partial<AppOptions>, RegExp]> = [
+    ['no arrow', { carets: 0 }, /^job_filter_caret_missing$/],
+    ['two arrows', { carets: 2 }, /^job_filter_caret_ambiguous$/],
+    ['no group around the filter', { filterGroup: false }, /^job_filter_no_filter_group$/],
+    ['host predates ax-press', { axPressUnsupported: true }, /^job_filter_ax_press_unsupported: unknown command/],
+    ['menu never closes', { menuCloseReads: 100_000 }, /^job_menu_still_open$/],
+  ];
+  for (const [what, opts, reason] of cases) {
+    const r = await rig(opts);
+    try {
+      const result = await r.workflow.runScripted('select_source', r.context())!;
+      assert.equal(result.ok, false, what);
+      assert.match(result.reason!, reason, what);
+      assert.ok(!r.app.clicks.some((t) => t === 'filter' || t === 'caret' || t === 'filter-group'), `${what}: no event click stood in`);
+      assert.ok(!r.app.actions.some((a) => a.action.kind === 'key' || (a.action.kind === 'click' && a.action.target.kind === 'relative')), `${what}: no keys, no points`);
+      assert.equal((await r.workflow.verifyUnit('select_source', r.context(), await r.app.observe())).ok, false, what);
+      if (what !== 'menu never closes') assert.equal(r.app.filter, '全部职位', what);
+    } finally {
+      await r.cleanup();
+    }
   }
 });
 

@@ -45,6 +45,9 @@ extension TarsAgent {
         case .drag:
             unlearnable = unlearnable ?? "a drag takes the real pointer"
             return nil
+        case .accessibilityPress:
+            unlearnable = unlearnable ?? "an accessibility press is not a model action"
+            return nil
         case .type where named == nil:
             // Keys to whatever has focus, which the step before gave it.
             return step

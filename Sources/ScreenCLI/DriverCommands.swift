@@ -2,12 +2,15 @@ import CoreGraphics
 import Foundation
 import SecondScreenCore
 
-/// `state`, `click`, `type`, `key`, `scroll` and `drag`: observe and drive a
-/// window on an agent screen through the running app, which holds the
-/// Accessibility permission and checks the window is on the named screen.
+/// `state`, `click`, `type`, `key`, `scroll`, `drag` and `ax-press`: observe
+/// and drive a window on an agent screen through the running app, which holds
+/// the Accessibility permission and checks the window is on the named screen.
+/// `ax-press --index N` presses one element of the last state through
+/// accessibility only; a verb of its own, so a CLI that predates it stops
+/// with an unknown command instead of clicking.
 /// Each prints one JSON object and exits non-zero on failure.
 enum DriverCommands {
-    static let verbs: Set<String> = ["state", "click", "type", "key", "scroll", "drag"]
+    static let verbs: Set<String> = ["state", "click", "type", "key", "scroll", "drag", "ax-press"]
 
     static func run(_ verb: String, _ args: Arguments) -> Never {
         do {
@@ -45,7 +48,10 @@ enum DriverCommands {
     }
 
     private static func action(_ verb: String, _ args: Arguments) throws -> InputAction {
+        // `ax-press` is its own kind on the wire too, so an app that does not
+        // know it refuses the request instead of clicking with events.
         let kind: InputAction.Kind = switch verb {
+        case "ax-press": .accessibilityPress
         case "click": .click
         case "type": .type
         case "key": .key
@@ -62,6 +68,17 @@ enum DriverCommands {
             .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
 
         switch kind {
+        case .accessibilityPress:
+            // Exactly one element from the last state, pressed through accessibility and nothing else.
+            var extra: [String] = []
+            if action.text != nil { extra.append("--text") }
+            if args.value("--x") != nil || args.value("--y") != nil { extra.append("--x/--y") }
+            for flag in ["--right", "--double"] where args.has(flag) { extra.append(flag) }
+            if action.modifiers != nil { extra.append("--modifiers") }
+            guard extra.isEmpty else {
+                throw CommandError("ax-press takes only --index N; drop \(extra.joined(separator: ", "))")
+            }
+            guard action.index != nil else { throw CommandError("ax-press needs --index N from state") }
         case .click:
             guard !(args.has("--right") && args.has("--double")) else {
                 throw CommandError("give --right or --double, not both")

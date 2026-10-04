@@ -470,8 +470,17 @@ export type Locator =
   | { kind: 'template'; templateId: string; region?: Rect; offset?: Point }
   | { kind: 'ocr'; text: string; region?: Rect };
 
+/**
+ * How a click is delivered. Absent: the adapter's default route (events, or
+ * AXPress on a native control). `accessibility`: AXPress on the one element
+ * the target names and nothing else; it fails rather than fall back to an
+ * event, the pointer, focus or keys. Opt-in per action, for a control
+ * verified to need it (P0: the BOSS直聘 job filter's arrow).
+ */
+export type ClickMethod = 'accessibility';
+
 export type Action =
-  | { kind: 'click'; target: Locator; button?: 'left' | 'right'; count?: 1 | 2; effect: EffectClass }
+  | { kind: 'click'; target: Locator; button?: 'left' | 'right'; count?: 1 | 2; method?: ClickMethod; effect: EffectClass }
   | { kind: 'type'; target?: Locator; value: string; replace?: boolean; effect: EffectClass }
   | { kind: 'key'; key: string; modifiers?: Array<'cmd' | 'shift' | 'option' | 'ctrl'>; effect: EffectClass }
   | { kind: 'scroll'; target?: Locator; direction: 'up' | 'down' | 'left' | 'right'; amount?: number; by?: 'line' | 'page'; effect: EffectClass };
@@ -493,7 +502,8 @@ export interface ActionRequest {
  */
 export type ActionStatus = 'ok' | 'no_effect' | 'failed' | 'stale_snapshot' | 'unknown';
 
-export type InputRoute = 'element' | 'coordinate' | 'keyboard';
+/** `accessibility`: an explicit AXPress (click method `accessibility`), never reported for a default click. */
+export type InputRoute = 'element' | 'coordinate' | 'keyboard' | 'accessibility';
 
 export interface ActionResult {
   actionId: string;
@@ -1566,6 +1576,16 @@ export function validateAction(raw: unknown, policy: { submitAllowed: boolean },
       errors.push(...validateLocator(raw.target, `${path}.target`));
       if (raw.button !== undefined && !oneOf(raw.button, ['left', 'right'])) errors.push(`${path}.button must be left or right`);
       if (raw.count !== undefined && raw.count !== 1 && raw.count !== 2) errors.push(`${path}.count must be 1 or 2`);
+      if (raw.method !== undefined) {
+        if (raw.method !== 'accessibility') errors.push(`${path}.method must be accessibility when given`);
+        else {
+          // An AXPress names one element: no point, no other button, no second click, no keys held.
+          if (!isObject(raw.target) || raw.target.kind !== 'element') errors.push(`${path}: method accessibility needs an element target`);
+          if (raw.button !== undefined && raw.button !== 'left') errors.push(`${path}: method accessibility takes no right button`);
+          if (raw.count !== undefined && raw.count !== 1) errors.push(`${path}: method accessibility takes no double click`);
+          if (raw.modifiers !== undefined) errors.push(`${path}: method accessibility takes no modifiers`);
+        }
+      }
       break;
     case 'type':
       if (!isString(raw.value)) errors.push(`${path}.value must be a string`);

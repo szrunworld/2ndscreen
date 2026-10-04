@@ -22,11 +22,12 @@ import {
   type LocalVision,
   type Observation,
   type TelemetryRecorder,
+  type UIElement,
   type UnitContext,
   type UnitDefinition,
   type UnitRunResult,
 } from '../../../../packages/task-runtime/src/contracts.ts';
-import { clickElement, delivered, look, pollFor, pressKey, scrollOver, Trace, type Env } from './actions.ts';
+import { clickElement, delivered, look, pollFor, pressElement, pressKey, scrollOver, Trace, type Env } from './actions.ts';
 import { findRows, identify, identityIncomplete, listCandidates, listContinues, listEnded, listLoading, matchJob, normalize, rowElement } from './candidates.ts';
 import {
   ATTACHMENT_ROUTE_OFF,
@@ -37,7 +38,7 @@ import {
   type AttachmentRoute,
   type CaptureLimits,
 } from './capture.ts';
-import { ALL_JOBS, attachmentPreview, classifyPage, jobFilter, listRows, requestDialog, resumeOverlay, text } from './pages.ts';
+import { ALL_JOBS, attachmentPreview, classifyPage, jobFilter, jobFilterCaret, jobMenu, jobMenuOptions, listRows, placed, requestDialog, resumeOverlay, text } from './pages.ts';
 import { verifyUnit } from './validators.ts';
 
 const noText = (pattern: string) => ({ kind: 'text', pattern, present: false }) as const;
@@ -200,48 +201,60 @@ export function createBossResumesWorkflowWith(options: BossResumesOptions): Boss
       throw new RuntimeError('capability_missing', `the ${task.input.source} source is not verified on macOS; only conversations is supported`);
     if (task.input.captureMode === 'original-only' && !route.enabled)
       throw new RuntimeError('capability_missing', 'original-only needs a verified attachment download route, which macOS does not have yet');
-    let o = await closeOverlays(context, trace);
+    const o = await closeOverlays(context, trace);
     if (o.pageClass === 'login' || o.pageClass === 'captcha') return result(false, trace, o, o.pageClass === 'login' ? 'login_required' : 'captcha');
     if (o.pageClass !== 'conversation_list' && o.pageClass !== 'conversation_detail') return result(false, trace, o, 'list_not_shown');
+    const key = jobKey(task.id, task.input.job);
+    resolvedJobs.delete(key);
+    // Already open (a menu does not close on Escape): choose among the options it shows now.
+    if (jobMenu(o)) return chooseJob(context, trace, o, jobMenuOptions(o), key, 'job_options_not_shown');
     const filter = jobFilter(o);
     if (!filter) return result(false, trace, o, 'job_filter_missing');
     const current = text(filter);
-    const key = jobKey(task.id, task.input.job);
-    resolvedJobs.delete(key);
     if (current !== ALL_JOBS && normalize(current) === normalize(task.input.job)) return result(true, trace, o);
 
-    // Open the filter and read the options it adds below itself.
-    // Indexes renumber when the menu opens; a text at a place it was not before is an option.
-    const placed = (e: { frame?: { x: number; y: number } }, t: string) => `${t}@${Math.round(e.frame?.x ?? -1)},${Math.round(e.frame?.y ?? -1)}`;
-    const before = new Set((o.elements ?? []).map((e) => placed(e, text(e))));
-    const opened = await clickElement(session, o, filter, trace, signal);
-    if (!delivered(opened)) return result(false, trace, o, `job_filter_click_${opened.status}`);
-    const win = o.window.frame;
-    const optionsOf = (x: Observation) => (x.elements ?? []).filter((e) =>
-      e.role === 'AXStaticText' && e.frame && text(e) && !before.has(placed(e, text(e)))
-      && e.frame.x - win.x >= 120 && e.frame.x - win.x < 520 && e.frame.y - win.y > 40);
-    const shown = await pollFor(session, env, signal, openTimeoutMs, (x) => (optionsOf(x).length ? optionsOf(x) : undefined));
-    o = shown.observation;
-    const options = shown.value ?? [];
-    // Diagnostic only: a click the app took without changing the tree at all is told apart from a menu with no readable options.
-    const unchanged = !options.length && (o.elements ?? []).every((e) => before.has(placed(e, text(e))));
-    const match = matchJob(options.map(text), task.input.job);
-    if (match.kind !== 'unique') {
-      await pressKey(session, o, 'escape', trace, signal);
-      const after = await look(session, env, signal);
-      const reason = match.kind === 'ambiguous' ? 'job_ambiguous' : options.length ? 'job_not_found'
-        : unchanged ? 'job_options_not_shown: the filter click changed nothing in the accessibility tree' : 'job_options_not_shown';
-      return result(false, trace, after, reason);
+    // The menu opens only by an explicit AXPress on its arrow (P0); event clicks on the label, the arrow
+    // or their group do nothing, and nothing else may stand in for it.
+    const found = jobFilterCaret(o);
+    if (!('caret' in found)) return result(false, trace, o, `job_filter_${found.reason}`);
+    const before = new Set((o.elements ?? []).map(placed));
+    const pressed = await pressElement(session, o, found.caret, trace, signal);
+    if (pressed.status !== 'ok') {
+      const unsupported = pressed.error?.code === 'capability_missing';
+      const reason = unsupported ? 'job_filter_ax_press_unsupported' : `job_filter_press_${pressed.status}`;
+      return result(false, trace, await look(session, env, signal), pressed.error ? `${reason}: ${pressed.error.message}` : reason);
     }
+    // Options are the texts that appeared in the menu's column once it opened; the list's rows stay behind it.
+    const shown = await pollFor(session, env, signal, openTimeoutMs, (x) => {
+      const options = jobMenuOptions(x, before);
+      return options.length ? options : undefined;
+    });
+    return chooseJob(context, trace, shown.observation, shown.value ?? [], key, jobMenu(shown.observation) ? 'job_options_not_shown' : 'job_menu_not_opened');
+  }
+
+  /**
+   * Pick the requested job among the open menu's `options` and click it.
+   * Selected only when the menu has closed and the filter reads exactly the
+   * option chosen. Escape does not close this menu (P0), so an ambiguous or
+   * missing job leaves it open and says so; a later select_source reads
+   * the options it shows instead of opening it again.
+   */
+  async function chooseJob(context: UnitContext, trace: Trace, o: Observation, options: UIElement[], key: string, empty: string): Promise<UnitRunResult> {
+    const { session, signal, task } = context;
+    if (!options.length) return result(false, trace, o, empty);
+    const match = matchJob(options.map(text), task.input.job);
+    if (match.kind !== 'unique') return result(false, trace, o, match.kind === 'ambiguous' ? 'job_ambiguous' : 'job_not_found');
     const option = options.find((e) => text(e) === match.option)!;
     resolvedJobs.set(key, normalize(match.option));
     const picked = await clickElement(session, o, option, trace, signal);
     if (!delivered(picked)) return result(false, trace, o, `job_option_click_${picked.status}`);
     const applied = await pollFor(session, env, signal, openTimeoutMs, (x) => {
+      if (jobMenu(x)) return undefined;
       const f = jobFilter(x);
       return f && normalize(text(f)) === normalize(match.option) ? true : undefined;
     });
-    return result(applied.value === true, trace, applied.observation, applied.value ? undefined : 'job_not_applied');
+    if (applied.value) return result(true, trace, applied.observation);
+    return result(false, trace, applied.observation, jobMenu(applied.observation) ? 'job_menu_still_open' : 'job_not_applied');
   }
 
   async function openCandidate(context: UnitContext): Promise<UnitRunResult> {
