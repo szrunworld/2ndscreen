@@ -862,7 +862,19 @@ class TaskRun {
 
     // The actor stops first: once close resolves, nothing of this run acts again.
     const keepWindow = stop.kind === 'end' ? (this.task.input.keepWindow ?? false) : true;
-    if (this.session) await keep(() => this.session!.close({ keepWindow }));
+    if (this.session) {
+      try {
+        await this.session.close({ keepWindow });
+      } catch (closeError) {
+        // Whether the actor stopped is unknown, so no end, wait or pause is
+        // published: the task stays running (or cancelling) for whoever can
+        // prove the exit, and the run rejects.
+        const { code, message } = errorOf(closeError);
+        await this.event('session_close_failed', { result: 'failed', detail: { code, message, stop: stop.kind } }).catch(() => undefined);
+        await this.persistUsage().catch(() => undefined);
+        throw closeError;
+      }
+    }
 
     switch (stop.kind) {
       case 'end':

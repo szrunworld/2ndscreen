@@ -117,6 +117,8 @@ export interface TaskDaemonOptions {
   /** Checks a worker whose exit no daemon recorded. Without one, such a task stays unresolved. */
   verifyActorExit?: ActorExitVerifier;
   verifyRetryMs?: number;
+  /** Longest one verifier call may take before its answer is ignored as unproven; default half the lease TTL. */
+  verifyTimeoutMs?: number;
   /** The explicit account for a new task, bound before the task is published to the scheduler. */
   accountFor?: (skillId: string, input: CollectResumesInput) => AccountScope | undefined;
 }
@@ -247,6 +249,9 @@ export function createTaskDaemon(
   const claim = deps.claim ?? true;
   const ackWaitMs = deps.ackWaitMs ?? 1_000;
   const verifyRetryMs = deps.verifyRetryMs ?? DAEMON_DEFAULTS.verifyRetryMs;
+  const verifyTimeoutMs = deps.verifyTimeoutMs ?? Math.max(1, Math.floor(leaseTtlMs / 2));
+  /** Terminal tasks whose last actor is proven stopped; that cannot change, so they are not read again. */
+  const settledTerminal = new Set<string>();
   const daemonId = randomUUID();
   const processStartedAt = processStartTime(ownerPid);
   const locks = new StateLocks();
@@ -304,21 +309,37 @@ export function createTaskDaemon(
   // -------------------------------------------------------------------------
   // ownership
 
-  async function holdLease(): Promise<boolean> {
-    if (lease) {
-      try {
-        lease = await store.renewLease(lease.leaseId, leaseTtlMs);
-        return true;
-      } catch (error) {
-        // A busy or failing ledger is not a lost lease while it has time left; retried next poll.
-        const gone = isRuntimeError(error, 'conflict') || isRuntimeError(error, 'not_found') || Date.parse(lease.expiresAt) <= clock.now().getTime();
-        if (!gone) return true;
-        // Expired or taken: another daemon may own the ledger now.
+  /**
+   * Renews the lease now. 'held': renewed, the lease runs a full TTL from
+   * here; 'unsure': a transient ledger error while the lease still has time
+   * left (kept, but nothing should be decided on it); 'lost': expired or
+   * taken, which stops this daemon's workers.
+   */
+  async function renewOwnership(): Promise<'held' | 'unsure' | 'lost'> {
+    const current = lease;
+    if (!current) return 'lost';
+    try {
+      const renewed = await store.renewLease(current.leaseId, leaseTtlMs);
+      if (lease?.leaseId === current.leaseId) lease = renewed;
+      return lease ? 'held' : 'lost';
+    } catch (error) {
+      const gone = isRuntimeError(error, 'conflict') || isRuntimeError(error, 'not_found') || Date.parse(current.expiresAt) <= clock.now().getTime();
+      if (!gone) return 'unsure';
+      // Expired or taken: another daemon may own the ledger now.
+      if (lease?.leaseId === current.leaseId) {
         lease = undefined;
         await stopWorkers('lease_lost');
-        return false;
       }
+      return 'lost';
     }
+  }
+
+  /** Right before a state decision or a worker start: the lease is renewed now, or nothing is decided. */
+  const confirmOwnership = async (): Promise<boolean> => (await renewOwnership()) === 'held';
+
+  async function holdLease(): Promise<boolean> {
+    // The renewer keeps a held lease alive; decisions confirm it again themselves.
+    if (lease) return Date.parse(lease.expiresAt) > clock.now().getTime() || (await renewOwnership()) !== 'lost';
     try {
       lease = await store.acquireLease({ scopeKey: DAEMON_LEASE_SCOPE, holder: 'runtime', ownerPid, ttlMs: leaseTtlMs });
       return true;
@@ -343,12 +364,9 @@ export function createTaskDaemon(
       const last = lastVerify.get(worker.epoch);
       if (last === undefined || Date.now() - last >= verifyRetryMs) {
         lastVerify.set(worker.epoch, Date.now());
-        let verdict: ActorExitVerdict;
-        try {
-          verdict = await verify(worker, { signal: lifetime.signal });
-        } catch (error) {
-          verdict = { stopped: false, reason: `verifier failed: ${error instanceof Error ? error.message : String(error)}` };
-        }
+        const verdict = await boundedVerify(verify, worker);
+        // A slow verifier may have outlived this daemon's ownership; only an owner records its finding.
+        if (!(await confirmOwnership())) return false;
         if (verdict.stopped && verdict.evidence.trim()) {
           await control(taskId, 'actor_exit_verified', { epoch: worker.epoch, source: 'verifier', evidence: verdict.evidence, by: daemonId });
           // The caller decides on this state: the worker ended, so the task is an orphan, not one to start.
@@ -364,6 +382,28 @@ export function createTaskDaemon(
       state.unprovenNoted = true;
     }
     return false;
+  }
+
+  /** One verifier call, cut off after verifyTimeoutMs; a late or failed answer is unproven. */
+  async function boundedVerify(verify: ActorExitVerifier, worker: WorkerRecord): Promise<ActorExitVerdict> {
+    const deadline = new AbortController();
+    let timer: NodeJS.Timeout | undefined;
+    const timedOut = new Promise<ActorExitVerdict>((resolve) => {
+      timer = setTimeout(() => {
+        deadline.abort();
+        resolve({ stopped: false, reason: `verifier did not answer within ${verifyTimeoutMs} ms` });
+      }, verifyTimeoutMs);
+    });
+    try {
+      return await Promise.race([
+        verify(worker, { signal: AbortSignal.any([lifetime.signal, deadline.signal]) }).catch(
+          (error: unknown): ActorExitVerdict => ({ stopped: false, reason: `verifier failed: ${error instanceof Error ? error.message : String(error)}` }),
+        ),
+        timedOut,
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -391,10 +431,18 @@ export function createTaskDaemon(
 
   async function tick(): Promise<void> {
     if (stopped || !(await holdLease())) return;
-    const active = await store.listTasks({ status: ['queued', 'running', 'cancelling', 'paused', 'waiting_user'] });
+    // Every task, terminal ones included: a task that ended (or was moved by
+    // an older version or by hand) may still have an actor whose exit is unproven.
+    const all = await store.listTasks();
     let blocked = false;
     const startable: TaskRecord[] = [];
-    for (const task of active) {
+    for (const task of all) {
+      if (TERMINAL_TASK_STATUSES.includes(task.status)) {
+        if (settledTerminal.has(task.id) || workers.has(task.id)) continue; // a local worker still finishing blocks below
+        if (await provenStopped(task.id, await controlState(task.id))) settledTerminal.add(task.id);
+        else blocked = true;
+        continue;
+      }
       const state = await controlState(task.id);
       const worker = workers.get(task.id);
       if (worker) {
@@ -408,6 +456,8 @@ export function createTaskDaemon(
         blocked = true;
         continue;
       }
+      const needsDecision = task.status === 'cancelling' || task.status === 'running';
+      if (needsDecision && !(await confirmOwnership())) return;
       await locks.run(task.id, async () => {
         if (task.status === 'cancelling') {
           await store.transitionTask(task.id, 'cancelled', { terminationReason: 'cancelled' }, 'cancelling').catch(ignoreConflict);
@@ -430,7 +480,8 @@ export function createTaskDaemon(
     // One task at a time: tasks of one skill drive the same app.
     if (blocked || workers.size > 0 || stopped) return;
     const next = startable.find((t) => t.status === 'running') ?? startable.find((t) => t.status === 'queued');
-    if (next) await start(next);
+    // Ownership checked again right before an actor can start, however long the scan took.
+    if (next && (await confirmOwnership())) await start(next);
   }
 
   async function start(task: TaskRecord): Promise<void> {
@@ -518,6 +569,13 @@ export function createTaskDaemon(
 
   const timer = claim ? setInterval(kick, pollMs) : undefined;
   timer?.unref?.();
+  // The lease is kept alive apart from the scan, so a slow verifier or ledger cannot let it lapse unnoticed.
+  const renewer = claim
+    ? setInterval(() => {
+        if (lease && !stopped) void renewOwnership().catch(() => undefined);
+      }, Math.max(10, Math.floor(leaseTtlMs / 3)))
+    : undefined;
+  renewer?.unref?.();
   kick();
 
   // -------------------------------------------------------------------------
@@ -670,6 +728,7 @@ export function createTaskDaemon(
       if (stopped) return;
       stopped = true;
       if (timer) clearInterval(timer);
+      if (renewer) clearInterval(renewer);
       await ticking;
       await stopWorkers('shutdown');
       lifetime.abort();
