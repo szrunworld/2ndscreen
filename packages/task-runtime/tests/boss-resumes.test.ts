@@ -87,8 +87,8 @@ function png(seed: string, width = 6, height = 4): Buffer {
 
 const WIN: Rect = { x: 3000, y: 25, width: 1440, height: 875 };
 const PANE: Rect = { x: WIN.x + 138, y: WIN.y, width: 734, height: 848 };
-const SCALE = 2;
-const H_PX = PANE.height * SCALE;
+/** P0: the resume pane's scrollbar is 4 pt wide and moves on every scroll. */
+const SCROLLBAR_PT = 4;
 const LINE_STEP_PX = 40; // pixels one scroll line moves the resume
 const ROW_H = 78;
 
@@ -118,6 +118,12 @@ interface Shot {
   person: string;
   offset: number;
   expanded: boolean;
+  widthPx: number;
+  heightPx: number;
+  /** Pixels per point, as the covers measure it. */
+  scale: number;
+  /** Changes when the resume's text changes under the capture. */
+  version: number;
   /** Lines of the document as drawn at this offset. */
   lines: Array<{ text: string; y: number }>;
 }
@@ -177,6 +183,8 @@ interface AppOptions {
   downloads?: string;
   /** Another file that lands in Downloads with the attachment. */
   extraDownload?: string;
+  /** Pixels per point of screenshots; P0 measured 2, never assumed. */
+  scale?: number;
 }
 
 class FakeBoss implements Session {
@@ -194,6 +202,8 @@ class FakeBoss implements Session {
   loadingLeft = 0;
   offset = 0;
   expanded = false;
+  /** Bumped by a test to change the resume's text mid-capture. */
+  version = 0;
   readonly clicks: string[] = [];
   readonly actions: ActionRequest[] = [];
   readonly shots = new Map<string, Shot>();
@@ -214,8 +224,16 @@ class FakeBoss implements Session {
     return { screenId: 's', socket: '/tmp/x.sock', window: this.geometry(), launchedByRuntime: false };
   }
 
+  get scale(): number {
+    return this.opts.scale ?? 2;
+  }
+
+  get viewPx(): number {
+    return PANE.height * this.scale;
+  }
+
   private geometry() {
-    return { pid: 42, windowId: 7, bundleId: 'com.zhipin.www', title: 'BOSS直聘', frame: WIN, contentFrame: WIN, scale: SCALE, displayId: 1 };
+    return { pid: 42, windowId: 7, bundleId: 'com.zhipin.www', title: 'BOSS直聘', frame: WIN, contentFrame: WIN, scale: this.scale, displayId: 1 };
   }
 
   visible(): Person[] {
@@ -229,7 +247,7 @@ class FakeBoss implements Session {
   }
 
   maxOffset(): number {
-    return Math.max(0, docHeight(this.doc()) - H_PX);
+    return Math.max(0, docHeight(this.doc()) - this.viewPx);
   }
 
   async observe(options: ObserveOptions = {}, signal?: AbortSignal): Promise<Observation> {
@@ -314,12 +332,24 @@ class FakeBoss implements Session {
     if (options.screenshot) {
       const covers = options.region ?? WIN;
       const path = join(this.opts.dir, `shot-${this.snap}.png`);
-      const shot: Shot = { person: this.open !== undefined ? this.persons[this.open]!.name : '', offset: this.offset, expanded: this.expanded, lines: [] };
+      const shot: Shot = {
+        person: this.open !== undefined ? this.persons[this.open]!.name : '',
+        offset: this.offset,
+        expanded: this.expanded,
+        widthPx: covers.width * this.scale,
+        heightPx: covers.height * this.scale,
+        scale: this.scale,
+        version: this.version,
+        lines: [],
+      };
       if (this.overlay === 'resume')
-        shot.lines = this.doc().filter((l) => l.y >= this.offset && l.y + 40 <= this.offset + H_PX).map((l) => ({ text: l.text, y: l.y - this.offset }));
-      await writeFile(path, png(`${shot.person}|${shot.offset}|${shot.expanded}`));
+        shot.lines = this.doc()
+          .filter((l) => l.y >= this.offset && l.y + 40 <= this.offset + this.viewPx)
+          .map((l) => ({ text: this.version && l.y > this.offset + this.viewPx / 2 ? `${l.text}（已更新）` : l.text, y: l.y - this.offset }));
+      const seed = `${shot.person}|${shot.offset}|${shot.expanded}|${shot.version}`;
+      await writeFile(path, png(seed));
       this.shots.set(path, shot);
-      observation.screenshot = { path, widthPx: covers.width * SCALE, heightPx: covers.height * SCALE, covers, sha256: createHash('sha256').update(`${shot.person}|${shot.offset}|${shot.expanded}`).digest('hex') };
+      observation.screenshot = { path, widthPx: shot.widthPx, heightPx: shot.heightPx, covers, sha256: createHash('sha256').update(seed).digest('hex') };
     }
     return observation;
   }
@@ -344,7 +374,7 @@ class FakeBoss implements Session {
       const g = { x: WIN.x + action.target.point.x * WIN.width, y: WIN.y + action.target.point.y * WIN.height };
       this.clicks.push('point');
       if (this.overlay === 'resume' && g.x >= PANE.x && g.x < PANE.x + PANE.width) {
-        const y = this.offset + (g.y - PANE.y) * SCALE;
+        const y = this.offset + (g.y - PANE.y) * this.scale;
         const hit = this.doc().find((l) => y >= l.y && y < l.y + 40);
         if (hit?.kind === 'fold' && !this.opts.foldBroken) this.expanded = true;
       }
@@ -422,9 +452,12 @@ class FakeBoss implements Session {
   async close(): Promise<void> {}
 }
 
+/** Whether a region of interest still takes in the scrollbar columns at the pane's right edge. */
+const includesScrollbar = (s: Shot, roi: Rect | undefined) => !roi || roi.x + roi.width > s.widthPx - SCROLLBAR_PT * s.scale;
+
 /** OCR and image comparison over the fake app's screenshots. */
 function fakeVision(app: FakeBoss, options: { compose?: boolean; composeGap?: boolean } = {}) {
-  const calls = { ocr: 0, compare: 0, compose: 0 };
+  const calls = { ocr: 0, compare: 0, compose: 0, rois: [] as Array<Rect | undefined>, composeRoi: undefined as Rect | undefined };
   const shotOf = async (path: string): Promise<Shot> => {
     const direct = app.shots.get(path);
     if (direct) return direct;
@@ -439,31 +472,37 @@ function fakeVision(app: FakeBoss, options: { compose?: boolean; composeGap?: bo
       calls.ocr++;
       const s = await shotOf(path);
       const lines: OcrLine[] = s.lines.map((l) => ({ text: l.text, box: { x: 100, y: l.y, width: 600, height: 40 }, confidence: 0.98 }));
-      return { lines, imageSha256: 'x', widthPx: PANE.width * SCALE, heightPx: H_PX };
+      return { lines, imageSha256: 'x', widthPx: s.widthPx, heightPx: s.heightPx };
     },
-    async compare(a, b, _o, signal): Promise<ImageComparison> {
+    async compare(a, b, o, signal): Promise<ImageComparison> {
       throwIfAborted(signal);
       calls.compare++;
+      calls.rois.push(o?.roi);
       const sa = await shotOf(a);
       const sb = await shotOf(b);
-      if (sa.person !== sb.person) return { similarity: 0.05 };
+      if (sa.person !== sb.person || sa.version !== sb.version) return { similarity: 0.05 };
       const shift = sb.offset - sa.offset;
       if (shift === 0 && sa.expanded === sb.expanded) return { similarity: 1, verticalShiftPx: 0 };
       if (shift === 0) return { similarity: 0.8 };
       if (shift < 0) return { similarity: 0.4 };
-      return shift < H_PX ? { similarity: 0.4, verticalShiftPx: shift } : { similarity: 0.1 };
+      // The scrollbar moved: inside its columns nothing lines up, so a strict match needs them left out.
+      if (includesScrollbar(sa, o?.roi)) return { similarity: 0.97 };
+      return shift < sa.heightPx ? { similarity: 0.4, verticalShiftPx: shift } : { similarity: 0.1 };
     },
     async close() {},
   };
   if (options.compose)
     vision.compose = async (paths, out, opts): Promise<ComposedImage> => {
       calls.compose++;
+      calls.composeRoi = opts?.roi;
       const shots = await Promise.all(paths.map(shotOf));
       const frames = shots.map((s, i) => {
-        if (i === 0) return { index: 0, placement: 'first' as const, outputY: 0, rows: H_PX };
-        const shift = s.offset - shots[i - 1]!.offset;
-        const placement = shift === 0 ? ('duplicate' as const) : H_PX - shift >= (opts?.minOverlapPx ?? 48) && !options.composeGap ? ('placed' as const) : ('gap' as const);
-        return { index: i, placement, outputY: s.offset, rows: shift, overlapPx: H_PX - shift };
+        if (i === 0) return { index: 0, placement: 'first' as const, outputY: 0, rows: s.heightPx };
+        const before = shots[i - 1]!;
+        const shift = s.offset - before.offset;
+        const continuous = before.version === s.version && !includesScrollbar(s, opts?.roi) && s.heightPx - shift >= (opts?.minOverlapPx ?? 48);
+        const placement = shift === 0 && before.version === s.version ? ('duplicate' as const) : continuous && !options.composeGap ? ('placed' as const) : ('gap' as const);
+        return { index: i, placement, outputY: s.offset, rows: shift, overlapPx: s.heightPx - shift };
       });
       const bytes = png(`composed|${paths.length}`, 8, 8);
       await writeFile(out, bytes, { flag: 'wx' });
@@ -905,6 +944,61 @@ test('captures a long resume completely: top, folded section, overlapping pages,
     assert.equal((await r.workflow.verifyUnit('acquire_resume', { ...ctx, staging }, await r.app.observe())).ok, true);
     assertNothingSent(r.app);
     assert.ok(r.tele.events.some((e) => e.type === 'ocr') && r.tele.events.some((e) => e.type === 'screenshot'));
+  } finally {
+    await r.cleanup();
+  }
+});
+
+test('the moving scrollbar is left out of comparing and stitching, by measured pixels per point', async () => {
+  for (const scale of [2, 3]) {
+    const r = await rig({ scale }, { compose: true });
+    try {
+      const { result, staging } = await captured(r);
+      assert.equal(result.status, 'acquired');
+      if (result.status !== 'acquired') continue;
+      assert.equal(captureCompleteness(evidenceOf(result.artifacts)), 'complete', `scale ${scale}`);
+      const widthPx = PANE.width * scale;
+      const roi = { x: 0, y: 0, width: widthPx - 8 * scale, height: PANE.height * scale };
+      assert.deepEqual(r.vision.calls.composeRoi, roi);
+      assert.ok(r.vision.calls.rois.every((x) => JSON.stringify(x) === JSON.stringify(roi)));
+      // Every line of the resume made it in, and the pages themselves were kept whole.
+      const text = await readFile(join(staging.dir, 'resume.txt'), 'utf8');
+      assert.deepEqual(text.trim().split('\n'), documentOf(r.app.persons[0]!, true, true).map((l) => l.text));
+      const metadata = JSON.parse(await readFile(join(staging.dir, 'metadata.json'), 'utf8'));
+      assert.deepEqual(metadata.contentRoi, roi);
+      assert.ok(metadata.pages.every((p: { widthPx: number }) => p.widthPx === widthPx));
+    } finally {
+      await r.cleanup();
+    }
+  }
+  // With the gutter compared, a strict comparison finds no overlap and the capture says so.
+  const strict = await rig({}, { compose: true, capture: { gutterPt: 0 } });
+  try {
+    const { result } = await captured(strict);
+    assert.equal(result.status, 'acquired');
+    if (result.status === 'acquired') {
+      assert.equal(evidenceOf(result.artifacts).stop, 'stitch_gap');
+      assert.equal(captureCompleteness(evidenceOf(result.artifacts)), 'partial_capture');
+    }
+  } finally {
+    await strict.cleanup();
+  }
+});
+
+test('text that changes under the capture is still caught as a gap', async () => {
+  const r = await rig({}, { compose: true });
+  try {
+    const { ctx } = await openPerson(r, '陈一');
+    let shots = 0;
+    r.app.beforeObserve = (app) => {
+      if (app.overlay === 'resume' && ++shots === 9) app.version = 1;
+    };
+    const result = await r.workflow.acquireResume({ ...ctx, staging: await stagingFor(r) }, 'available');
+    assert.equal(result.status, 'acquired');
+    if (result.status !== 'acquired') return;
+    const evidence = evidenceOf(result.artifacts);
+    assert.equal(evidence.stop, 'stitch_gap');
+    assert.equal(captureCompleteness(evidence), 'partial_capture');
   } finally {
     await r.cleanup();
   }

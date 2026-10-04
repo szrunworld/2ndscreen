@@ -58,6 +58,12 @@ export interface CaptureLimits {
   minOverlapPx: number;
   /** Clicks on 查看全部 allowed in one capture. */
   maxExpansions: number;
+  /**
+   * Points at the pane's right edge left out of comparing and stitching: the
+   * scrollbar moves there on every scroll while the content does not. P0
+   * (BOSS 1.7.4, macOS) measured 4 pt; 8 pt keeps a margin.
+   */
+  gutterPt: number;
 }
 
 export const DEFAULT_CAPTURE_LIMITS: CaptureLimits = {
@@ -69,7 +75,18 @@ export const DEFAULT_CAPTURE_LIMITS: CaptureLimits = {
   sameSimilarity: 0.995,
   minOverlapPx: 48,
   maxExpansions: 12,
+  gutterPt: 8,
 };
+
+/**
+ * The content part of a pane screenshot, in its own pixels: everything but
+ * the scrollbar gutter on the right. Pixels per point come from the
+ * measured covers, never from an assumed scale.
+ */
+export function contentRoi(shot: Pick<ScreenshotRef, 'widthPx' | 'heightPx' | 'covers'>, gutterPt: number): Rect {
+  const gutterPx = Math.ceil((gutterPt * shot.widthPx) / shot.covers.width);
+  return { x: 0, y: 0, width: Math.max(1, shot.widthPx - gutterPx), height: shot.heightPx };
+}
 
 /**
  * The platform's disclosure printed under every online resume (P0, BOSS
@@ -163,6 +180,8 @@ export async function captureOnlineResume(input: CaptureInput): Promise<Acquisit
   await mkdir(pagesDir, { recursive: true });
   const problems: string[] = [];
 
+  let size: { widthPx: number; heightPx: number } | undefined;
+  let roi: Rect | undefined;
   const shoot = async (): Promise<Frame> => {
     const observation = await look(session, env, signal, { screenshot: true, region: pane });
     const overlay = resumeOverlay(observation);
@@ -170,6 +189,10 @@ export async function captureOnlineResume(input: CaptureInput): Promise<Acquisit
     const shot = observation.screenshot;
     if (!shot) throw new CaptureStop('no_screenshot');
     if (!samePane(overlay.pane, pane)) throw new CaptureStop('resume_pane_moved');
+    // Comparing and stitching need screens of one size.
+    size ??= { widthPx: shot.widthPx, heightPx: shot.heightPx };
+    if (shot.widthPx !== size.widthPx || shot.heightPx !== size.heightPx) throw new CaptureStop('resume_pane_resized');
+    roi ??= contentRoi(shot, limits.gutterPt);
     return { observation, shot, overlay };
   };
   const ocr = async (path: string): Promise<OcrResult> => {
@@ -177,7 +200,8 @@ export async function captureOnlineResume(input: CaptureInput): Promise<Acquisit
     env.telemetry?.record({ type: 'ocr' });
     return vision.ocr(path, { languages: ['zh-Hans', 'en-US'] }, signal);
   };
-  const compare = (a: string, b: string): Promise<ImageComparison> => vision.compare(a, b, undefined, signal);
+  // Only the content is compared: a moving scrollbar is not a change of content.
+  const compare = (a: string, b: string): Promise<ImageComparison> => vision.compare(a, b, roi ? { roi } : undefined, signal);
   const same = (c: ImageComparison) => c.similarity >= limits.sameSimilarity && !(c.verticalShiftPx && c.verticalShiftPx > 0);
   const scroll = async (from: Frame, direction: 'up' | 'down', lines: number) => {
     const result = await scrollOver(session, from.observation, pane, direction, lines, trace, signal);
@@ -340,7 +364,7 @@ export async function captureOnlineResume(input: CaptureInput): Promise<Acquisit
   if (vision.compose) {
     try {
       const out = join(staging.dir, `resume-${randomUUID().slice(0, 8)}.png`);
-      const image: ComposedImage = await vision.compose(kept.map((k) => k.path), out, { minOverlapPx: limits.minOverlapPx }, signal);
+      const image: ComposedImage = await vision.compose(kept.map((k) => k.path), out, { roi, minOverlapPx: limits.minOverlapPx }, signal);
       if (image.hasGap || image.frames.some((f) => f.placement === 'gap')) evidence.stop = 'stitch_gap';
       composed = { sha256: image.sha256, hasGap: image.hasGap };
       artifacts.push({ itemId: input.itemId, kind: 'captured_image', path: image.path, capture: evidence });
@@ -368,6 +392,9 @@ export async function captureOnlineResume(input: CaptureInput): Promise<Acquisit
     capture: evidence,
     pages: kept.map((k, i) => ({ index: i + 1, sha256: k.shot.sha256, widthPx: k.shot.widthPx, heightPx: k.shot.heightPx, shiftPx: k.shiftPx ?? null })),
     expansions: { clicked: expansions, allExpanded: !unexpanded },
+    // Pages are kept whole; comparison and the stitched image leave out the scrollbar gutter.
+    contentRoi: roi ?? null,
+    gutterPt: limits.gutterPt,
     identity: { overlayName: axName, resumeName: ocrText(kept[0]!.ocr.lines).includes(normalize(input.candidateName)) },
     composed: composed ?? null,
     problems,
