@@ -81,3 +81,52 @@ P0 报告：点击 AXStaticText `全部职位`（相对 155,29，52×16）和旁
 - select_source 的真实打开路线：等协调者的 P0 证据。
 - 表头带的 120 pt / 60% 和活跃状态词表需要用 P0 脱敏几何与 OCR 结果核对。
 - 以上都没有在真实 BOSS 上运行过。
+
+---
+
+# 第二轮：open_resume 身份改由简历图像表头确认
+
+## 范围
+
+基于集成分支 `szrunworld/ss-runtime-integration`（`0babf72`，含上一轮 `ad2beeb`）。只改 `agents/boss/src/resumes/**`、`packages/task-runtime/tests/boss-resumes.test.ts` 与本报告。没有接触真实 BOSS、桌面、`/tmp/2ndscreen-p0` 或用户截图；真实形状只来自协调者给的脱敏几何。没有合并用户分支，没有推送。
+
+## 问题（P0 主线真实测试）
+
+`open_candidate` 已能强身份通过，但 `open_resume` 失败为 `resume_identity_unconfirmed`：`overlayShowsName` 要求在图像右侧的侧栏里有一个等于姓名的 AXStaticText。BOSS 1.7.4 的侧栏只有操作、继续沟通按钮、状态/职位历史，**没有姓名**；姓名只在简历图像顶部表头（栅格）里。脱敏几何：窗口 1440×875 @1920,25；AXImage 窗格 2098,25,734,875；覆盖层组 2098,25,1084,875。背景会话表头姓名 AXStaticText 2451,48,66,24 在几何上落在窗格**内**，但被遮挡。
+
+## 方案（实现前已核对）
+
+1. **AX 路径只在真正限定于覆盖层时保留**：`overlayShowsName` 现在要求覆盖层组存在，文字在组内且在窗格右缘以右。窗格内的文字（被遮挡的背景会话姓名）从不算；没有上报覆盖层组时也不算（无法证明它属于覆盖层）。真实 1.7.4 上这条路径不会命中，只是不删除。
+2. **栅格表头后备**（`capture.ts` 新增 `readResumeHeader` / `confirmResumeIdentity`，复用已批准的 `headerBand` + `headerShowsName`）：
+   - 只读一张**本窗格**截图：观察中的覆盖层必须打开且已加载；截图 `covers` 必须等于该观察里覆盖层的窗格（±2 pt）；OCR 返回的 `imageSha256` 与宽高必须等于观察里截图的 `sha256` 与宽高（真实 LocalVision 与 SecondScreen 适配器都对文件字节做 sha256），所以被替换的文件、整窗截图、别的区域都不能冒充。
+   - 不缓存任何结论：每次判定都对给定截图重新 OCR；换候选人时重新读取。
+   - 有界等待：`open_resume` 点击后在 `openTimeoutMs`（默认 15 s）内按 `pollMs` 反复取新的窗格截图，直到表头等于姓名；覆盖层消失立即失败；窗格移动则在新位置重读。超时仍失败。
+   - 表头是别人或读不到表头：`resume_identity_unconfirmed: the resume header does not show the listed name` / `no readable resume header (<原因>)`。
+   - 无本地 OCR：`resume_identity_unconfirmed: local_vision_missing: …`，明确是能力缺失，不猜。
+3. **open_resume**：已打开的简历也走同一判定（不等待、只取一张新截图）；不是本人则关闭重开。成功时返回的 `observation` 就是证明身份的那张带截图的观察。
+4. **verifyUnit('open_resume')**：工作流把自己的 `env`（含注入的 LocalVision）与采集参数传给 `verifyUnit`（新增可选参数 `VerifyEnv`，接口签名对 runtime 不变）。先用 AX 限定路径；否则 OCR **给定观察自己的**截图；若给定观察没有截图、截图不是本窗格或文件已不是那张图/已丢失、OCR 失败，则只取**一张**新的窗格截图独立判定，verdict 的 `snapshotId` 指向实际判定的那次观察。给定截图明确显示别人则直接失败，不再另找。证据字符串不含姓名。无 OCR 时 evidence 写明 `local OCR is not available … (capability missing)`。
+5. **采集不变**：`captureOnlineResume` 的顶部（上滚稳定 + 起点探测 + 表头姓名）、两个独立底部信号、拼接缺口/页数上限/未展开判部分采集都没改。它原有的“覆盖层 AX 或第一页表头”身份判定自动受益于更严格的 `overlayShowsName`。
+
+上一轮报告第 1 节说“工作流的 `open_resume` 仍要求侧栏 AX 文本”，该说法已被本轮取代。
+
+## 测试（合成夹具；`overlayName: false` 即真实形状）
+
+- 夹具形状自检：侧栏无姓名，背景会话姓名在窗格内。
+- 侧栏无姓名 + 栅格表头匹配：`open_resume` 通过且有 OCR；返回观察带窗格截图；`verifyUnit` 对同一观察重新 OCR 判定通过、`snapshotId` 一致、证据不含姓名；仅有树的观察会取一张新截图判定；再次 `open_resume` 不点击任何东西；`acquireResume` 照常采集；无发送类点击。
+- 栅格表头是别人（吴四）而背景树里有期望姓名（林二）：`open_resume`、`verifyUnit`、`acquireResume` 全部失败。
+- 加载等待：前 3 张窗格截图空白后出现表头，通过；一直空白则在超时内失败，`verifyUnit` 也失败。
+- 证据陈旧/缺失/不属于本人：陈一的证明不能用于林二；截图文件被替换后改取新截图（snapshotId 变化）；文件被删且屏幕已换成林二时失败；整窗截图不被当作窗格截图；覆盖层已关闭时失败。
+- 换候选人不复用：先确认陈一，再打开表头写着陈一的林二简历，失败。
+- AX 限定：有覆盖层组时侧栏姓名生效；去掉组后同一文字不再算。
+- 无 OCR：真实形状下 `open_resume` 与 `verifyUnit` 都明确报 `local_vision_missing`/能力缺失；侧栏有姓名（限定于组）时仍可通过。
+- 变异检查：放开“窗格右侧”限制 → 8 个测试失败；去掉 sha 绑定 → 陈旧证据测试失败；去掉等待 → 加载等待测试失败；去掉“必须有组” → 新增的限定测试失败。
+
+运行结果：
+- `packages/task-runtime`：`npm run typecheck` 通过；全部测试 292 个，285 通过、7 跳过（均在其他文件，原有）、0 失败；其中 `boss-resumes.test.ts` 48 个全部通过。
+- `agents/boss`：`npm run typecheck` 通过；`npm test` 15 个全部通过。
+
+## 需要主线（P0）核对
+
+- 用真实 OCR 确认 1.7.4 表头行在窗格内容顶边下 120 pt 内、x 在左侧 60% 内，且姓名之上没有其他 OCR 行（例如头像上的徽章字）；若有，`headerShowsName` 会拒绝，结果是 `resume_identity_unconfirmed`，不会误判。
+- 真实截图 `covers` 是否与 AXImage 帧在 ±2 pt 内一致（`region` 被裁到窗口时可能不同）；不一致会表现为 `no readable resume header (not_this_image)`。
+- 以上都没有在真实 BOSS 上运行过。
