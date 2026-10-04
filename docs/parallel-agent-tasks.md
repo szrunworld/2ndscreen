@@ -33,6 +33,10 @@ A7 是串行集成任务，可在协调者批准后修改依赖清单和公共�
 
 A8 来自 P0 的实测发现：在线简历正文只暴露 AXImage，需要本地 OCR。A8 唯一获准在 contracts.ts 的 LocalVision 部分追加可选拼接接口并补对应测试，变更经协调者审核后通知 A4；不得修改其他契约。这一局部增量不阻塞 A1–A3。
 
+2026-10-04 第二批协调补充：A5 可在 ExplorationRequest 与对应校验器中追加可选 usageContext（purpose/reason），并更新 Bridge 协议文档；测试放在 A5 的 agent-bridge.test.ts，不与 A8 的 contracts.test.ts 修改重叠。A6 接手后可在 recovery.ts 与 recovery.test.ts 中补充此字段的传递及首次学习/修复计量回归，除此之外不修改 A3 实现。两个契约增量均保持旧调用兼容。
+
+执行持续至首版范围完成：每批交付后由协调者自动评审、派回修复、验证和合并，依赖满足即启动下一批，不在批次边界等待用户再次指示。第二批为 A4/A5/A8，之后 A6、A7，再做完整回归与真实场景验收。额度或环境阻塞必须明确记录，不能把等待当完成；恢复后接续剩余 DAG。
+
 开发期间原主工作区被其他操作切换到 iphone-commands，并新增 4108e74 提交。集成工作区改为 /Users/kevinshi/orca/workspaces/2ndscreen/ss-runtime-integration，分支 szrunworld/ss-runtime-integration，以 4108e74 为基线合并已评审契约。后续成果在这里统一合并，原主工作区保持由用户使用。
 
 ## 执行波次
