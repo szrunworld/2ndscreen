@@ -1718,6 +1718,43 @@ test('the top header is the listed name as the first text row near the top, neve
   assert.equal(headerShowsName(ocr([['残行', -39], ['陈一', 36, 170], ['摘要', 110]]), '陈一', band), true);
 });
 
+test('the activity note may follow the name after one bullet, and after nothing else', () => {
+  // P0 (BOSS 1.7.4, local OCR, synthetic name): "◎ 张小明•在线", U+2022 with no spaces, at x 178.09, y 61,
+  // 323.11x48.37 in a 1468x1750 pane image, nothing above it.
+  const box = { x: 178.09, y: 61, width: 323.11, height: 48.37 };
+  const ocr = (lines: Array<{ text: string; box: { x: number; y: number; width: number; height: number } }>): OcrResult => ({
+    lines: lines.map((l) => ({ ...l, confidence: 0.9 })), imageSha256: '', widthPx: 1468, heightPx: 1750,
+  });
+  const header = (text: string, at = box) => ocr([{ text, box: at }, { text: '30岁|6年|本科', box: { x: 178, y: 150, width: 300, height: 40 } }]);
+  const band = { topPx: 2, maxYPx: 242, maxXPx: 880 };
+  for (const text of ['◎ 张小明•在线', '张小明•在线', '◎张小明•刚刚活跃', '◎ 张小明 • 3日内活跃', '◎ 张小明在线', '◎ 张小明'])
+    assert.equal(headerShowsName(header(text), '张小明', band), true, text);
+  for (const text of [
+    '◎ 李四•在线', // another person
+    '◎ 张小明明•在线', // a longer name
+    '◎ 小明•在线', // part of the name
+    '◎ 张小明•', // a bullet with no activity note
+    '◎ 张小明••在线', // the bullet twice
+    '◎ 张小明·在线', // another dot (U+00B7)
+    '◎ 张小明-在线', // other punctuation
+    '◎ 张小明|在线',
+    '◎ 张小明•不在线', // not an activity note
+    '◎ 张小明•在线中',
+    '◎ 张小明•在线 期望薪资', // prose after
+    '期望 ◎ 张小明•在线', // prose before
+    '◎ 期望张小明•在线',
+    '◎ 张小明的项目•在线',
+  ])
+    assert.equal(headerShowsName(header(text), '张小明', band), false, text);
+  // Where and what is above still decide: below the band, right of it, or under other text is no header.
+  assert.equal(headerShowsName(header('◎ 张小明•在线', { ...box, y: 400 }), '张小明', band), false, 'lower body');
+  assert.equal(headerShowsName(header('◎ 张小明•在线', { ...box, x: 900 }), '张小明', band), false, 'right of the band');
+  const under = ocr([{ text: '推荐牛人', box: { x: 178, y: 5, width: 200, height: 40 } }, { text: '◎ 张小明•在线', box }]);
+  assert.equal(headerShowsName(under, '张小明', band), false, 'text above it');
+  const body = ocr([{ text: '◎ 李四•在线', box }, { text: '◎ 张小明•在线', box: { x: 178, y: 160, width: 323, height: 48 } }]);
+  assert.equal(headerShowsName(body, '张小明', band), false, 'the name under another header');
+});
+
 test('the header line may start with its decorative mark, and with nothing else', async () => {
   // P0 (BOSS 1.7.4, redacted): image 1468x1750, first OCR line "◎ <name> 刚刚活跃" at x 178.09, y 63.59, 340.92x45.78, nothing above it.
   const line = (text: string, box = { x: 178.09, y: 63.59, width: 340.92, height: 45.78 }): OcrResult => ({
