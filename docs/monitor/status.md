@@ -20,7 +20,7 @@
 | E | 观察模块 | 已释放 | monitor-E | 已合（a139f20；协调者同时改 core：观察用 verify 守卫、attach 注入、首个基线带账户；全量 884 tests） | e002670 | 待 N：点页签后列表刷新、处理过的会话是否移出新招呼、更多时间文案形态 |
 | F1 | 服务端基础 | 已释放 | monitor-F1 | 已合（2b1dff2 + 0.2.0 适配 8abbf54） | c7bbc4b | openapi 缺 401/422/403 → A3 |
 | F2 | 服务端业务 | ctx_6788843f9e4a / monitor-F2 | monitor-F2 | 进行 | — | — |
-| F3 | 服务端扩展（搜索、登录接力、通知 + 邮件相关端点） | 派发中 | — | — | — | — |
+| F3 | 服务端扩展（搜索、登录接力、通知 + 邮件相关端点） | ctx_f06639cbb37b / monitor-F3 | monitor-F3 | 进行 | — | 与 F2 的衔接：resume_linked 内部事件、policy 只读权限、迁移 v3 |
 | G | 邮件接入（mail 服务订阅方） | 已释放 | monitor-G | 已合（mail 入工作区；全量 1313） | f29f5a9 | 需 server 端点 /mail-messages、/mail-verifications、/resume-documents（→ F3）；serviceToken 读 policy 未定义（→ F3）；清理后再写的幂等键临时用 status-purged 段（下个契约小版本记入）；upstream_missing 待 G0；webhook_delivery_failed 需 mail 管理凭据，暂报 null |
 | H1 | 动作公共层 + 问候 + 求简历 | 已释放 | monitor-H1 | 已合（合并时全量 963 tests） | — | 9 条界面假设待 N（H1.md 第五节）；接口请求：Driver 层过滤 PDF 子树、hints 稳定 |
 | H2 | 搜索动作 | — | — | 未派 | — | — |
