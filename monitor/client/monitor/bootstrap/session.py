@@ -80,6 +80,9 @@ class RuntimeView:
     gui_lock: Any
     now: Callable[[], datetime]
     sleep: Callable[[float], None]
+    # 运行时的窗口挂起接口（D2c）：窗口不归 Monitor 时调用 suspend_gui，接管成功后 resume_gui
+    suspend_gui: Callable[[str], None] = lambda reason: None
+    resume_gui: Callable[[], None] = lambda: None
 
 
 class _BaseSession:
@@ -250,7 +253,8 @@ class LocalSession(_BaseSession):
         return policy is not None and in_work_hours(policy.work_hours, now)
 
     def start(self) -> bool:
-        return True  # local 启动时不碰窗口，由 tick 按时段决定
+        self.view.suspend_gui("尚未接管")  # local 启动时不碰窗口，由 tick 按时段决定
+        return True
 
     def tick(self, now: datetime) -> None:
         """每轮都重新判断（不调用 CLI，很便宜），状态变化时立即接管或归还；
@@ -295,11 +299,13 @@ class LocalSession(_BaseSession):
             except BootstrapFailed:
                 self._release_quietly()
                 return
+            self.view.resume_gui()
         self.state = "held"
         self.detail = "工作时段内，BOSS 窗口在专用屏幕上"
 
     def _release_quietly(self) -> None:
         """接管失败后的兜底：窗口可能已被移过去，尽力还回去。"""
+        self.view.suspend_gui("接管失败")
         self.gate.close()
         if self.pid is not None:
             try:
@@ -312,6 +318,7 @@ class LocalSession(_BaseSession):
             self._give_back_locked(why)
 
     def _give_back_locked(self, why: str) -> None:
+        self.view.suspend_gui(why)
         self.gate.close()  # 先关闸：此后运行时的任何界面调用都不会碰到窗口
         if self.pid is None:
             self.state = "released"

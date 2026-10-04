@@ -102,6 +102,7 @@ class Pipeline:
         gui_lock: GuiLock,
         clock: Clock,
         on_error: ErrorSink | None = None,
+        gui_available: Callable[[], bool] | None = None,
     ) -> None:
         for name, h in handlers.items():
             if h.action != name:
@@ -112,6 +113,8 @@ class Pipeline:
         self.gui_lock = gui_lock
         self.clock = clock
         self._on_error = on_error or (lambda code, msg: None)
+        # 拿到 GUI 锁后再确认一次窗口仍归 Monitor（锁可能刚被归还窗口的一方释放）；不归则指令留在队列
+        self._gui_available = gui_available or (lambda: True)
         # 最近一次 run_next 中被推迟的指令最早何时可以再看（限额间隔）
         self.wake_at: datetime | None = None
         # 正在执行的指令（供心跳 current_action 与状态窗口）
@@ -304,12 +307,14 @@ class Pipeline:
             guard=guard,
         )
 
-    def _execute(self, rec: LedgerCommand, gate: Gate) -> ExecOutcome:
+    def _execute(self, rec: LedgerCommand, gate: Gate) -> ExecOutcome | None:
         cmd = rec.command
         cid = cmd.command_id
         handler = self.handlers[cmd.action]
         verify = cmd.execution_mode == "verify_only"
         with self.gui_lock.hold(ACTION):
+            if not self._gui_available():
+                return None
             started = self.clock.now()
             self.ledger.transition_command(cid, CommandState.RUNNING, at=started)
             self.current = (cmd, started)

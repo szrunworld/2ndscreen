@@ -40,7 +40,8 @@ def wire(env, cli: FakeCli, *, mode: str = "remote", spawn=None, opener=None):
     rt.pipeline.driver = gate
     view = RuntimeView(report=rt.record_error, policy=lambda: rt.policy,
                        pause_state=lambda: (rt.state.paused, rt.state.pause_reason), gui_lock=rt.gui_lock,
-                       now=env.clock.now, sleep=env.clock.sleep)
+                       now=env.clock.now, sleep=env.clock.sleep,
+                       suspend_gui=rt.suspend_gui, resume_gui=rt.resume_gui)
     ops = ScreenOps(cli=cli.runner(), screen="monitor", owner_pid=1, pid_resolver=lambda sel: [4242])
     common = dict(ops=ops, driver=inner, gate=gate, view=view, bundle_id="com.zhipin.www", retry=RetryPolicy(attempts=2), max_rounds=1)
     session = RemoteSession(caffeinate=Caffeinate(popen=FakePopen()), **common) if mode == "remote" else LocalSession(**common)

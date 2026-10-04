@@ -8,6 +8,9 @@
     Driver      monitor.driver.CliDriver(screen)
 
 设备令牌从 --token-file（权限必须是 0600 或更严）或环境变量 MONITOR_DEVICE_TOKEN 读取，不接受命令行明文。
+
+子命令分发：首个参数为 install 或 mode 时整体转给 monitor.install.cli:main(argv)（安装与模式切换，任务 J），
+例如 `python -m monitor install ...`、`python -m monitor mode remote`；其余参数按下面的常驻进程解析。
 """
 
 from __future__ import annotations
@@ -28,6 +31,8 @@ TOKEN_ENV = "MONITOR_DEVICE_TOKEN"
 DEFAULT_LEDGER = "monitor.ledger:open_ledger"
 DEFAULT_OBSERVER = "monitor.observe:create_observer"
 DEFAULT_HANDLERS = "monitor.actions:create_handlers"
+# 转给 monitor.install.cli 的子命令
+INSTALL_COMMANDS = frozenset({"install", "mode"})
 
 
 class SetupError(Exception):
@@ -122,6 +127,11 @@ def _make_driver(args: argparse.Namespace) -> Any:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] in INSTALL_COMMANDS:
+        from monitor.install.cli import main as install_main
+
+        return install_main(argv)
     args = build_parser().parse_args(argv)
     try:
         runtime = assemble(args)

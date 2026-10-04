@@ -106,3 +106,33 @@ def test_parser_rejects_unknown_allow_action():
         entry.build_parser().parse_args(
             ["--server-url", "https://x", "--device-id", "d", "--db", "m.db", "--allow-action", "provide_input"]
         )
+
+
+@pytest.mark.parametrize("cmd", ["install", "mode"])
+def test_install_and_mode_dispatch_to_install_cli(monkeypatch, cmd):
+    import monitor.install.cli as install_cli
+
+    seen = []
+    monkeypatch.setattr(install_cli, "main", lambda argv: seen.append(list(argv)) or 7)
+    assert entry.main([cmd, "remote"]) == 7
+    assert seen == [[cmd, "remote"]]
+
+
+def test_other_args_are_not_dispatched(monkeypatch, capsys):
+    import monitor.install.cli as install_cli
+
+    monkeypatch.setattr(install_cli, "main", lambda argv: pytest.fail("不应转给安装命令"))
+    with pytest.raises(SystemExit) as exc:
+        entry.main(["--device-id", "dev_1"])  # 缺必填参数：仍由常驻进程的解析器报错
+    assert exc.value.code == 2
+    assert "--server-url" in capsys.readouterr().err
+
+
+def test_dispatch_reads_sys_argv_when_argv_omitted(monkeypatch):
+    import monitor.install.cli as install_cli
+
+    seen = []
+    monkeypatch.setattr(install_cli, "main", lambda argv: seen.append(list(argv)) or 0)
+    monkeypatch.setattr(sys, "argv", ["python -m monitor", "mode", "local"])
+    assert entry.main() == 0
+    assert seen == [["mode", "local"]]
