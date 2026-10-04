@@ -298,6 +298,19 @@ def test_heartbeat_ack_binding_is_per_device(h: Harness):
     assert h.heartbeat(a_id, a_token).json()["account_binding"]["account_id"] == ACCOUNT
 
 
+def test_suspended_client_state_is_shown_as_reported(h: Harness):
+    """契约 0.3.3：client_state=suspended（窗口已归还用户）如实记录并显示；设备仍在线，不算需要登录。"""
+    device_id, token = h.ready_device()
+    assert h.heartbeat(device_id, token, client_state="suspended").status_code == 200
+    device = h.get(f"/devices/{device_id}").json()
+    assert device["last_heartbeat"]["client_state"] == "suspended"
+    assert device["status"] == "online"
+    listed = {d["device_id"]: d for d in h.get("/devices").json()["items"]}
+    assert listed[device_id]["last_heartbeat"]["client_state"] == "suspended"
+    h.clock.advance(91)
+    assert h.get(f"/devices/{device_id}").json()["status"] == "offline"
+
+
 def test_heartbeat_policy_version_is_injected():
     harness = Harness()
     harness.ctx.policy_version = lambda account_id: 7 if account_id == ACCOUNT else None

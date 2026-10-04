@@ -1,10 +1,10 @@
-"""契约 0.3.3：心跳回执 heartbeat_ack 纳入契约，增加 account_binding（集成缺陷 M-1）。"""
+"""契约 0.3.3：心跳回执 heartbeat_ack 纳入契约，增加 account_binding（集成缺陷 M-1）；client_state 增加 suspended。"""
 
 from __future__ import annotations
 
 import pytest
 import yaml
-from vector_helpers import CONTRACTS_DIR
+from vector_helpers import CONTRACTS_DIR, load_vectors
 
 import monitor_contracts as mc
 
@@ -78,3 +78,21 @@ def test_openapi_heartbeat_ack_refs_contract_schema():
     }
     assert "account_binding" in op["description"]
     assert spec["info"]["version"] == mc.__version__
+
+
+# --- client_state 增加 suspended（D2c 接口请求 1） -------------------------------------------
+
+
+def test_client_state_enum_matches_model_and_includes_suspended():
+    schema = (CONTRACTS_DIR / "schemas" / "device_heartbeat.json").read_text(encoding="utf-8")
+    enum = yaml.safe_load(schema)["properties"]["client_state"]["enum"]
+    assert enum == list(mc.CLIENT_STATES)
+    assert "suspended" in mc.CLIENT_STATES and "unknown" in mc.CLIENT_STATES
+
+
+def test_suspended_heartbeat_is_valid_and_unknown_values_are_not():
+    data = dict(load_vectors("valid"))["device_heartbeat_suspended"]["data"]
+    assert mc.validate_device_heartbeat(data).client_state == "suspended"
+    with pytest.raises(mc.ContractValidationError) as info:
+        mc.validate_device_heartbeat({**data, "client_state": "handed_back"})
+    assert "client_state" in info.value.paths

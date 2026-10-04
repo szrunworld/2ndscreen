@@ -9,7 +9,7 @@ event_id 必须等于 compute_event_id 的结果）。语义错误统一用 ``_f
 from __future__ import annotations
 
 import re
-from typing import Annotated, Any, Literal, Union
+from typing import Annotated, Any, Literal, Union, get_args
 from uuid import UUID
 
 from pydantic import (
@@ -858,12 +858,17 @@ class LastError(ContractModel):
         return self
 
 
+# 0.3.3 增加 suspended：本机模式下窗口已归还用户或接管失败，GUI 挂起
+ClientState = Literal["running", "not_running", "login_required", "blocked_by_dialog", "unknown", "suspended"]
+CLIENT_STATES: tuple[str, ...] = get_args(ClientState)
+
+
 class DeviceHeartbeat(ContractModel):
     device_id: DeviceId
     sent_at: AwareDatetime
     mode: Mode
     account_id: AccountId | None
-    client_state: Literal["running", "not_running", "login_required", "blocked_by_dialog", "unknown"]
+    client_state: ClientState
     paused: bool
     pause_reason: PauseReason | None = None
     needs_baseline: bool

@@ -1823,7 +1823,7 @@ components:
         status:
           type: string
           enum: [online, offline, needs_login, paused, revoked]
-          description: 服务端综合心跳得出的展示状态；超过 90 秒无心跳为 offline。
+          description: 服务端综合心跳得出的展示状态；超过 90 秒无心跳为 offline。心跳 client_state=suspended（0.3.3，本机模式窗口已归还用户）时仍为 online，控制台从 last_heartbeat.client_state 读出挂起。
         paused:
           type: boolean
         revoked:

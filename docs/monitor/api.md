@@ -91,7 +91,7 @@
 - `account_confirmed`：心跳里的 `account_id` 是否等于服务端记录的绑定。
 - `account_binding`（0.3.3，必有，可为 null）：服务端确认的绑定，规则见 3.1 第 4 步。
 
-服务端超过 90 秒没有收到心跳时，把设备显示为 offline。
+服务端超过 90 秒没有收到心跳时，把设备显示为 offline。心跳 `client_state=suspended`（0.3.3：本机模式窗口已归还用户或接管失败，GUI 挂起）如实记录在设备的 `last_heartbeat` 里，设备 `status` 仍为 online，控制台据 `last_heartbeat.client_state` 显示"已归还用户"。
 
 ### 3.3 领取、确认、执行、回报
 

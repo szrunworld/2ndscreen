@@ -44,9 +44,10 @@
         "not_running",
         "login_required",
         "blocked_by_dialog",
-        "unknown"
+        "unknown",
+        "suspended"
       ],
-      "description": "BOSS 客户端状态。"
+      "description": "BOSS 客户端状态。suspended（0.3.3）：本机模式下 Monitor 已把 BOSS 窗口归还给用户（或接管失败），GUI 挂起、不观察不执行；与看不到界面的 unknown 区分。"
     },
     "paused": {
       "type": "boolean"

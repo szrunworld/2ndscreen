@@ -48,6 +48,7 @@ from .idempotency import (
 from .mail_id import MAIL_MESSAGE_ID_PATTERN, MAIL_PROVIDER, compute_mail_message_id, normalize_mailbox, normalize_message_id
 from .models import (
     ACTIONS,
+    CLIENT_STATES,
     CONVERSATION_ACTIONS,
     CONVERSATION_EVENT_KINDS,
     EVENT_KINDS,
@@ -63,6 +64,7 @@ from .models import (
     CommandModel,
     CommandResult,
     CardField,
+    ClientState,
     ContactOutput,
     Conversation,
     ConversationTarget,
