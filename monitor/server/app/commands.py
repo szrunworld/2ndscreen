@@ -100,7 +100,7 @@ class ManualActionTarget(BaseModel):
 
 class ManualAction(BaseModel):
     manual_action_id: str
-    type: Literal["confirm_sent", "link_resume", "stop_case", "recheck", "cancel_command"]
+    type: Literal["confirm_sent", "link_resume", "stop_case", "recheck", "cancel_command", "request_wechat"]
     actor: str
     at: DateTimeStr
     note: str
@@ -446,7 +446,7 @@ def claim_commands(
 @router.get(
     "/commands",
     operation_id="listCommands",
-    summary="指令列表（控制台执行记录；邮件接入查询转发记录）",
+    summary="指令列表（控制台执行记录；邮件接入查询求简历记录，用于按执行时间窗关联邮件）",
     response_model=CommandList,
     responses=problem_responses(401),
 )
@@ -460,7 +460,6 @@ def list_commands(
         "request_resume",
         "request_contact_exchange",
         "search_candidates",
-        "forward_resume",
         "provide_input",
     ]
     | None = None,

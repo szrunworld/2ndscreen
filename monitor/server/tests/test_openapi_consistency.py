@@ -39,6 +39,37 @@ IMPLEMENTED = {
     "listEvents",
 }
 
+# yaml 中已定义、server 尚未实现的操作（由 F2/F3/G 等后续任务实现）。实现一个就把它从这里移到
+# IMPLEMENTED；契约新增操作时也要登记到这里，否则 test_unimplemented_operations_are_listed 失败。
+NOT_YET_IMPLEMENTED = {
+    "confirmCommandSent",
+    "recheckCommand",
+    "createResumeDocument",
+    "listResumeDocuments",
+    "getResumeDocument",
+    "postParseResult",
+    "linkResumeDocument",
+    "listMailMessages",
+    "putMailMessage",
+    "postMailVerification",
+    "listMailVerifications",
+    "createSearchRun",
+    "listSearchRuns",
+    "getSearchRun",
+    "listCases",
+    "getCase",
+    "stopCase",
+    "requestWechatExchange",
+    "postLoginQr",
+    "getLoginQr",
+    "withdrawLoginQr",
+    "listLoginQrViews",
+    "respondInputRequest",
+    "getPolicy",
+    "putPolicy",
+    "getOverview",
+}
+
 # 已知的 yaml 缺口：代码如实声明、运行时会返回，但 contracts/openapi.yaml 0.2.0 还没列出的响应码。
 # 由下一版契约任务统一补（清单见 agent-reports/F1.md「0.2.0 适配」）；补上后从这里删除对应条目，
 # 测试会因白名单条目已不再是差异而失败（KNOWN_YAML_GAPS 必须与实际差异完全一致）。
@@ -169,6 +200,12 @@ def test_implemented_operations_match_task_scope(specs):
     for op_id in IMPLEMENTED:
         assert op_id in yaml_ops, f"{op_id} 不在 openapi.yaml 中"
         assert code_ops[op_id][:2] == yaml_ops[op_id][:2], f"{op_id} 路径或方法不一致"
+
+
+def test_unimplemented_operations_are_listed(specs):
+    """yaml 中未实现的操作必须与显式白名单完全一致，防止契约新增端点被悄悄漏掉。"""
+    _, yaml_spec = specs
+    assert set(operations(yaml_spec)) - IMPLEMENTED == NOT_YET_IMPLEMENTED
 
 
 @pytest.mark.parametrize("op_id", sorted(IMPLEMENTED))

@@ -503,7 +503,7 @@ TOKEN = "tok_secret_for_tests"
 
 def make_policy(**overrides: Any) -> dict[str, Any]:
     """合法的策略（线上 JSON 形状）。默认开启问候与求简历，上限较宽、间隔取最小。"""
-    per = {a: 0 for a in ("send_greeting", "request_resume", "request_contact_exchange", "forward_resume", "search_candidates")}
+    per = {a: 0 for a in ("send_greeting", "request_resume", "request_contact_exchange", "search_candidates")}
     policy: dict[str, Any] = {
         "account_id": ACCOUNT,
         "policy_version": 1,
@@ -511,7 +511,9 @@ def make_policy(**overrides: Any) -> dict[str, Any]:
         "job_scope": {"mode": "all", "job_titles": []},
         "greeting": {"enabled": True, "template": "你好"},
         "auto_request_resume": True,
-        "after_resume_received": {"action": "none", "wait_for_parse": False},
+        "after_resume_received": {"action": "none", "wait_for_parse": True},
+        "resume_mail_timeout_days": 3,
+        "company_mailbox": "hr@example.com",
         "work_hours": {"timezone": "UTC", "windows": []},
         "daily_limits": {k: 1000 for k in per},
         "min_interval_seconds": dict(per),
@@ -544,8 +546,7 @@ def make_command(
     payload: dict[str, Any] = {
         "send_greeting": {"text": "你好"},
         "request_resume": {},
-        "request_contact_exchange": {"exchange_type": "phone"},
-        "forward_resume": {"destination": "hr@example.com"},
+        "request_contact_exchange": {"exchange_type": "wechat"},
     }[action]
     return {
         "command_id": command_id or f"00000000-0000-4000-8000-{next(_cid):012d}",

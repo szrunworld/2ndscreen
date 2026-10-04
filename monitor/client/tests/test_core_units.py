@@ -93,12 +93,16 @@ def _executed(clock, at, *, action="send_greeting", wrote=True, mode="execute"):
 
 
 def test_hard_limits_values_confirmed_by_user():
-    # 用户 2026-10-04 确认的数值；改动需要用户同意
-    assert dict(HARD_DAILY_CAPS) == {k: 40 for k in HARD_DAILY_CAPS} and len(HARD_DAILY_CAPS) == 5
+    # 用户 2026-10-04 确认的数值；改动需要用户同意（0.3.0 移除 forward_resume，剩 4 种对外动作）
+    assert dict(HARD_DAILY_CAPS) == {
+        "send_greeting": 40,
+        "request_resume": 40,
+        "request_contact_exchange": 40,
+        "search_candidates": 40,
+    }
     assert dict(MIN_INTERVAL_FLOORS) == {
         "send_greeting": 45,
         "request_resume": 45,
-        "forward_resume": 45,
         "request_contact_exchange": 60,
         "search_candidates": 30,
     }
