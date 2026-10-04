@@ -79,6 +79,7 @@ Run：run_7d52e82ce7ed。分支 monitor-v1（a12a931，自 szrunworld/ss-runtime
 
 - 已确认：Monitor = 本机执行器 + 薄桥接服务（设备、指令队列、事件接收）。业务（候选人、流程、简历存储解析、通知、流程页与总览、品牌化简历）归 ATS。F2 的 cases/policy/overview 冻结；I1/I2 只做设备、登录、执行记录。
 - 已决定：时间路线 A（Monitor 先独立运行，ATS 到 P2 再切换指令来源）；设备、登录、执行记录管理页放服务器端（ATS 门户），I1/I2 撤销（交接 handover-device-console.md）。
-- 待用户决定： 给 ATS 的契约变更（channel_task 与执行器接口、任务类型含求简历/换微信/搜索、无联系方式的 BOSS 候选人入库、品牌化简历）由谁提出。
+- 契约变更请求已写好：docs/monitor/ats-contract-change-request.md（用户转交 ATS）。
+- 原待决： 给 ATS 的契约变更（channel_task 与执行器接口、任务类型含求简历/换微信/搜索、无联系方式的 BOSS 候选人入库、品牌化简历）由谁提出。
 
 - 邮件收简历（G）：用户决定交给服务器端（定时任务，与设备无关）。交接文档 docs/monitor/handover-mail-ingestion.md；接收方确认后从 Monitor 移除 monitor/mail 与相关端点。
