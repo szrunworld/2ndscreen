@@ -1,6 +1,6 @@
 {
   "contract": "command_result",
-  "description": "verify_only 不得有写操作",
+  "description": "verify_only 不得有对外动作（导航允许）",
   "data": {
     "command_id": "00000000-0000-4000-8000-000000000001",
     "action": "send_greeting",
@@ -22,12 +22,14 @@
         "captured_at": "2026-10-04T09:31:05+08:00"
       }
     ],
+    "navigation_performed": true,
+    "outbound_action_performed": true,
+    "externally_visible_side_effect": true,
     "executed_at": "2026-10-04T09:31:05+08:00",
     "reported_at": "2026-10-04T09:31:20+08:00",
-    "gui_write_performed": true,
     "execution_mode": "verify_only"
   },
   "expected_error_paths": [
-    "gui_write_performed"
+    "outbound_action_performed"
   ]
 }

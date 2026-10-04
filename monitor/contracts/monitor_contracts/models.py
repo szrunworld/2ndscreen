@@ -391,7 +391,9 @@ def check_result_rules(
     status: str,
     reason: str | None,
     execution_mode: str,
-    gui_write_performed: bool,
+    navigation_performed: bool,
+    outbound_action_performed: bool,
+    externally_visible_side_effect: bool,
     executed_at: Any,
     output: Any,
 ) -> None:
@@ -406,10 +408,25 @@ def check_result_rules(
     if status in ("cancelled", "expired"):
         if executed_at is not None:
             raise _fail("executed_at", f"status={status} 表示未执行，executed_at 必须为 null")
-        if gui_write_performed:
-            raise _fail("gui_write_performed", f"status={status} 时不可能发生过 GUI 写操作")
-    if execution_mode == "verify_only" and gui_write_performed:
-        raise _fail("gui_write_performed", "verify_only 指令不得发生 GUI 写操作")
+    # cancelled 可能发生在 running 中途：允许已导航（如实记录），但不能有对外动作；
+    # expired 只从 queued 进入，什么都没做过。
+    if status == "cancelled" and outbound_action_performed:
+        raise _fail("outbound_action_performed", "status=cancelled 时不得发生过对外动作；动作已发生应回报实际结果")
+    if status == "expired":
+        for name, flag in (
+            ("navigation_performed", navigation_performed),
+            ("outbound_action_performed", outbound_action_performed),
+            ("externally_visible_side_effect", externally_visible_side_effect),
+        ):
+            if flag:
+                raise _fail(name, "status=expired 表示从未开始执行，三个标志都必须为 false")
+    if execution_mode == "verify_only" and outbound_action_performed:
+        raise _fail("outbound_action_performed", "verify_only 指令不得发生对外动作（导航允许）")
+    if outbound_action_performed and not externally_visible_side_effect:
+        raise _fail(
+            "externally_visible_side_effect",
+            "outbound_action_performed=true 时 externally_visible_side_effect 必须为 true",
+        )
 
     expected = _OUTPUT_FOR_ACTION[action]
     if output is not None and (expected is None or not isinstance(output, expected)):
@@ -437,7 +454,10 @@ class CommandResult(ContractModel):
     reason_detail: Annotated[str, StringConstraints(max_length=500)] | None = None
     observed: Observed
     evidence: Evidence
-    gui_write_performed: bool = False
+    # 三个标志在线上必填：缺省 false 会把"忘了填"当成"没有对外动作"。含义见 contracts.md 第四节。
+    navigation_performed: bool
+    outbound_action_performed: bool
+    externally_visible_side_effect: bool
     executed_at: AwareDatetime | None
     reported_at: AwareDatetime
     output: ActionOutput | None = None
@@ -449,7 +469,9 @@ class CommandResult(ContractModel):
             status=self.status,
             reason=self.reason,
             execution_mode=self.execution_mode,
-            gui_write_performed=self.gui_write_performed,
+            navigation_performed=self.navigation_performed,
+            outbound_action_performed=self.outbound_action_performed,
+            externally_visible_side_effect=self.externally_visible_side_effect,
             executed_at=self.executed_at,
             output=self.output,
         )

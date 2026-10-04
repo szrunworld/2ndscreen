@@ -1,6 +1,6 @@
 # 招聘 Monitor 服务端 HTTP 接口
 
-版本 0.1.1，与 `monitor_contracts` 0.1.1 对应。机器可读的定义在 [`monitor/contracts/openapi.yaml`](../../monitor/contracts/openapi.yaml)（OpenAPI 3.1，已通过 `openapi-spec-validator` 校验）。本文写给实现者（F1–F3、G、I1/I2、D2）看，冲突时以 openapi.yaml 为准。消息体的字段含义见 [contracts.md](contracts.md)。
+版本 0.2.0，与 `monitor_contracts` 0.2.0 对应。机器可读的定义在 [`monitor/contracts/openapi.yaml`](../../monitor/contracts/openapi.yaml)（OpenAPI 3.1，已通过 `openapi-spec-validator` 校验）。本文写给实现者（F1–F3、G、I1/I2、D2）看，冲突时以 openapi.yaml 为准。消息体的字段含义见 [contracts.md](contracts.md)。
 
 ## 一、通用规则
 
@@ -66,7 +66,9 @@
 
 1. 用户在控制台选择模式，生成注册码（`POST /device-enrollments`）。
 2. 执行 `monitor install` 时，Monitor 以 `device_registration` 为请求体调用 `POST /devices`，拿到 `device_token` 后存入 keychain 或 0600 文件。注册码只能用一次。若 `contracts_version` 不兼容，返回 409。
-3. Monitor 心跳上报 `account_id`，用户在控制台确认绑定（`PUT /devices/{id}/account-binding`）。绑定确认之前，或心跳中的账户与绑定不一致时，领取接口返回空列表，心跳响应中 `account_confirmed=false`。
+3. 用户在控制台确认这台设备绑定的招聘账户（`PUT /devices/{id}/account-binding`），Monitor 把绑定的 `account_id` 保存在本地，此后心跳上报这个值。绑定确认之前，或心跳中的账户与服务端记录的绑定不一致时，领取接口返回空列表，心跳响应中 `account_confirmed=false`。
+
+**账户来源（0.2.0）**：BOSS 客户端窗口里读不到当前登录账户（P0 与任务 B 均已确认），所以 v1 的 `account_id` 只来自安装时的绑定，Monitor 不从界面读取。心跳里的 `account_id` 表示"绑定账户"，不是"观察到的账户"；与服务端绑定不一致说明是配置问题（例如重装后未重新绑定），不说明用户在 BOSS 里换了账户。结果 reason `account_mismatch` 保留，但 v1 只在有证据时使用（例如界面出现账户切换提示）；目前没有检测手段，用户直接在 BOSS 里切换账户时 Monitor 察觉不到，列入 N 待验证。
 
 ### 3.2 心跳
 
@@ -95,7 +97,7 @@ claim(长轮询) → 写本地账本 queued → ack → … 执行 … → resul
 控制台调用 `POST /commands/{id}:cancel`：
 
 - 指令还没被领取：服务端直接把它置为 cancelled。
-- 已被领取：服务端通过心跳和下一次领取响应中的 `cancellations` 通知设备。Monitor 若还没开始执行，回报 `cancelled`；若动作已经发生，回报实际结果。最终状态以设备回报为准。
+- 已被领取：服务端通过心跳和下一次领取响应中的 `cancellations` 通知设备。Monitor 若还没有发生对外动作（`outbound_action_performed=false`，可能已经导航），回报 `cancelled` 并如实填写 `navigation_performed` 与 `externally_visible_side_effect`；若对外动作已经发生，回报实际结果。最终状态以设备回报为准。
 
 ### 3.5 事件
 
@@ -119,7 +121,7 @@ Monitor 把 `accepted` 和 `duplicate` 的事件都标记为 delivered。`reject
 
 - **流程**：`GET /cases` 每行是一个 recruitment_case，可以按 stage、needs_human、job_title、关键字过滤。`GET /cases/{id}` 返回时间线、简历文件、相关指令和人工处理记录。
 - **人工处理**：`confirm-sent`、`resume-documents/{id}:link`、`cases/{id}:stop` 都要求填写说明（`note`），服务端记录 actor、时间和说明，返回 `ManualAction`，不覆盖原始执行结果与证据。结果待确认（unknown）的指令只提供重新检查、人工确认、停止三种处理，没有"重试"接口。
-- **重新检查**：`POST /commands/{id}:recheck` 为同一动作和目标创建一条 `execution_mode=verify_only` 的新指令，只读，不受白名单和限额约束。对 search_candidates 和 provide_input 调用返回 409。
+- **重新检查**：`POST /commands/{id}:recheck` 为同一动作和目标创建一条 `execution_mode=verify_only` 的新指令，允许导航、不做对外动作（可能产生已读回执），不受白名单和限额约束。对 search_candidates 和 provide_input 调用返回 409。
 - **搜索**：`POST /search-runs` 的请求体为 `{account_id, query, max_results, ttl_seconds=600}`。服务端检查策略白名单、暂停状态和上限后，创建 `search_candidates` 指令。`SearchRun.outcome` 由快照的 coverage 得出（results / no_results / unreadable），控制台对三者分别展示。
 - **简历文档**（G 调用）：`POST /resume-documents` 按（message_id, sha256）去重，重复时返回 200 并带 `duplicate=true`。`link.method` 按优先级依次为 reliable_id → forward_record（带 `command_id`）→ name_match → none；为 none 时进入人工关联队列，并列出 `candidate_case_ids`。同一流程下的多份简历按 `version` 保留，不覆盖。解析结果可以随创建请求一起提交，也可以之后用 `POST /resume-documents/{id}/parse-result` 提交。
 - **策略**：`PUT` 必须带 `If-Match: <policy_version>`，版本不一致返回 412。`policy_version`、`updated_at`、`updated_by` 以服务端为准，保存后版本 +1。`pause_on_anomaly` 只能为 true。

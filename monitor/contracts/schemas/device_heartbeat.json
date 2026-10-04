@@ -35,7 +35,7 @@
           "type": "null"
         }
       ],
-      "description": "本机已确认绑定的账户；未绑定为 null。"
+      "description": "本机保存的绑定账户（安装时绑定，经控制台确认）；未绑定为 null。表示绑定账户，不是从界面观察到的账户：v1 读不到 BOSS 当前登录账户。"
     },
     "client_state": {
       "type": "string",

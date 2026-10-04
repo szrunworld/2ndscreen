@@ -42,7 +42,7 @@
         "verify_only"
       ],
       "default": "execute",
-      "description": "verify_only：只读界面判断动作是否已发生（控制台'重新检查界面状态'），不做任何写操作，不受每日上限、最小间隔与白名单开关约束。"
+      "description": "verify_only：判断动作是否已发生（控制台'重新检查界面状态'），允许导航、不做对外动作（结果 outbound_action_performed 必须为 false），不受每日上限、最小间隔与白名单开关约束。"
     },
     "target": {
       "type": "object"

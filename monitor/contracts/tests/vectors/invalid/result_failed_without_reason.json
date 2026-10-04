@@ -11,6 +11,9 @@
       "after": []
     },
     "evidence": [],
+    "navigation_performed": true,
+    "outbound_action_performed": false,
+    "externally_visible_side_effect": false,
     "executed_at": null,
     "reported_at": "2026-10-04T09:31:20+08:00"
   },

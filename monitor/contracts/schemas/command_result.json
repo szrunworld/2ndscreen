@@ -10,6 +10,9 @@
     "reason",
     "observed",
     "evidence",
+    "navigation_performed",
+    "outbound_action_performed",
+    "externally_visible_side_effect",
     "executed_at",
     "reported_at"
   ],
@@ -65,10 +68,17 @@
     "evidence": {
       "$ref": "common.json#/$defs/evidence"
     },
-    "gui_write_performed": {
+    "navigation_performed": {
       "type": "boolean",
-      "default": false,
-      "description": "本次执行是否发生过任何 GUI 写操作（点击、输入、按键）。cancelled / expired / verify_only 时必须为 false。"
+      "description": "本次执行是否发生过导航类 GUI 操作：点击打开会话、切换页签/筛选、滚动、关闭弹层等只改变本机界面的操作。verify_only 允许为 true。"
+    },
+    "outbound_action_performed": {
+      "type": "boolean",
+      "description": "本次执行是否发生过对候选人或第三方可见的动作：发送消息、点击确认、提交转发、点击求简历/换电话等。verify_only 时必须为 false；为 true 时 externally_visible_side_effect 必须为 true。"
+    },
+    "externally_visible_side_effect": {
+      "type": "boolean",
+      "description": "本次执行是否可能产生了对方可见的副作用。对外动作一定算；没有对外动作也可能为 true，例如打开未读会话产生已读回执。"
     },
     "executed_at": {
       "oneOf": [
@@ -153,10 +163,7 @@
       "if": {
         "properties": {
           "status": {
-            "enum": [
-              "cancelled",
-              "expired"
-            ]
+            "const": "cancelled"
           }
         },
         "required": [
@@ -168,7 +175,35 @@
           "executed_at": {
             "type": "null"
           },
-          "gui_write_performed": {
+          "outbound_action_performed": {
+            "const": false
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "expired"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "executed_at": {
+            "type": "null"
+          },
+          "navigation_performed": {
+            "const": false
+          },
+          "outbound_action_performed": {
+            "const": false
+          },
+          "externally_visible_side_effect": {
             "const": false
           }
         }
@@ -187,8 +222,27 @@
       },
       "then": {
         "properties": {
-          "gui_write_performed": {
+          "outbound_action_performed": {
             "const": false
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "outbound_action_performed": {
+            "const": true
+          }
+        },
+        "required": [
+          "outbound_action_performed"
+        ]
+      },
+      "then": {
+        "properties": {
+          "externally_visible_side_effect": {
+            "const": true
           }
         }
       }

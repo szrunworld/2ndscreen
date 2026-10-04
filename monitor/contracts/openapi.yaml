@@ -1,10 +1,10 @@
 openapi: 3.1.0
 info:
   title: 招聘 Monitor 服务端 API
-  version: 0.1.1
+  version: 0.2.0
   summary: Monitor 设备、指令、事件、简历文档、搜索、人工处理、登录接力与策略接口
   description: |
-    与 monitor_contracts 0.1.1 对应（info.version 与契约版本同步）。说明见 docs/monitor/api.md。
+    与 monitor_contracts 0.2.0 对应（info.version 与契约版本同步）。说明见 docs/monitor/api.md。
 
     - 传输：只暴露 HTTPS。第一版用轮询，领取指令为长轮询（最长 30 秒），不使用 WebSocket。
     - 认证：设备接口用设备令牌（deviceToken）；控制台接口用控制台会话（consoleSession）；
@@ -175,7 +175,7 @@ paths:
       tags: [devices]
       operationId: confirmAccountBinding
       summary: 控制台确认设备与招聘账户的绑定
-      description: 第一版一台设备只绑定一个账户。设备心跳上报的 account_id 与绑定不一致时，服务端停止下发指令。
+      description: 第一版一台设备只绑定一个账户。account_id 来自安装时的绑定，Monitor 不从界面读取（BOSS 窗口读不到当前账户）；心跳的 account_id 是本机保存的绑定账户。它与服务端记录的绑定不一致时（配置问题，例如重装后未重新绑定），服务端停止下发指令。
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
@@ -483,7 +483,7 @@ paths:
       tags: [commands]
       operationId: cancelCommand
       summary: 取消指令
-      description: 未领取的指令直接 cancelled；已领取的指令通过心跳与领取响应的 cancellations 通知设备，最终状态以设备回报为准（动作已发生则回报实际结果）。
+      description: 未领取的指令直接 cancelled；已领取的指令通过心跳与领取响应的 cancellations 通知设备，最终状态以设备回报为准（尚无对外动作则回报 cancelled，对外动作已发生则回报实际结果）。
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
@@ -547,7 +547,7 @@ paths:
       tags: [commands, cases]
       operationId: recheckCommand
       summary: 重新检查界面状态
-      description: 为同一动作与目标创建一条 execution_mode=verify_only 的新指令（只读，不受白名单与限额约束），不是重试。
+      description: 为同一动作与目标创建一条 execution_mode=verify_only 的新指令（允许导航、不做对外动作，可能产生已读回执；不受白名单与限额约束），不是重试。
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       responses:
