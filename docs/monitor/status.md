@@ -9,7 +9,7 @@
 | B | 只读可行性验证与夹具 | ctx_1b25ee64eab9（已释放） | monitor-B | 已合（898edbd） | 201001d | 登录/二维码、新招呼首次打开、电话待同意/已交换/已拒绝、邮件转发内容、搜索输入后结果 → 留给 N/K |
 | C | Driver 适配器 | ctx_3dfbecec466d（已释放） | monitor-C | 已合（ecfe9da；client 入工作区 + relock，contracts+client 351 tests） | ec6aed9 | 定位器 text 同时匹配 label/value（比契约宽），0.2.0 契约里追认；CliDriver 未在 BOSS 上真机跑过 → N |
 | D1 | 本地账本 | — | — | 未派 | — | — |
-| D2 | 指令客户端与执行管线 | ctx_be925b1cfd1f / monitor-D2 | monitor-D2 | 进行 | — | — |
+| D2 | 指令客户端与执行管线 | ctx_be925b1cfd1f（已释放） | monitor-D2 | 已合（810c993；relock httpx；contracts+client 464 tests） | dc26e24 | 工厂入口：D1 open_ledger(path)、E create_observer()、H create_handlers()；0.2.0 合并后跟进 core/write_flags.py 与 guard.py |
 | E | 观察模块 | — | — | 未派 | — | — |
 | F1 | 服务端基础 | ctx_5b46093fd09a / monitor-F1 | monitor-F1 | 进行 | — | — |
 | F2 | 服务端业务 | — | — | 未派 | — | — |
@@ -46,4 +46,4 @@ Run：run_7d52e82ce7ed。分支 monitor-v1（a12a931，自 szrunworld/ss-runtime
 2. N 阶段测试账号、候选人与逐项授权方式。
 3. 独立设备模式是否接受"自动登录 + 不启用 FileVault"。
 4. Monitor 打开未读会话会产生已读回执（对外可见），新投递检测是否接受这一点（B 已避免打开未读会话）。
-5. 候选人同意交换后，是否把手机号回传到服务端存储（v1 契约暂不带号码，只报状态）。
+6. 候选人同意交换后，是否把手机号回传到服务端存储（v1 契约暂不带号码，只报状态）。
