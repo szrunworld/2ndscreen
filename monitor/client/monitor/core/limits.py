@@ -26,7 +26,6 @@ HARD_DAILY_CAPS: MappingProxyType[str, int] = MappingProxyType(
         "send_greeting": 40,
         "request_resume": 40,
         "request_contact_exchange": 40,
-        "forward_resume": 40,
         "search_candidates": 40,
     }
 )
@@ -37,7 +36,6 @@ MIN_INTERVAL_FLOORS: MappingProxyType[str, int] = MappingProxyType(
         "send_greeting": 45,
         "request_resume": 45,
         "request_contact_exchange": 60,
-        "forward_resume": 45,
         "search_candidates": 30,
     }
 )

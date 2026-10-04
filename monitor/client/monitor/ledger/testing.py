@@ -33,8 +33,7 @@ def make_command(
     payload: dict[str, Any] = {
         "send_greeting": {"text": "你好"},
         "request_resume": {},
-        "request_contact_exchange": {"exchange_type": "phone"},
-        "forward_resume": {"destination": "hr@example.com"},
+        "request_contact_exchange": {"exchange_type": "wechat"},
     }[action]
     return validate_command(
         {
