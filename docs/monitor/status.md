@@ -4,8 +4,8 @@
 
 | 代号 | 任务 | Worker / 工作区 | 分支 | 状态 | 最近 commit | 未决问询 |
 | --- | --- | --- | --- | --- | --- | --- |
-| A | 契约、协议与 API 规范 | — | — | 未派 | — | — |
-| B | 只读可行性验证与夹具 | — | — | 未派（待监督者供屏） | — | — |
+| A | 契约、协议与 API 规范 | ctx_0786c7296951 / monitor-A | monitor-A | 进行 | — | — |
+| B | 只读可行性验证与夹具 | ctx_1b25ee64eab9 / monitor-B（屏幕 monitor-b，BOSS pid 97510） | monitor-B | 进行 | — | — |
 | C | Driver 适配器 | — | — | 未派 | — | — |
 | D1 | 本地账本 | — | — | 未派 | — | — |
 | D2 | 指令客户端与执行管线 | — | — | 未派 | — | — |
@@ -32,8 +32,8 @@
 
 ## 用户待决事项
 
-1. 分支：建议新建 `monitor-v1`（自 `szrunworld/ss-runtime-integration`）。
-2. 并发 worker 数：默认 3。
-3. B 阶段占用 BOSS 实例与 2ndscreen 屏幕的时间窗口。
-4. N 阶段测试账号、候选人与逐项授权方式。
-5. 独立设备模式是否接受"自动登录 + 不启用 FileVault"。
+Run：run_7d52e82ce7ed。分支 monitor-v1（a12a931，自 szrunworld/ss-runtime-integration）；并发 3（用户 2026-10-04 确认）。
+
+1. B 阶段占用的是用户日常 BOSS 实例（已移到屏幕 monitor-b）；B 交付后归还窗口。
+2. N 阶段测试账号、候选人与逐项授权方式。
+3. 独立设备模式是否接受"自动登录 + 不启用 FileVault"。
