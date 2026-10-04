@@ -14,7 +14,6 @@ from datetime import datetime, timedelta
 from uuid import UUID
 
 import pytest
-from pydantic import ValidationError
 from monitor_contracts import (
     AccountBinding,
     Baseline,
