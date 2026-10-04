@@ -1,4 +1,4 @@
-"""搜索任务：创建（白名单、暂停、上限、间隔）、快照存储、三种结局、列表与详情。"""
+"""搜索任务：创建（白名单、暂停、工作时段、上限、间隔）、快照存储、三种结局、列表与详情。"""
 
 from __future__ import annotations
 
@@ -131,7 +131,7 @@ def test_server_limits_never_looser_than_monitor_floor(h: Harness):
     policy = allow(h)
     policy["daily_limits"]["search_candidates"] = 1000
     policy["min_interval_seconds"]["search_candidates"] = 1
-    policy["work_hours"]["timezone"] = "UTC"
+    policy["work_hours"] = {"timezone": "UTC", "windows": [{"days": [1, 2, 3, 4, 5, 6, 7], "start": "00:00", "end": "23:59"}]}
     assert create(h).status_code == 201
     h.clock.advance(MIN_INTERVAL_FLOOR_SECONDS - 1)
     assert [e["code"] for e in create(h).json()["errors"]] == ["rate_limited"]
@@ -140,6 +140,49 @@ def test_server_limits_never_looser_than_monitor_floor(h: Harness):
         assert create(h).status_code == 201
     h.clock.advance(MIN_INTERVAL_FLOOR_SECONDS)
     assert [e["code"] for e in create(h).json()["errors"]] == ["daily_limit_reached"]
+
+
+# ---------------------------------------------------------------------------
+# 0.3.2：搜索算对外动作——受工作时段约束（不顺延），按对外动作计入每日上限
+# ---------------------------------------------------------------------------
+
+SUNDAY_10_TO_12 = {"timezone": "Asia/Shanghai", "windows": [{"days": [7], "start": "10:00", "end": "12:00"}]}
+
+
+def test_outside_work_hours_returns_409_without_deferral(h: Harness):
+    allow(h, work_hours=SUNDAY_10_TO_12)  # 可控时钟起点是周日 09:00（上海），时段外
+    device_id, token = h.ready_device()
+    body = assert_problem(create(h), 409, "policy_blocked")
+    assert [(e["path"], e["code"]) for e in body["errors"]] == [("policy.work_hours", "outside_work_hours")]
+    # 不建搜索任务、不生成指令：到了时段内也没有顺延的指令可领
+    assert h.get("/search-runs").json()["items"] == []
+    h.clock.advance(3600)  # 10:00
+    assert h.claim(device_id, token).json()["commands"] == []
+    assert create(h).status_code == 201
+    h.clock.advance(2 * 3600)  # 12:00，窗口为 [start, end)
+    assert [e["code"] for e in create(h).json()["errors"]] == ["outside_work_hours"]
+
+
+def test_empty_work_hours_blocks_search(h: Harness):
+    allow(h, work_hours={"timezone": "Asia/Shanghai", "windows": []})
+    body = assert_problem(create(h), 409, "policy_blocked")
+    assert [e["code"] for e in body["errors"]] == ["outside_work_hours"]
+
+
+def test_search_counts_toward_outbound_daily_limit(h: Harness):
+    policy = allow(h)
+    policy["daily_limits"]["search_candidates"] = 2
+    first = create(h).json()
+    h.clock.advance(60)
+    assert create(h).status_code == 201
+    # 与问候、求简历同一套统计：指令表里 execute 模式的 search_candidates
+    assert h.ctx.policies.sent_today(policy, "search_candidates", h.clock.now()) == 2
+    h.clock.advance(60)
+    assert [e["code"] for e in create(h).json()["errors"]] == ["daily_limit_reached"]
+    # 未领取就取消、没有结果的搜索不计数（与其他对外动作一致），腾出一个名额
+    assert h.post(f"/commands/{first['command_id']}:cancel").json()["server_status"] == "cancelled"
+    assert h.ctx.policies.sent_today(policy, "search_candidates", h.clock.now()) == 1
+    assert create(h).status_code == 201
 
 
 @pytest.mark.parametrize(

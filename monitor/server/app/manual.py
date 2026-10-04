@@ -16,7 +16,7 @@ from monitor_contracts import CaseStage
 from pydantic import BaseModel, ConfigDict, StringConstraints
 
 from .cases import StageNotAllowed
-from .commands import CommandRecord, ManualAction, manual_action_record
+from .commands import CommandRecord, DateTimeStr, ManualAction, manual_action_record
 from .db import ManualActionRow, parse_time, to_db_time, wire_time
 from .main import (
     ApiError,
@@ -46,6 +46,8 @@ class ManualCommandCreated(BaseModel):
     model_config = ConfigDict(extra="forbid")
     manual_action: ManualAction
     command: CommandRecord
+    # 0.3.2：工作时段外顺延时为下一时段开始时间（等于 command.issued_at），立即可下发时为 null
+    scheduled_for: DateTimeStr | None = None
 
 
 class ManualService:
@@ -212,8 +214,9 @@ class ManualService:
                     )
                 except StageNotAllowed:  # 迁移表保证除 closed 外都允许；这里只防并发
                     pass
-            stored = self.ctx.commands.get(command["command_id"])
-            return {"manual_action": manual, "command": stored or record}
+            stored = self.ctx.commands.get(command["command_id"]) or record
+            scheduled_for = stored["command"]["issued_at"] if deferred else None
+            return {"manual_action": manual, "command": stored, "scheduled_for": scheduled_for}
 
 
 def _wire(value: Any) -> str:

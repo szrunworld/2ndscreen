@@ -61,6 +61,7 @@ def test_e2e_8_3_manual_wechat_exchange(h: Harness):
     assert_shape(body, "ManualCommandCreated")
     manual, record = body["manual_action"], body["command"]
     assert manual["type"] == "request_wechat" and manual["actor"] == "alice"
+    assert body["scheduled_for"] is None  # 工作时段内立即可下发
     assert manual["note"] == "候选人合适，约面试" and manual["target"] == {"kind": "case", "id": case_id}
     command = record["command"]
     assert command["action"] == "request_contact_exchange" and command["payload"] == {"exchange_type": "wechat"}
@@ -391,6 +392,7 @@ def test_wechat_outside_work_hours_is_accepted_and_deferred(h: Harness):
     command = body["command"]["command"]
     assert command["issued_at"] == "2026-10-04T02:00:00Z"  # 上海 10:00
     assert command["expires_at"] > command["issued_at"]
+    assert body["scheduled_for"] == command["issued_at"]  # 0.3.2：顺延时给出排期
     assert only_case(h)["stage"] == "contact_requested"
     timeline = h.ctx.cases.detail(case_id)["timeline"]
     assert any("将在工作时段内执行（最早 2026-10-04 10:00" in t["summary"] for t in timeline)

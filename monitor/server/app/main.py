@@ -497,9 +497,6 @@ def create_app(
     app.include_router(login_relay.router, prefix=API_PREFIX)
     app.include_router(mail_endpoints.router, prefix=API_PREFIX)
     app.include_router(resume_documents.router, prefix=API_PREFIX)
-    # F3：serviceToken 只读策略（G 读 mail_retention_days / resume_mail_timeout_days）。F2 的 getPolicy 认证依赖
-    # 换成 require_policy_reader（控制台 / 设备 / 服务令牌），PUT 仍只接受控制台（见 F3 报告"与 F2 的衔接"）
-    app.dependency_overrides[policy.require_console_or_device] = mail_endpoints.require_policy_reader
     app.openapi = lambda: _cached_openapi(app)  # type: ignore[method-assign]
     return app
 

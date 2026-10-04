@@ -288,6 +288,21 @@ def test_manual_link_records_actor_and_advances_mail(h: Harness, mail: str, case
     assert h.store.list_manual_actions("resume_document", doc["doc_id"])[0].actor == "alice"
 
 
+def test_candidate_case_ids_exposed_until_linked(h: Harness, mail: str, case: str):
+    """0.3.2：待人工关联的文档在响应里带候选流程（去重保序），关联后为空列表；自动关联的文档为空列表。"""
+    doc = create(h, resume_body(mail, candidates=[case, "case_b", case])).json()
+    assert doc["candidate_case_ids"] == [case, "case_b"]
+    assert h.get(f"/resume-documents/{doc['doc_id']}").json()["candidate_case_ids"] == [case, "case_b"]
+    queue = h.get("/resume-documents", params={"link_status": "needs_manual"}).json()["items"]
+    assert [d["candidate_case_ids"] for d in queue] == [[case, "case_b"]]
+    # 品牌化版本没有自己的关联判定
+    assert create(h, branded_body(doc["doc_id"])).json()["candidate_case_ids"] == []
+    link(h, doc["doc_id"], case)
+    assert h.get(f"/resume-documents/{doc['doc_id']}").json()["candidate_case_ids"] == []
+    auto = create(h, resume_body(mail, sha="c" * 64, method="reliable_id", case_id=case)).json()
+    assert auto["candidate_case_ids"] == []
+
+
 def test_manual_link_keeps_mail_in_review_until_all_linked(h: Harness, mail: str, case: str):
     put_mail(h, mail_body("mail_message_needs_review"))
     first = create(h, resume_body(mail)).json()

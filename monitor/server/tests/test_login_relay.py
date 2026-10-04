@@ -8,6 +8,7 @@ import uuid
 from datetime import timedelta
 
 import pytest
+from monitor_contracts import INPUT_REQUEST_TTL_SECONDS
 from server_testkit import (
     CONSOLE_TOKEN,
     Harness,
@@ -20,6 +21,7 @@ from server_testkit import (
     vector,
 )
 
+from app.db import parse_time, wire_time
 from app.login_relay import REDACTED
 
 INPUT_ID = "00000000-0000-4000-8000-000000000070"
@@ -166,8 +168,10 @@ def test_purge_expired(h: Harness, remote):
 # ---------------------------------------------------------------------------
 
 
-def raise_input_request(h: Harness, device_id: str, token: str, **payload) -> dict:
+def raise_input_request(h: Harness, device_id: str, token: str, *, observed_at: str | None = None, **payload) -> dict:
+    """发 human_input_required 事件；observed_at 默认取可控时钟的当前时间（有效期从它算起）。"""
     event = make_event(device_id, "event_human_input", **payload)
+    event["observed_at"] = observed_at or iso(h.clock.now())
     post_events(h, device_id, token, [event])
     return event
 
@@ -226,6 +230,35 @@ def test_response_errors(h: Harness):
     assert_problem(respond(h, token=None), 401)
     assert_problem(respond(h, input_id="not-a-uuid"), 422)
     h.clock.advance(601)  # 请求 10 分钟后过期
+    assert_problem(respond(h), 409, "input_request_expired")
+
+
+def test_input_request_expiry_defaults_to_observed_at_plus_ttl(h: Harness):
+    """0.3.2：事件没带 expires_at 时有效期从 observed_at 算起（不是服务端收到的时间），默认 600 秒。"""
+    device_id, token = h.ready_device(mode="remote")
+    observed = h.clock.now() - timedelta(seconds=300)  # 设备 5 分钟前观察到、现在才补报
+    raise_input_request(h, device_id, token, observed_at=iso(observed))
+    req = h.ctx.login_relay.store.get_input_request(INPUT_ID)
+    assert parse_time(wire_time(req["expires_at"])) == observed + timedelta(seconds=INPUT_REQUEST_TTL_SECONDS)
+    h.clock.advance(299)
+    record = respond(h, key="input-key-0002").json()
+    # provide_input 指令的 expires_at 等于请求有效期
+    assert parse_time(record["command"]["expires_at"]) == observed + timedelta(seconds=600)
+
+
+def test_input_request_uses_payload_expires_at(h: Harness):
+    device_id, token = h.ready_device(mode="remote")
+    expires = h.clock.now() + timedelta(seconds=120)
+    raise_input_request(h, device_id, token, expires_at=iso(expires))
+    h.clock.advance(120)  # 有效期 [observed_at, expires_at)，到点即过期
+    assert_problem(respond(h), 409, "input_request_expired")
+    assert h.ctx.login_relay.store.get_input_request(INPUT_ID)["command_id"] is None  # 过期不占用请求
+
+
+def test_input_request_already_expired_on_arrival(h: Harness):
+    """离线补报：observed_at 已超过 10 分钟，登记即过期。"""
+    device_id, token = h.ready_device(mode="remote")
+    raise_input_request(h, device_id, token, observed_at=iso(h.clock.now() - timedelta(seconds=601)))
     assert_problem(respond(h), 409, "input_request_expired")
 
 
