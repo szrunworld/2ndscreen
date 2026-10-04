@@ -15,36 +15,50 @@ public enum DisplaySleep {
     /// One online display, as far as sleep is concerned.
     public struct Online: Equatable {
         public let id: CGDirectDisplayID
+        /// In the active list: drawable now. A closed or idle built-in panel, or a
+        /// hardware-mirroring secondary, is online but not active.
+        public let active: Bool
         public let asleep: Bool
         /// A 2ndscreen virtual display (any instance's, or one an exited process left), not a screen the user looks at.
         public let virtual: Bool
 
-        public init(id: CGDirectDisplayID, asleep: Bool, virtual: Bool) {
+        public init(id: CGDirectDisplayID, active: Bool, asleep: Bool, virtual: Bool) {
             self.id = id
+            self.active = active
             self.asleep = asleep
             self.virtual = virtual
         }
     }
 
     public enum State: Equatable {
-        /// At least one online physical display is awake, or there is none (headless, deliberately allowed).
+        /// A physical display is active and awake, or there is no physical display (headless, deliberately allowed).
         case awake
-        /// There are online physical displays and every one is asleep.
+        /// No physical display is active and awake, and at least one reports asleep.
         case asleep
-        /// The displays could not be read; nothing is proved either way.
+        /// Nothing proves either: the displays could not be read, or every physical display is inactive without
+        /// reporting sleep.
         case unknown(String)
     }
 
     /// The user's displays' sleep state from the online displays (`nil`: the
-    /// list could not be read). Online, not just active: a sleeping physical
-    /// display can drop out of the active list while a virtual one stays
-    /// active (P0: physical 1 and 2 online and inactive, a leftover virtual
-    /// display active). One physical display awake is not display sleep, and
-    /// no physical display at all (headless) is treated as awake on purpose.
+    /// list could not be read), physical ones only, in this order:
+    /// 1. none: headless, treated as awake on purpose;
+    /// 2. one is active and not asleep: someone can be using it, awake. An
+    ///    inactive panel beside it (a closed lid, a mirroring secondary) does
+    ///    not count either way;
+    /// 3. otherwise one reports asleep: asleep. P0 (macOS 15.1, after a wake
+    ///    expired): external display active 0 asleep 1, built-in active 0
+    ///    asleep 0; an earlier reading had both inactive while a leftover
+    ///    virtual display stayed active. Requiring every physical display
+    ///    to report asleep missed this, since the idle built-in panel does not;
+    /// 4. otherwise (all inactive, none asleep): unknown, not headless.
     public static func state(_ displays: [Online]?) -> State {
         guard let displays else { return .unknown("the online displays could not be listed") }
         let physical = displays.filter { !$0.virtual }
-        return !physical.isEmpty && physical.allSatisfy(\.asleep) ? .asleep : .awake
+        if physical.isEmpty { return .awake }
+        if physical.contains(where: { $0.active && !$0.asleep }) { return .awake }
+        if physical.contains(where: \.asleep) { return .asleep }
+        return .unknown("no physical display is active, and none reports asleep")
     }
 
     /// Every online display now, or nil if the list cannot be read. Read only.
@@ -56,7 +70,7 @@ public enum DisplaySleep {
             // CGVirtualDisplay reports the descriptor's vendor and product, which mark 2ndscreen's own.
             // Any other display, including other software displays, counts as physical.
             let virtual = CGDisplayVendorNumber(id) == 0x3256 && CGDisplayModelNumber(id) == 0x0002
-            return Online(id: id, asleep: CGDisplayIsAsleep(id) != 0, virtual: virtual)
+            return Online(id: id, active: CGDisplayIsActive(id) != 0, asleep: CGDisplayIsAsleep(id) != 0, virtual: virtual)
         }
     }
 
@@ -128,16 +142,23 @@ public final class DisplayWork {
     private let assertions: DisplaySleepAssertions
     private let sleepState: () -> DisplaySleep.State
     private let pollNanoseconds: UInt64
+    /// The clock and the pause between polls of the wait; tests drive both.
+    private let now: () -> Date
+    private let pause: (UInt64) async -> Void
 
     public init(configurator: DisplayConfigurator = .shared, waitLimit: TimeInterval = 2,
                 assertions: DisplaySleepAssertions = PowerManagementAssertions(),
                 sleepState: @escaping () -> DisplaySleep.State = DisplaySleep.stateNow,
-                pollNanoseconds: UInt64 = 50_000_000) {
+                pollNanoseconds: UInt64 = 50_000_000,
+                now: @escaping () -> Date = Date.init,
+                pause: @escaping (UInt64) async -> Void = { try? await Task.sleep(nanoseconds: $0) }) {
         self.configurator = configurator
         self.waitLimit = waitLimit
         self.assertions = assertions
         self.sleepState = sleepState
         self.pollNanoseconds = pollNanoseconds
+        self.now = now
+        self.pause = pause
     }
 
     private func sleepRefusal() -> Refusal? {
@@ -150,10 +171,10 @@ public final class DisplayWork {
 
     /// The outstanding configuration, once `waitLimit` has passed without it returning.
     private func stillPending() async -> DisplayConfigurator.Pending? {
-        let deadline = Date().addingTimeInterval(waitLimit)
+        let deadline = now().addingTimeInterval(waitLimit)
         while let pending = configurator.pending {
-            if Date() >= deadline { return pending }
-            try? await Task.sleep(nanoseconds: pollNanoseconds)
+            if now() >= deadline { return pending }
+            await pause(pollNanoseconds)
         }
         return nil
     }
