@@ -4,7 +4,7 @@
 
 | 代号 | 任务 | Worker / 工作区 | 分支 | 状态 | 最近 commit | 未决问询 |
 | --- | --- | --- | --- | --- | --- | --- |
-| A | 契约、协议与 API 规范 | ctx_0786c7296951→ctx_edd92e2bd40f（同一终端）/ monitor-A | monitor-A | 派回（0.1.0 审过：168 tests；A-fix 做 enabled 与 text 两处修正 → 0.1.1） | ba4685f | — |
+| A | 契约、协议与 API 规范 | ctx_0786c7296951→ctx_edd92e2bd40f（已释放） | monitor-A | 已合（928dc10，契约 0.1.1，170 tests） | ffd598b | — |
 | B | 只读可行性验证与夹具 | ctx_1b25ee64eab9（已释放） | monitor-B | 已合（898edbd） | 201001d | 登录/二维码、新招呼首次打开、电话待同意/已交换/已拒绝、邮件转发内容、搜索输入后结果 → 留给 N/K |
 | C | Driver 适配器 | ctx_3dfbecec466d / monitor-C（自建屏幕 monitor-c） | monitor-C | 进行（第 1 阶段；等 A 先提交 Driver 协议） | — | — |
 | D1 | 本地账本 | — | — | 未派 | — | — |
@@ -28,7 +28,8 @@
 
 | 版本 | 日期 | 变更 | 受影响任务 |
 | --- | --- | --- | --- |
-| 0.1.0（开发中） | 2026-10-04 | A 问询裁决：新增 event kind `conversation_ambiguous`；command 加 `execution_mode: execute\|verify_only`（verify_only 不受上限、不看白名单）；contact_exchange_updated 只报 state（含 unknown），不带号码；workflow_id 对四个流程动作必填；command_result reason 枚举与组合约束；unsupported_presentation 走 heartbeat.last_error；monitor/uv.lock 归 A，后续任务不提交 lock 改动，监督者合并时重新 lock | 全部 |
+| 0.1.1 | 2026-10-04 | Element.enabled 改 bool\|None=None（CLI 不提供）；Element.text 改为 label 优先否则 value | C、E、H、K |
+| 0.1.0 | 2026-10-04 | A 问询裁决：新增 event kind `conversation_ambiguous`；command 加 `execution_mode: execute\|verify_only`（verify_only 不受上限、不看白名单）；contact_exchange_updated 只报 state（含 unknown），不带号码；workflow_id 对四个流程动作必填；command_result reason 枚举与组合约束；unsupported_presentation 走 heartbeat.last_error；monitor/uv.lock 归 A，后续任务不提交 lock 改动，监督者合并时重新 lock | 全部 |
 
 ## 用户待决事项
 
