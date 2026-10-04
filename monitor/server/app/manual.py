@@ -12,9 +12,8 @@ import uuid
 from typing import TYPE_CHECKING, Annotated, Any
 
 from fastapi import APIRouter, Body, Path, Request
-from pydantic import BaseModel, ConfigDict, StringConstraints
-
 from monitor_contracts import CaseStage
+from pydantic import BaseModel, ConfigDict, StringConstraints
 
 from .cases import StageNotAllowed
 from .commands import CommandRecord, ManualAction, manual_action_record
@@ -157,7 +156,9 @@ class ManualService:
             self._note_case(case_id, manual, f"人工停止流程，取消 {cancelled} 条未完成指令")
             self.ctx.cases.update(case_id, next_action=None, next_depends_on=None, blocked_reason=None)
             if case.stage != S.CLOSED.value:
-                self.ctx.cases.transition(case_id, S.CLOSED.value, ref_id=manual["manual_action_id"], summary="流程已停止")
+                self.ctx.cases.transition(
+                    case_id, S.CLOSED.value, ref_id=manual["manual_action_id"], summary="流程已停止"
+                )
             return manual
 
     def request_wechat(self, case_id: str, actor: str, note: str) -> dict[str, Any]:

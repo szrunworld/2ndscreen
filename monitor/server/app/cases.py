@@ -23,10 +23,9 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from fastapi import APIRouter, Path, Query
+from monitor_contracts import CaseStage, IllegalTransition, require_transition
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.json_schema import SkipJsonSchema
-
-from monitor_contracts import CaseStage, IllegalTransition, require_transition
 
 from .commands import CommandRecord, DateTimeStr, ManualAction, manual_action_record
 from .db import canonical_json, to_db_time, wire_time
@@ -423,7 +422,12 @@ class CaseService:
             now = self._now()
             reason = reason if to == CaseStage.NEEDS_HUMAN.value else None
             ok_ = self.repo.set_stage(
-                case_id, row.stage, to, reason, now, TimelineRow(case_id, now, "stage_change", ref_id, summary, row.stage, to)
+                case_id,
+                row.stage,
+                to,
+                reason,
+                now,
+                TimelineRow(case_id, now, "stage_change", ref_id, summary, row.stage, to),
             )
             if not ok_:
                 raise StageNotAllowed("流程阶段已被并发修改")
@@ -448,7 +452,9 @@ class CaseService:
                 self.repo.update(case_id, self._now(), needs_human_reason=reason)
                 self.note(case_id, "stage_change", ref_id, summary)
                 return True
-            return self.try_transition(case_id, CaseStage.NEEDS_HUMAN.value, ref_id=ref_id, summary=summary, reason=reason)
+            return self.try_transition(
+                case_id, CaseStage.NEEDS_HUMAN.value, ref_id=ref_id, summary=summary, reason=reason
+            )
 
     def note(self, case_id: str, type_: str, ref_id: str, summary: str) -> None:
         self.repo.add_timeline(TimelineRow(case_id, self._now(), type_, ref_id, summary))
@@ -480,9 +486,7 @@ class CaseService:
             ):
                 # new_application / greeted 没有直达 resume_linked 的边，先经 resume_received
                 if row.stage in (CaseStage.NEW_APPLICATION.value, CaseStage.GREETED.value):
-                    self.transition(
-                        case_id, CaseStage.RESUME_RECEIVED.value, ref_id=doc_id, summary="收到简历邮件"
-                    )
+                    self.transition(case_id, CaseStage.RESUME_RECEIVED.value, ref_id=doc_id, summary="收到简历邮件")
                 self.transition(case_id, CaseStage.RESUME_LINKED.value, ref_id=doc_id, summary="简历已关联")
             return True
 
@@ -608,9 +612,7 @@ class ResumeDocument(BaseModel):
     doc_id: str
     variant: Literal["original", "branded"]
     derived_from: str | None
-    mail_message_id: (
-        Annotated[str, contract_ref("./schemas/mail_message.json#/properties/mail_message_id")] | None
-    )
+    mail_message_id: Annotated[str, contract_ref("./schemas/mail_message.json#/properties/mail_message_id")] | None
     case_id: str | None
     link_status: Literal["linked", "needs_manual", "unlinked"]
     link_method: Literal["reliable_id", "resume_request", "name_match", "manual", "none"]

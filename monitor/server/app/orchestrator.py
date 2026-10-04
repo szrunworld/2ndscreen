@@ -192,8 +192,9 @@ class Orchestrator:
         action, status = command["action"], msg.status
         mode = command.get("execution_mode", "execute")
         reason = result.get("reason")
-        text = f"{ACTION_TEXT.get(action, action)}{'（重新检查）' if mode == 'verify_only' else ''}：" + RESULT_TEXT.get(
-            status, status
+        text = (
+            f"{ACTION_TEXT.get(action, action)}{'（重新检查）' if mode == 'verify_only' else ''}："
+            + RESULT_TEXT.get(status, status)
         )
         if reason:
             text += f"（{reason}）"
@@ -342,9 +343,7 @@ class Orchestrator:
                     )
                 return None
             if action == "send_greeting":
-                payload = {
-                    "text": render_greeting(policy["greeting"]["template"], case.candidate_name, case.job_title)
-                }
+                payload = {"text": render_greeting(policy["greeting"]["template"], case.candidate_name, case.job_title)}
             else:
                 payload = {}
             command = self.build_command(case, action, payload, depends_on=case.next_depends_on)
@@ -354,7 +353,10 @@ class Orchestrator:
                 log.warning("生成 %s 失败：%s %s", action, exc.code, exc)
                 self.cases.update(case_id, next_action=None, next_depends_on=None, blocked_reason=None)
                 self.cases.to_needs_human(
-                    case_id, "command_create_failed", ref_id=case_id, summary=f"{ACTION_TEXT[action]}指令生成失败：{exc}"
+                    case_id,
+                    "command_create_failed",
+                    ref_id=case_id,
+                    summary=f"{ACTION_TEXT[action]}指令生成失败：{exc}",
                 )
                 return None
             self.cases.update(case_id, next_action=None, next_depends_on=None, blocked_reason=None)
@@ -448,4 +450,11 @@ def with_background_tick(orch: Orchestrator, inner: Callable[[Any], Any]) -> Cal
     return lifespan
 
 
-__all__ = ["AUTO_ACTIONS", "Orchestrator", "OrchestratorSettings", "StageNotAllowed", "new_command_id", "with_background_tick"]
+__all__ = [
+    "AUTO_ACTIONS",
+    "Orchestrator",
+    "OrchestratorSettings",
+    "StageNotAllowed",
+    "new_command_id",
+    "with_background_tick",
+]

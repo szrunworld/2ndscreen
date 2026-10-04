@@ -72,12 +72,14 @@ class OverviewService:
             (start, end, *acct),
         )
         resume_received = self._count(
-            f"""SELECT COUNT(DISTINCT l.case_id) FROM case_resume_links l JOIN recruitment_cases c ON c.case_id = l.case_id
+            f"""SELECT COUNT(DISTINCT l.case_id) FROM case_resume_links l
+                JOIN recruitment_cases c ON c.case_id = l.case_id
                 WHERE l.linked_at >= ? AND l.linked_at < ?{acct_sql}""",
             (start, end, *acct),
         )
         resume_parsed = self._count(
-            f"""SELECT COUNT(DISTINCT l.case_id) FROM case_resume_links l JOIN recruitment_cases c ON c.case_id = l.case_id
+            f"""SELECT COUNT(DISTINCT l.case_id) FROM case_resume_links l
+                JOIN recruitment_cases c ON c.case_id = l.case_id
                 WHERE l.parsed_at IS NOT NULL AND l.parsed_at >= ? AND l.parsed_at < ?{acct_sql}""",
             (start, end, *acct),
         )

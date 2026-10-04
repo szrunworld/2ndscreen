@@ -20,10 +20,9 @@ from datetime import UTC, date, datetime, time, timedelta
 from typing import TYPE_CHECKING, Annotated, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import monitor_contracts as mc
 from fastapi import APIRouter, Body, Depends, Header, Request, Security
 from fastapi.security import HTTPAuthorizationCredentials
-
-import monitor_contracts as mc
 from monitor_contracts import check
 
 from .db import canonical_json, to_db_time, wire_time
@@ -117,9 +116,7 @@ def policy_errors(body: Any) -> list[dict[str, str]]:
         return errors
     for action, cap in HARD_DAILY_CAPS.items():
         if body["daily_limits"][action] > cap:
-            errors.append(
-                _err(f"daily_limits.{action}", f"不得高于 Monitor 本地硬上限 {cap}", "exceeds_hard_limit")
-            )
+            errors.append(_err(f"daily_limits.{action}", f"不得高于 Monitor 本地硬上限 {cap}", "exceeds_hard_limit"))
     for action, floor in MIN_INTERVAL_FLOORS.items():
         if body["min_interval_seconds"][action] < floor:
             errors.append(
@@ -147,9 +144,7 @@ def in_work_hours(policy: Mapping[str, Any], at: datetime) -> bool:
     local = at.astimezone(policy_zone(policy))
     hhmm = local.strftime("%H:%M")
     weekday = local.isoweekday()
-    return any(
-        weekday in w["days"] and w["start"] <= hhmm < w["end"] for w in policy["work_hours"]["windows"]
-    )
+    return any(weekday in w["days"] and w["start"] <= hhmm < w["end"] for w in policy["work_hours"]["windows"])
 
 
 def job_in_scope(policy: Mapping[str, Any], job_title: str) -> bool:
@@ -442,7 +437,9 @@ def put_policy(
     def handle() -> tuple[int, Any]:
         return 200, ctx.policies.put(account_id, body, if_match, actor)
 
-    resp = run_idempotent(ctx, request, f"console:{actor}", idempotency_key, {"if_match": if_match, "body": body}, handle)
+    resp = run_idempotent(
+        ctx, request, f"console:{actor}", idempotency_key, {"if_match": if_match, "body": body}, handle
+    )
     if 200 <= resp.status_code < 300:
         resp.headers["ETag"] = str(json.loads(resp.body)["policy_version"])
     return resp
