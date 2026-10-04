@@ -1,7 +1,8 @@
 """控制台总览 GET /overview：各项分别计数，不合并成"成功数"（方案第十节第 1 条）。
 
 口径（统计日按账户策略时区；不指定账户时按默认时区 Asia/Shanghai）：
-- new_applications：当天建立的流程数（新投递；重复观察合并到同一流程，不重复计）；
+- new_applications：当天建立、且有新投递事件（application_observed）的流程数；重复观察合并到同一流程，
+  不重复计；只因会话歧义（conversation_ambiguous）建立的流程不计入，只计入待人工处理；
 - resume_requested：当天进入 resume_requested 的流程数（指令成功或人工确认）；
 - resume_received：当天有简历关联到的流程数（邮件到达并关联，任务 G 调用 link_resume）；
 - resume_parsed：当天解析完成的流程数；
@@ -62,7 +63,9 @@ class OverviewService:
         acct: tuple[Any, ...] = () if account_id is None else (account_id,)
 
         new_applications = self._count(
-            f"SELECT COUNT(*) FROM recruitment_cases c WHERE c.created_at >= ? AND c.created_at < ?{acct_sql}",
+            f"""SELECT COUNT(*) FROM recruitment_cases c WHERE c.created_at >= ? AND c.created_at < ?{acct_sql}
+                  AND EXISTS (SELECT 1 FROM events e
+                              WHERE e.case_id = c.case_id AND e.kind = 'application_observed')""",
             (start, end, *acct),
         )
         resume_requested = self._count(

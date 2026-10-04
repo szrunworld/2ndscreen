@@ -213,6 +213,9 @@ class CommandService:
         - depends_on 必须是已存在、同一账户的指令，否则 CommandCreateError(dependency_not_found)。
         - 按 command_id 幂等：相同内容重复创建返回已有记录；内容不同抛 CommandCreateError(command_conflict)。
         - device_id 指定只允许某台设备领取；None 表示该账户下任何已确认绑定的设备。
+        - 在 ``store.transaction()`` 块内调用时，插入加入调用方事务：调用方抛异常时指令一起回滚
+          （F2 用它让"创建指令"与"更新流程"同一事务提交）。
+        - issued_at 晚于当前时间的指令，在 issued_at 之前不会被领取。
         """
         data = dict(command)
         errors = check("command", data)

@@ -101,12 +101,26 @@ class Orchestrator:
     # -- 订阅入口 -------------------------------------------------------------
 
     def handle(self, message: BusMessage) -> None:
-        with self.cases.lock:
-            if isinstance(message, EventReceived):
-                self.on_event(message)
-            elif isinstance(message, CommandResultRecorded):
-                self.on_result(message)
-            self.tick()
+        """总线入口：一条消息的全部处理在一个事务里完成（建 case、生成指令、改阶段、写时间线），
+        失败整体回滚，留给 tick() 的恢复步骤重做。处理是幂等的：已处理过的消息直接跳过。"""
+        if isinstance(message, EventReceived):
+            self.apply_event(message)
+        elif isinstance(message, CommandResultRecorded):
+            self.apply_result(message)
+        self.tick()
+
+    def apply_event(self, msg: EventReceived) -> str | None:
+        with self.cases.atomic():
+            row = self.ctx.store.get_event(msg.event_id)
+            if row is not None and row.case_id is not None:
+                return row.case_id  # 已处理（例如恢复步骤先做了）
+            return self.on_event(msg)
+
+    def apply_result(self, msg: CommandResultRecorded) -> None:
+        with self.cases.atomic():
+            if msg.case_id is not None and self.cases.repo.result_applied(msg.case_id, msg.command_id):
+                return  # 已处理
+            self.on_result(msg)
 
     # -- 事件 -----------------------------------------------------------------
 
@@ -212,13 +226,14 @@ class Orchestrator:
 
     def _human(self, case: CaseRow, command_id: str, status: str, action: str) -> None:
         reason = "unknown_result" if status == "unknown" else f"command_{status}"
-        self.cases.update(case.case_id, next_action=None, next_depends_on=None, blocked_reason=None)
-        self.cases.to_needs_human(
-            case.case_id,
-            reason,
-            ref_id=command_id,
-            summary=f"{ACTION_TEXT[action]}结果{RESULT_TEXT.get(status, status)}，不自动推进、不重发，转人工",
-        )
+        with self.cases.atomic():
+            self.cases.update(case.case_id, next_action=None, next_depends_on=None, blocked_reason=None)
+            self.cases.to_needs_human(
+                case.case_id,
+                reason,
+                ref_id=command_id,
+                summary=f"{ACTION_TEXT[action]}结果{RESULT_TEXT.get(status, status)}，不自动推进、不重发，转人工",
+            )
 
     def _after_greeting(self, case: CaseRow, command_id: str, status: str) -> None:
         if status in DONE_STATUSES:
@@ -293,8 +308,10 @@ class Orchestrator:
         *,
         depends_on: str | None = None,
         execution_mode: str = "execute",
+        issued_at: datetime | None = None,
     ) -> dict[str, Any]:
-        now = self._now()
+        """issued_at 默认现在；晚于现在时，领取接口在该时间之前不下发这条指令。"""
+        now = issued_at or self._now()
         return {
             "command_id": new_command_id(),
             "workflow_id": case.case_id,
@@ -321,7 +338,7 @@ class Orchestrator:
 
     def advance(self, case_id: str) -> dict[str, Any] | None:
         """尝试执行 case 上挂起的下一步；策略不允许时记录原因并保留。返回生成的 CommandRecord。"""
-        with self.cases.lock:
+        with self.cases.atomic():
             case = self.cases.get(case_id)
             if case is None or case.next_action is None:
                 return None
@@ -365,12 +382,51 @@ class Orchestrator:
     # -- 定时推进 -------------------------------------------------------------
 
     def tick(self) -> None:
-        """补发被挂起的自动步骤；未领取就过期的自动指令转人工；求简历后超时未收到邮件转人工。"""
-        with self.cases.lock:
-            for case in self.cases.repo.cases_with_next_action():
-                self.advance(case.case_id)
-            self._expire_unclaimed()
-            self._resume_timeouts()
+        """定时推进，每一项各自一个事务，单项失败只记日志、不影响其他项：
+
+        1. 恢复：重做崩溃或异常时没处理完的新投递事件与指令结果（见 recover）；
+        2. 补发被挂起的自动步骤；
+        3. 未领取就过期的自动指令转人工；求简历后超时未收到邮件转人工。
+        """
+        self.recover()
+        for case in self.cases.repo.cases_with_next_action():
+            self._guarded(self.advance, case.case_id)
+        self._guarded(self._expire_unclaimed)
+        self._guarded(self._resume_timeouts)
+
+    def _guarded(self, fn: Callable[..., Any], *args: Any) -> None:
+        try:
+            fn(*args)
+        except Exception:
+            log.exception("编排步骤 %s 失败，已回滚，下次 tick 重试", getattr(fn, "__name__", fn))
+
+    def recover(self) -> int:
+        """重做没处理完的消息，返回重做条数。
+
+        事件与结果由 F1 先提交、再经总线投递给本模块；进程在两者之间崩溃、或处理时抛异常（事务回滚）
+        都会留下"已落库但未处理"的记录。判定依据与处理写在同一个事务里，所以不会重复处理：
+        - 新投递 / 会话歧义事件：处理后一定关联到 case（events.case_id 非空）；
+        - 指令结果：处理后一定有一条该指令的 command_result 时间线。
+        """
+        done = 0
+        for row in self.cases.repo.unprocessed_events():
+            record = self.ctx.events.get(row.event_id)
+            assert record is not None
+            msg = EventReceived(row.event_id, row.kind, row.account_id, row.device_id, record)
+            try:
+                self.apply_event(msg)
+                done += 1
+            except Exception:
+                log.exception("恢复事件 %s 失败", row.event_id)
+        for row in self.cases.repo.unapplied_results():
+            assert row.result is not None
+            msg = CommandResultRecorded(row.command_id, row.case_id, row.server_status, self.ctx.commands.record(row))
+            try:
+                self.apply_result(msg)
+                done += 1
+            except Exception:
+                log.exception("恢复指令结果 %s 失败", row.command_id)
+        return done
 
     def _expire_unclaimed(self) -> None:
         now = to_db_time(self._now())
@@ -415,6 +471,7 @@ class Orchestrator:
         self._stop.clear()
 
         def loop() -> None:
+            self._guarded(self.tick)  # 启动时先做一次（含崩溃恢复）
             while not self._stop.wait(self.settings.tick_interval_seconds):
                 try:
                     self.tick()

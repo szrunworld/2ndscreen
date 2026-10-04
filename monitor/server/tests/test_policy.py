@@ -269,3 +269,28 @@ def test_gate_reasons(h: Harness):
 
 def test_version_none_for_unknown_account(h: Harness):
     assert h.ctx.policies.version("acct_nobody") is None
+
+
+def test_next_window_start():
+    from app.policy import next_window_start
+
+    p = base()  # 周一至周五 09:00–18:00（上海）
+    monday = datetime(2026, 10, 5, 2, 0, tzinfo=UTC)  # 周一 10:00，时段内
+    assert next_window_start(p, monday) == monday
+    assert next_window_start(p, NOW) == datetime(2026, 10, 5, 1, 0, tzinfo=UTC)  # 周日 → 周一 09:00
+    friday_evening = datetime(2026, 10, 9, 11, 0, tzinfo=UTC)  # 周五 19:00 → 下周一 09:00
+    assert next_window_start(p, friday_evening) == datetime(2026, 10, 12, 1, 0, tzinfo=UTC)
+    p["work_hours"]["windows"] = [
+        {"days": [7], "start": "14:00", "end": "15:00"},
+        {"days": [7], "start": "10:00", "end": "11:00"},
+    ]
+    assert next_window_start(p, NOW) == datetime(2026, 10, 4, 2, 0, tzinfo=UTC)  # 同一天更早的窗口优先
+    p["work_hours"]["windows"] = []
+    assert next_window_start(p, NOW) is None
+
+
+def test_gate_can_skip_work_hours(h: Harness):
+    h.ready_device()
+    p = auto_policy(h, work_hours={"timezone": "Asia/Shanghai", "windows": []})
+    assert h.ctx.policies.gate(p, "request_contact_exchange").reason == "outside_work_hours"
+    assert h.ctx.policies.gate(p, "request_contact_exchange", check_work_hours=False).allowed
