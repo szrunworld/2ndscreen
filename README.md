@@ -306,6 +306,53 @@ claude mcp add --transport stdio 2ndscreen -- 2ndscreen mcp
 Any MCP client works: point it at `2ndscreen mcp` (use the absolute path
 if `2ndscreen` is not on its PATH).
 
+The `task_*` tools below are served the same way.
+
+## Skill tasks
+
+`2ndscreen task` runs a whole skill task in the background: one command
+starts it, and a worker process goes on after the command exits, driving
+the app on an agent screen of a side instance
+(`~/Library/Caches/2ndscreen/boss.sock`, or `$SECONDSCREEN_SOCKET`).
+The first skill is `boss.collect-resumes` (`skills/boss-resumes/SKILL.md`):
+save the online resumes of candidates already in BOSS直聘's conversations
+for a job, read-only.
+
+```bash
+2ndscreen task run boss.collect-resumes --job "前端工程师" --limit 20 \
+    --output "$HOME/招聘/前端" --account hr-zhang
+2ndscreen task status TASK_ID          # counts, phase, why it waits, model use
+2ndscreen task pause|resume|cancel|artifacts TASK_ID
+2ndscreen task bind-account TASK_ID hr-zhang
+```
+
+Every command prints one JSON line. `--account` is the user's own name for
+the BOSS直聘 account that is logged in; the runtime cannot read it from the
+window and never makes one up, and a task without one waits until
+`bind-account` names it. pause and cancel report `paused`/`cancelled` only
+once the worker has really stopped acting. The task ledger, the worker's log
+and its records live in `~/Library/Application Support/2ndscreen/tasks`
+(`$SECONDSCREEN_TASKS_DIR`), readable by the user only. MCP has the same
+commands as `task_run`, `task_status`, `task_pause`, `task_resume`,
+`task_cancel`, `task_artifacts`, `task_inspect_procedure` and
+`task_bind_account`.
+
+The runtime (`packages/task-runtime`) ships inside the app with its own
+Node, pinned by SHA-256 in `scripts/fetch-node.sh`; nothing comes from npx,
+the PATH or the working directory. `scripts/bundle-app.sh` puts it in
+`Contents/Resources/task-runtime`, next to the CLI of the same build in
+`Contents/Resources/bin/2ndscreen` (link that one into your PATH). The CLI
+finds the runtime in the app it belongs to, or in the running 2ndscreen.app.
+To install it elsewhere:
+
+```bash
+./scripts/install-task-runtime.sh /some/dir     # default build/task-runtime
+export SECONDSCREEN_TASK_RUNTIME=/some/dir
+```
+
+The old reply assistant (`agents/boss`) and task runs share one lease on
+BOSS直聘 in the task ledger, so they never act on it at the same time.
+
 ## iPhone
 
 2ndscreen runs iPhone Mirroring on an agent screen and lets the vision

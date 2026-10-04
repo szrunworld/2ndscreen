@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { chmod, mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -187,14 +187,15 @@ test('MCP lists the task tools beside the old ones', { skip }, async () => {
   const tools = new Map<string, any>(list!.result.tools.map((t: any) => [t.name, t]));
   for (const old of ['screen_create', 'screen_list', 'screen_destroy', 'screen_resize', 'app_launch', 'window_move', 'window_release',
     'screenshot', 'state', 'click', 'type', 'key', 'scroll', 'drag']) assert.ok(tools.has(old), old);
-  assert.equal(tools.size, 14 + 7);
+  assert.equal(tools.size, 14 + 8);
   const run = tools.get('task_run');
   assert.deepEqual(run.inputSchema.required, ['skill_id', 'job', 'limit', 'output']);
   assert.deepEqual(Object.keys(run.inputSchema.properties).sort(),
-    ['analysis', 'browse_limit', 'budget', 'deadline', 'job', 'keep_window', 'limit', 'mode', 'output', 'skill_id', 'source', 'take_over']);
+    ['account', 'analysis', 'browse_limit', 'budget', 'deadline', 'job', 'keep_window', 'limit', 'mode', 'output', 'skill_id', 'source', 'take_over']);
   for (const name of ['task_status', 'task_pause', 'task_resume', 'task_cancel', 'task_artifacts'])
     assert.deepEqual(tools.get(name).inputSchema.required, ['task_id'], name);
   assert.deepEqual(tools.get('task_inspect_procedure').inputSchema.required, ['procedure_id']);
+  assert.deepEqual(tools.get('task_bind_account').inputSchema.required, ['task_id', 'account']);
 });
 
 test('MCP task tools run the same CLI and refuse loose arguments', { skip }, async () => {
@@ -210,6 +211,10 @@ test('MCP task tools run the same CLI and refuse loose arguments', { skip }, asy
     call(6, 'task_run', { skill_id: 's', job: 'x', limit: 3, output: '/o', take_over: 1 }),
     call(7, 'task_run', { skill_id: 's', job: 'x', limit: 3, output: 'relative' }),
     call(8, 'task_inspect_procedure', { procedure_id: 'p-1' }),
+    call(9, 'task_bind_account', { task_id: 'task-9', account: 'hr-zhang' }),
+    call(10, 'task_bind_account', { task_id: 'task-9', account: 'a:b' }),
+    call(11, 'task_run', { skill_id: 's', job: 'x', limit: 3, output: '/o', account: 7 }),
+    call(12, 'task_run', { skill_id: 's', job: 'x', limit: 3, output: '/o', account: 'hr-zhang' }),
   ], env);
   const text = (i: number) => JSON.parse(replies[i]!.result.content[0].text.trim());
   assert.equal(replies[0]!.result.isError, false, replies[0]!.result.content[0].text);
@@ -228,4 +233,65 @@ test('MCP task tools run the same CLI and refuse loose arguments', { skip }, asy
   assert.equal(text(6).error.code, 'invalid_input');
   assert.match(text(6).error.message, /outputDir must be an absolute path/);
   assert.equal(text(7).error.code, 'not_found');
+  // The synthetic control cannot bind accounts: the runtime refuses instead of dropping the account.
+  assert.equal(text(8).error.code, 'capability_missing');
+  assert.equal(text(8).command, 'bind-account');
+  assert.equal(text(9).error.code, 'invalid_input');
+  assert.match(text(9).error.message, /ACCOUNT_KEY/);
+  assert.match(text(10).error.message, /account must be a string/);
+  assert.equal(text(11).error.code, 'capability_missing');
+  assert.equal(text(11).command, 'run');
+});
+
+// The whole path with nothing synthetic but the ledger's folder: MCP → this
+// CLI → execv into the installed runtime's own node → a detached worker.
+// The socket names no running 2ndscreen and the app named cannot start, so
+// the worker can only report that the desktop is unavailable; nothing
+// touches a screen.
+const INSTALLED = process.env.TASK_RUNTIME_UNDER_TEST;
+const skipInstalled = skip || (INSTALLED ? false : 'set TASK_RUNTIME_UNDER_TEST to an installed runtime to run');
+
+test('MCP runs a task through the installed runtime and its background worker', { skip: skipInstalled }, async () => {
+  const root = await mkdtemp(join('/tmp', 'a7-mcp-'));
+  const env = {
+    SECONDSCREEN_TASK_RUNTIME: INSTALLED,
+    SECONDSCREEN_NODE: undefined,
+    SECONDSCREEN_TASKS_DIR: join(root, 'tasks'),
+    SECONDSCREEN_SOCKET: join(root, 'none.sock'),
+    // Never the real app, even when the runtime under test sits inside one: no side instance may start.
+    SECONDSCREEN_APP: join(root, 'no-such.app'),
+  };
+  const call = (id: number, name: string, args: object) => ({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } });
+  const text = (reply: Record<string, any>) => JSON.parse(reply.result.content[0].text.trim());
+  const [submitted] = await mcp([call(1, 'task_run', { skill_id: 'boss.collect-resumes', job: '前端工程师', limit: 2, output: join(root, 'out'), account: 'hr-zhang' })], env);
+  assert.equal(submitted!.result.isError, false, submitted!.result.content[0].text);
+  const taskId: string = text(submitted!).result.taskId;
+  // The worker finds no desktop and stops to wait: the task neither runs on blindly nor claims success.
+  let task: Record<string, any> = {};
+  for (let i = 0; i < 100; i++) {
+    const [s] = await mcp([call(2, 'task_status', { task_id: taskId })], env);
+    task = text(s!).result.task;
+    if (task.status !== 'queued' && task.status !== 'running') break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  assert.deepEqual(task.account, { platform: 'boss', accountKey: 'hr-zhang', binding: 'explicit' });
+  assert.ok(['waiting_user', 'paused'].includes(task.status), JSON.stringify(task));
+  assert.equal(task.counts.committed, 0);
+  const [cancelled] = await mcp([call(3, 'task_cancel', { task_id: taskId })], env);
+  assert.ok(['cancelling', 'cancelled'].includes(text(cancelled!).result.status));
+  for (let i = 0; i < 50 && task.status !== 'cancelled'; i++) {
+    await new Promise((r) => setTimeout(r, 100));
+    task = text((await mcp([call(5, 'task_status', { task_id: taskId })], env))[0]!).result.task;
+  }
+  assert.equal(task.status, 'cancelled');
+  const [artifacts] = await mcp([call(4, 'task_artifacts', { task_id: taskId })], env);
+  assert.deepEqual(text(artifacts!).result, []);
+  // Stop the worker it started.
+  const actors = await readdir(join(root, 'tasks', 'actors'));
+  for (const name of actors) {
+    const pid = Number(name.split('-')[0]);
+    try {
+      process.kill(pid, 'SIGTERM');
+    } catch {}
+  }
 });

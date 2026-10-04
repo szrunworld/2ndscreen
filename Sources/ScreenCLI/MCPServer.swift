@@ -442,13 +442,14 @@ extension MCPServer {
                 "take_over": described(boolean, "Use a BOSS直聘 window the runtime did not launch"),
                 "keep_window": described(boolean, "Leave the window on the agent screen when the task ends"),
                 "analysis": ["type": "string", "enum": ["off", "on"]],
+                "account": described(string, "The BOSS直聘 account the task works in, a key the user chose such as hr-zhang. The runtime cannot read it from the window; without it the task waits until task_bind_account names it"),
             ],
             required: ["skill_id", "job", "limit", "output"],
             words: { a in
                 var w = ["task", "run"]
                 if let v = a["skill_id"] as? String { w.append(v) }
                 for (name, flag) in [("job", "--job"), ("output", "--output"), ("source", "--source"), ("mode", "--mode"),
-                                     ("deadline", "--deadline"), ("analysis", "--analysis")] {
+                                     ("deadline", "--deadline"), ("analysis", "--analysis"), ("account", "--account")] {
                     if let v = a[name] as? String { w += [flag, v] }
                 }
                 if let v = exactInteger(a["limit"]) { w += ["--limit", String(v)] }
@@ -464,7 +465,7 @@ extension MCPServer {
             },
             check: checker(["skill_id": .string, "job": .string, "limit": .integer, "output": .string, "source": .string,
                             "mode": .string, "browse_limit": .integer, "deadline": .string, "budget": .budget,
-                            "take_over": .boolean, "keep_window": .boolean, "analysis": .string]))]
+                            "take_over": .boolean, "keep_window": .boolean, "analysis": .string, "account": .string]))]
         for (name, verb, text) in simple {
             tools.append(Tool(name: name, description: text, properties: ["task_id": id], required: ["task_id"],
                               words: { a in ["task", verb] + ((a["task_id"] as? String).map { [$0] } ?? []) },
@@ -475,6 +476,12 @@ extension MCPServer {
                           properties: ["procedure_id": described(string, "Procedure ID")], required: ["procedure_id"],
                           words: { a in ["task", "inspect-procedure"] + ((a["procedure_id"] as? String).map { [$0] } ?? []) },
                           check: checker(["procedure_id": .string])))
+        tools.append(Tool(name: "task_bind_account",
+                          description: "Name the BOSS直聘 account of a task that waits for one (waiting_user, account_changed) or is paused, then task_resume it. The key is the user's own name for the account; a task keeps its account for good.",
+                          properties: ["task_id": id, "account": described(string, "Account key, e.g. hr-zhang: letters, digits, '.', '_' or '-'")],
+                          required: ["task_id", "account"],
+                          words: { a in ["task", "bind-account"] + [a["task_id"], a["account"]].compactMap { $0 as? String } },
+                          check: checker(["task_id": .string, "account": .string])))
         return tools
     }()
 

@@ -20,9 +20,16 @@ export class Boss {
     readonly pid: number,
     readonly windowId?: number,
     readonly cli = process.env.SECONDSCREEN_CLI || '2ndscreen',
+    /** Throws when this process may no longer act on BOSS直聘 (its lease is gone). */
+    readonly fence: () => void = () => {},
   ) {}
 
   private run(words: string[]): Promise<Record<string, any>> {
+    try {
+      this.fence();
+    } catch (error) {
+      return Promise.reject(new BossError((error as Error).message));
+    }
     const target = ['--screen', this.screen, '--pid', String(this.pid)];
     if (this.windowId !== undefined) target.push('--window-id', String(this.windowId));
     return new Promise((resolve, reject) => {
