@@ -8,6 +8,8 @@
 | A2 | 契约 0.2.0 审查修正（写操作标志拆分、账户不可读、定位器语义） | ctx_6b7c4980f328（已释放） | monitor-A2 | 已合（contracts 191 tests）；合并后 client/core 41 个测试待 D2b 适配 | dadf00b | — |
 | D2b | 管线适配契约 0.2.0 + 硬上限 | 已释放 | monitor-D2b | 已合（9d74827）；全量 703 tests | 0c4f3be | 执行中取消需另一线程调 pipeline.cancel（→ J）；崩溃恢复 unknown 时 outbound 保守取 true |
 | A3 | 契约 0.3.0：邮箱路线与搜索收敛 | 已释放 | monitor-A3 | 已合（fbf6f3a，contracts 266 tests）；A3b 补充中；client/server 适配由 X 处理 | 76e93e8 | — |
+| A3b | 契约 0.3.1（换微信阶段、mail 服务字段） | ctx_8843cb3ab30c / monitor-A3 | monitor-A3 | 进行 | — | — |
+| X | client/server 适配 0.3.0 | ctx_749e43c3477a / monitor-X | monitor-X | 进行 | — | — |
 | R | 品牌化简历渲染 | — | — | 未派（待用户模板与 logo、N 邮件格式） | — | — |
 | B | 只读可行性验证与夹具 | ctx_1b25ee64eab9（已释放） | monitor-B | 已合（898edbd） | 201001d | 登录/二维码、新招呼首次打开、电话待同意/已交换/已拒绝、邮件转发内容、搜索输入后结果 → 留给 N/K |
 | C | Driver 适配器 | ctx_3dfbecec466d（已释放） | monitor-C | 已合（ecfe9da；client 入工作区 + relock，contracts+client 351 tests） | ec6aed9 | 定位器 text 同时匹配 label/value（比契约宽），0.2.0 契约里追认；CliDriver 未在 BOSS 上真机跑过 → N |
@@ -57,3 +59,9 @@ Run：run_7d52e82ce7ed。分支 monitor-v1（a12a931，自 szrunworld/ss-runtime
 10. ~~邮箱~~ 已决定（2026-10-04）：cv@remotedesk.io，公司邮件服务 mail（remotedesk-resend）的公共邮箱；Monitor 订阅 mail.ready + integration key 取信；保留 30 天由 mail 留存任务执行，Monitor 不逐封删除。待办：管理员建 cv@ 公共邮箱（retention_days=30）、webhook 订阅与 API key；BOSS 后台把收简历邮箱改为 cv@；是否同意 G0 跨仓修改。
 9. 任务 R 需要：公司简历模板（Word/PDF/HTML 样例均可）、logo 文件、字段取舍（是否含联系方式、是否去掉平台字样）。
 8. ~~搜索页问候按钮~~ 已决定（2026-10-04）：v1 去掉，搜索只返回快照。
+
+## H1 接口请求裁决
+
+- 问候前若聊天区已有完全相同的我方消息 → skipped_precondition/precondition_already_done（避免重复发送）：同意。
+- Driver 层过滤附件 PDF 预览子树：同意，作为 C 的后续小任务排队（目前由 actions/common.py 在动作层过滤）。
+- hints 不随时间变化：E/F2 生成 hints 时只用稳定字段（岗位、会话入口），不用时间或未读数。
