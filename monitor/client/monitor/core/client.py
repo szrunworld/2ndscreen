@@ -27,6 +27,7 @@ from uuid import UUID
 
 import httpx
 from monitor_contracts import (
+    AccountBinding,
     CommandModel,
     CommandResult,
     ContractValidationError,
@@ -80,6 +81,10 @@ class HeartbeatAck:
     policy_version: int | None
     cancellations: tuple[UUID, ...]
     account_confirmed: bool | None = None
+    # 契约 0.3.3：服务端记录的、控制台确认的绑定（未绑定为 None）。binding_reported=False 表示
+    # 响应里根本没有这个字段（0.3.3 之前的服务端），此时设备不据此改动本机绑定。
+    account_binding: AccountBinding | None = None
+    binding_reported: bool = False
 
 
 @dataclass(frozen=True)
@@ -247,6 +252,8 @@ class CommandClient:
             policy_version=body.get("policy_version"),
             cancellations=tuple(UUID(c) for c in body.get("cancellations", [])),
             account_confirmed=body.get("account_confirmed"),
+            account_binding=_parse_binding(body.get("account_binding")),
+            binding_reported="account_binding" in body,
         )
 
     def claim(self, *, account_id: str, max_commands: int = 1, wait_seconds: int = LONG_POLL_MAX_SECONDS) -> ClaimResponse:
@@ -334,6 +341,14 @@ class CommandClient:
     def get_policy(self, account_id: str) -> Policy:
         resp = self._request("GET", f"/accounts/{account_id}/policy")
         return validate_policy(resp.json())
+
+
+def _parse_binding(raw: Any) -> AccountBinding | None:
+    if raw is None:
+        return None
+    return AccountBinding(
+        account_id=raw["account_id"], bound_at=_parse_time(raw["bound_at"]), confirmed_by=raw["confirmed_by"]
+    )
 
 
 def _problem(resp: httpx.Response) -> dict[str, Any]:

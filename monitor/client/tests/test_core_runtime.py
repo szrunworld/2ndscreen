@@ -648,3 +648,232 @@ def test_suspend_does_not_busy_loop_on_deferred_command():
     rt.pipeline.wake_at = env.clock.now() - timedelta(seconds=5)  # 有被推迟且已到期的指令
     idle = rt.run_once()
     assert idle > 0
+
+
+# ---------------------------------------------------------------------------
+# 绑定以服务端为准（契约 0.3.3，缺陷 M-1）
+# ---------------------------------------------------------------------------
+
+
+def test_binding_from_heartbeat_ack_is_written_locally_then_claims():
+    env = make_env(bind=False, observer=ScriptedObserver())
+    rt = env.runtime
+    env.run(2)
+    assert rt.account_id is None and env.server.count("claim") == 0
+    c = env.cmd()
+    env.server.enqueue(c)
+    env.server.bind(ACCOUNT, confirmed_by="ops_li")
+    env.clock.advance(31)
+    env.run()  # 心跳回执带绑定：写入本机，要求重建基线
+    st = env.ledger.load_state()
+    assert st.account_binding is not None and st.account_binding.account_id == ACCOUNT
+    assert st.account_binding.confirmed_by == "ops_li"
+    assert rt.account_id == ACCOUNT
+    assert rt.state.needs_baseline is False  # 同一轮里已用未建立的基线观察（重建）
+    assert any(not b.established and b.account_id == ACCOUNT for b in env.observer.calls)
+    env.run_until(lambda: c["command_id"] in env.server.results, advance=1)
+    env.clock.advance(31)
+    env.run()
+    assert env.server.heartbeats[-1]["account_id"] == ACCOUNT and rt.account_confirmed is True
+
+
+def test_same_binding_in_ack_changes_nothing():
+    env = make_env(observer=ScriptedObserver())
+    rt = env.runtime
+    before = env.ledger.load_state().account_binding
+    gen = rt.state.baseline.generation
+    for _ in range(3):
+        env.run()
+        env.clock.advance(31)
+    assert env.ledger.load_state().account_binding == before
+    assert rt.state.baseline.generation == gen and rt.state.needs_baseline is False
+
+
+def test_account_change_rebaselines_before_any_execution():
+    env = make_env(observer=ScriptedObserver())
+    rt = env.runtime
+    env.run()
+    observes = len(env.observer.calls)
+    # 本机已入账一条新账户的指令（例如换绑前服务端已下发），换绑后必须先重建基线再执行
+    from monitor_contracts import validate_command
+
+    other = env.cmd(account_id="acct_other")
+    env.server.bind("acct_other", confirmed_by="ops_li")
+    env.server.policy = make_policy(account_id="acct_other")
+    env.clock.advance(31)
+    rt._next_observe = env.clock.now() + timedelta(hours=1)  # 观察周期还没到：只能因 needs_baseline 而观察
+    calls_at_switch: list[int] = []
+    orig_run = env.handlers["send_greeting"]._run
+
+    def run(c, d, x):
+        calls_at_switch.append(len(env.observer.calls))
+        return orig_run(c, d, x)
+
+    env.handlers["send_greeting"]._run = run
+    # 换绑前本机已入账一条新账户的指令；本轮心跳换绑后，执行要等基线重建
+    rt.handle_claim(
+        ClaimResponse(commands=(validate_command(other),), cancellations=(), lease_seconds=60, server_time=env.clock.now())
+    )
+    env.run()  # 心跳：换账户 → 不执行 → 因 needs_baseline 观察
+    assert rt.account_id == "acct_other"
+    assert env.handlers["send_greeting"].run_calls == []
+    rebuilt = env.observer.calls[observes]
+    assert rebuilt.established is False and rebuilt.account_id == "acct_other"
+    assert rt.state.baseline.generation == 2 and rt.state.needs_baseline is False
+    env.run_until(lambda: other["command_id"] in env.server.results, advance=1)
+    assert calls_at_switch and calls_at_switch[0] > observes  # 执行发生在重建基线之后
+    assert env.server.results[other["command_id"]]["status"] == "succeeded"
+
+
+def test_binding_revoked_by_server_stops_claiming():
+    env = make_env()
+    rt = env.runtime
+    env.run()
+    assert rt.policy is not None
+    env.server.account_binding = None
+    c = env.cmd()
+    env.server.enqueue(c)
+    claims = env.server.count("claim")
+    for _ in range(3):
+        env.clock.advance(31)
+        env.run()
+    assert rt.account_id is None and env.ledger.load_state().account_binding is None
+    assert rt.policy is None
+    assert env.server.count("claim") == claims and env.server.queue[0]["command_id"] == c["command_id"]
+    assert env.server.heartbeats[-1]["account_id"] is None
+    assert rt.last_error.code == "account_unbound"
+
+
+def test_ack_without_binding_field_keeps_local_binding():
+    """0.3.3 之前的服务端回执没有 account_binding：不能当成"撤销"。"""
+    env = make_env()
+    env.server.report_binding = False
+    env.server.account_binding = None
+    for _ in range(3):
+        env.run()
+        env.clock.advance(31)
+    assert env.runtime.account_id == ACCOUNT
+
+
+def test_console_reconfirm_resumes_account_switched_pause():
+    env = make_env(observer=ScriptedObserver())
+    rt = env.runtime
+    env.run()
+    rt.pause("account_switched", by="monitor")
+    for _ in range(2):
+        env.clock.advance(31)
+        env.run()
+    assert rt.state.paused  # 绑定没变：继续等
+    env.server.bind(ACCOUNT, confirmed_by="ops_li")  # 控制台重新确认（bound_at 变了）
+    env.clock.advance(31)
+    gen = rt.state.baseline.generation
+    env.run()
+    assert rt.state.paused is False and rt.state.baseline.generation == gen + 1  # 恢复并重建基线
+    assert env.ledger.load_state().account_binding.confirmed_by == "ops_li"
+
+
+# ---------------------------------------------------------------------------
+# 退避期间不空转（缺陷 M-2）
+# ---------------------------------------------------------------------------
+
+
+def test_backoff_idle_waits_until_backoff_ends():
+    env = make_env(observer=ScriptedObserver(), max_idle_seconds=600)
+    rt = env.runtime
+    env.run(2)
+    rt._next_observe = env.clock.now() + timedelta(hours=1)
+    for _ in range(5):
+        env.server.fail("heartbeat", 0, times=1)
+    env.clock.advance(31)
+    hb_before = env.server.count("heartbeat")
+    for expected in (1, 2, 4, 8):
+        idle = rt.run_once()  # 心跳失败，进入退避
+        assert rt.backoff.next_at is not None
+        assert idle == pytest.approx(expected)
+        # 退避期内不论跑多少轮都建议等待到退避结束，不再发请求
+        assert rt.run_once() == pytest.approx(expected)
+        env.clock.advance(idle)
+    assert env.server.count("heartbeat") == hb_before + 4
+    env.server._failures.clear()
+    assert rt.run_once() >= 0 and rt.online is True
+
+
+def test_revoked_runtime_does_not_spin():
+    env = make_env(observer=ScriptedObserver())
+    rt = env.runtime
+    env.run(2)
+    rt._next_observe = env.clock.now() + timedelta(hours=1)
+    env.server.token = "rotated_token"
+    env.clock.advance(31)
+    rt.run_once()
+    assert rt.revoked
+    assert rt.run_once() > 0
+
+
+# ---------------------------------------------------------------------------
+# 心跳 4xx 不让进程崩溃（缺陷 M-3）
+# ---------------------------------------------------------------------------
+
+
+def test_heartbeat_4xx_records_error_and_retries_with_backoff():
+    env = make_env()
+    rt = env.runtime
+    env.server.fail("heartbeat", 422, times=2)
+    rt.run_once()  # 不抛异常
+    assert rt.last_error.code == "heartbeat_rejected"
+    assert rt.backoff.failures == 1 and rt.backoff.next_at > env.clock.now()
+    assert env.server.count("claim") == 0
+    env.clock.advance(1)
+    rt.run_once()
+    assert rt.backoff.failures == 2
+    env.clock.advance(2)
+    c = env.cmd()
+    env.server.enqueue(c)
+    env.run_until(lambda: c["command_id"] in env.server.results)
+    assert rt.backoff.failures == 0 and rt.revoked is False
+    # 被拒的那次错误随下一次成功心跳发出
+    assert any((hb["last_error"] or {}).get("code") == "heartbeat_rejected" for hb in env.server.heartbeats)
+
+
+def test_heartbeat_409_pauses_claims_and_execution_until_accepted():
+    env = make_env()
+    rt = env.runtime
+    env.run()  # 上线、取到策略
+    from monitor_contracts import validate_command
+
+    queued = env.cmd()
+    rt.handle_claim(ClaimResponse(commands=(validate_command(queued),), cancellations=(), lease_seconds=60, server_time=env.clock.now()))
+    env.server.fail("heartbeat", 409, times=3)
+    later = env.cmd()
+    env.server.enqueue(later)
+    env.clock.advance(31)
+    rt.run_once()
+    assert rt.contract_incompatible and rt.last_error.code == "contract_incompatible"
+    assert rt.status()["contract_incompatible"] is True
+    claims = env.server.count("claim")
+    for step in (1, 2):
+        idle = rt.run_once()
+        assert idle > 0  # 不空转
+        env.clock.advance(idle)
+        rt.run_once()
+    assert env.handlers["send_greeting"].run_calls == []  # 不执行
+    assert env.server.count("claim") == claims  # 不领取
+    assert rt.revoked is False
+    env.clock.advance(10)
+    env.run_until(lambda: later["command_id"] in env.server.results, advance=1)  # 服务端接受心跳后自动恢复
+    assert rt.contract_incompatible is False
+    assert queued["command_id"] in env.server.results
+
+
+def test_heartbeat_401_stops_and_records_token_revoked():
+    env = make_env()
+    rt = env.runtime
+    env.server.fail("heartbeat", 401, times=1)
+    rt.run_once()
+    assert rt.revoked and rt.last_error.code == "token_revoked"
+    n = len(env.server.requests)
+    for _ in range(3):
+        env.clock.advance(31)
+        rt.run_once()
+    assert len(env.server.requests) == n
+

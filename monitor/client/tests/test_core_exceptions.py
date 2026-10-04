@@ -726,3 +726,44 @@ def test_kill9_with_fixture_fake_driver_clicks_once():
     assert len(fake.writes) == 1
     assert env.server.results[c1["command_id"]]["status"] == "unknown"
     assert env.server.results[c1["command_id"]]["reason"] == "crash_recovery"
+
+
+def _crashing_search(command, driver, ctx):
+    with ctx.outbound():
+        driver.type_text(Locator(text="搜索"), "前端开发")
+    raise SimulatedKill()
+
+
+def test_kill9_search_recovery_confirmed_counts_as_outbound():
+    """契约 0.3.2：搜索的输入与提交是对外动作。复核确认搜索已发生时 outbound=true，并计入搜索的限额。"""
+
+    def verify_done(command, driver, ctx):
+        driver.state()
+        snapshot = {
+            "search_id": command.payload.search_id,
+            "query": command.payload.query,
+            "scope": "current_page",
+            "coverage": "empty_confirmed",
+            "items": [],
+            "captured_at": ctx.clock(),
+        }
+        return ActionResult(status="succeeded", executed_at=ctx.clock(), output={"snapshot": snapshot})
+
+    search = ScriptedHandler("search_candidates", run=_crashing_search, verify=verify_done)
+    env = make_env(handlers=[search], policy=make_policy(allowed_actions=["search_candidates"]))
+    c1 = env.cmd("search_candidates")
+    env.server.enqueue(c1)
+    with pytest.raises(SimulatedKill):
+        env.run_until(lambda: False)
+
+    env.new_runtime()
+    env.run_until(lambda: c1["command_id"] in env.server.results)
+    r1 = _rec(env, c1["command_id"])
+    assert r1.state == CommandState.SUCCEEDED
+    assert r1.result.outbound_action_performed is True and r1.result.externally_visible_side_effect is True
+    assert len(search.run_calls) == 1 and len(env.driver.writes) == 1
+    # 计入限额：紧接着的第二次搜索被最小间隔挡住
+    from monitor.core.limits import check_rate
+
+    d = check_rate("search_candidates", now=env.clock.now(), history=env.ledger.list_commands(), policy=env.runtime.policy)
+    assert d.kind == "min_interval"

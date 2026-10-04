@@ -1,7 +1,8 @@
 """结果里三个"动过界面"标志的唯一出口（契约 0.2.0，contracts.md 第四节）。
 
-- navigation_performed：只改变本机界面的操作（打开会话、切页签、滚动、关闭弹层、在搜索框输入）。
-- outbound_action_performed：对候选人或第三方可见的动作（发送、确认、提交转发、点击求简历/换电话/换微信）。
+- navigation_performed：只改变本机界面的操作（打开会话、切页签、滚动、关闭弹层）。
+- outbound_action_performed：对候选人或第三方可见的动作（发送、确认、提交转发、点击求简历/换电话/换微信；
+  0.3.2 起搜索的输入与提交也算）。
 - externally_visible_side_effect：可能产生了对方可见的副作用；对外动作一定算，打开未读会话产生已读回执也算。
 
 不变式：outbound ⇒ externally_visible。verify_only / 取消 / 限额只针对 outbound。
@@ -47,20 +48,15 @@ def merged(result: ActionResult, *, navigated: bool, outbound_done: bool, verify
     )
 
 
-# 成功本身不包含对外动作的指令：搜索只是导航与在搜索框输入
-_NON_OUTBOUND_SUCCESS = frozenset({"search_candidates"})
-
-
 def success_is_outbound(action: str) -> bool:
-    """崩溃恢复时复核确认"动作已发生"，是否意味着发生过对外动作。"""
-    return action not in _NON_OUTBOUND_SUCCESS
+    """崩溃恢复时复核确认"动作已发生"，是否意味着发生过对外动作。
+
+    契约 0.3.2（用户 2026-10-04 决定）：搜索的输入与提交也算对外动作，所以所有指令都是 True。
+    保留这个函数作为唯一判断点，以后若有"成功不含对外动作"的指令只改这里。
+    """
+    return True
 
 
 def counts_toward_limit(result: CommandResult) -> bool:
-    """这条结果是否计入每日上限与最小间隔。
-
-    对外动作一律计入；搜索没有对外动作，但只要动过界面（导航）也计入，平台对搜索同样限频。
-    """
-    if result.action in _NON_OUTBOUND_SUCCESS:
-        return bool(result.navigation_performed or result.outbound_action_performed)
+    """这条结果是否计入每日上限与最小间隔：只看对外动作（搜索自 0.3.2 起同样按对外动作计）。"""
     return outbound(result)
