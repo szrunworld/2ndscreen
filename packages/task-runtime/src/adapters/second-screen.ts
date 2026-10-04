@@ -545,22 +545,80 @@ export function createSecondScreenAdapter(options: SecondScreenAdapterOptions): 
 const KILL_GRACE_MS = 2_000;
 
 /**
+ * One child the runner started. It leads its own process group, so the
+ * group id is `pid`. Times are from `now` (default Date.now), taken right
+ * around the spawn: the child started after `spawnedAfterMs` and before
+ * `spawnedBeforeMs`.
+ */
+export interface CommandSpawn {
+  pid: number;
+  file: string;
+  spawnedAfterMs: number;
+  spawnedBeforeMs: number;
+}
+
+/**
+ * Optional hooks for a caller that accounts for every process group it
+ * starts (A7's registry announces before calling the runner). Both run
+ * synchronously; a hook that returns a promise counts as having failed.
+ *
+ * - `onSpawn`: as soon as the child has a pid, before the run's promise is
+ *   returned. If it fails, the whole group is killed (SIGKILL), the child
+ *   is reaped, and the run rejects with io; the caller's announcement
+ *   stays unresolved. Not called when the program never started.
+ * - `onSettled`: once, after the child has closed and before the run
+ *   settles. The child's exit says nothing about descendants left in its
+ *   group. If it fails, the run rejects with io (an earlier failure wins).
+ *
+ * Without hooks the runner behaves exactly as before.
+ */
+export interface CommandRunnerOptions {
+  onSpawn?: (spawn: CommandSpawn) => void;
+  onSettled?: (spawn: CommandSpawn) => void;
+  now?: () => number;
+}
+
+/** Call a hook; returns its failure, if any. A promise returned is a failure: hooks are synchronous. */
+function callHook(hook: ((spawn: CommandSpawn) => void) | undefined, spawn: CommandSpawn): Error | undefined {
+  if (!hook) return undefined;
+  try {
+    const returned: unknown = hook(spawn);
+    if (returned && typeof (returned as { then?: unknown }).then === 'function') {
+      (returned as Promise<unknown>).then(undefined, () => undefined);
+      return new Error('the hook returned a promise; spawn hooks must be synchronous');
+    }
+    return undefined;
+  } catch (error) {
+    return error instanceof Error ? error : new Error(String(error));
+  }
+}
+
+/**
  * Runs a program to completion. Non-zero exits resolve with their code. On
  * abort or timeout it sends SIGTERM to the child's whole process group, then
  * SIGKILL after a bounded grace, and settles only once the child has exited.
+ * See CommandRunnerOptions for the spawn hooks.
  */
-export function createCommandRunner(): CommandRunner {
+export function createCommandRunner(runnerOptions: CommandRunnerOptions = {}): CommandRunner {
+  const { onSpawn, onSettled } = runnerOptions;
+  const now = runnerOptions.now ?? Date.now;
   return (file, args, options) =>
     new Promise((resolve, reject) => {
       throwIfAborted(options.signal);
+      const hookError = (which: string, error: Error, spawned: CommandSpawn) =>
+        new RuntimeError('io', `${file}: the ${which} hook failed: ${error.message}`, { pid: spawned.pid, pgid: spawned.pid });
+      const spawnedAfterMs = now();
       // Its own process group, so a stop also reaches anything it started.
       const child = spawn(file, [...args], { env: { ...process.env, ...options.env }, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+      const spawnedBeforeMs = now();
+      const spawned: CommandSpawn | undefined = child.pid !== undefined ? { pid: child.pid, file, spawnedAfterMs, spawnedBeforeMs } : undefined;
       const out: Buffer[] = [];
       const err: Buffer[] = [];
       child.stdout.on('data', (chunk: Buffer) => out.push(chunk));
       child.stderr.on('data', (chunk: Buffer) => err.push(chunk));
       let stopped: RuntimeError | undefined;
       let escalation: ReturnType<typeof setTimeout> | undefined;
+      let killing: ReturnType<typeof setInterval> | undefined;
       const signalGroup = (sig: NodeJS.Signals) => {
         try {
           if (child.pid !== undefined) process.kill(-child.pid, sig);
@@ -580,8 +638,20 @@ export function createCommandRunner(): CommandRunner {
       const settle = () => {
         clearTimeout(timer);
         clearTimeout(escalation);
+        clearInterval(killing);
         options.signal?.removeEventListener('abort', onAbort);
       };
+      if (spawned) {
+        const failed = callHook(onSpawn, spawned);
+        if (failed) {
+          // Not accounted for: kill the whole group at once; the close below reaps it and rejects.
+          // The child may not lead its group yet this early (it calls setsid after the fork), so
+          // the kill is repeated until it has closed.
+          stopped = hookError('onSpawn', failed, spawned);
+          signalGroup('SIGKILL');
+          killing = setInterval(() => signalGroup('SIGKILL'), 20);
+        }
+      }
       child.once('error', (error: NodeJS.ErrnoException) => {
         // Only a child that never started settles here; a running one settles on close.
         if (child.pid !== undefined) return;
@@ -590,6 +660,10 @@ export function createCommandRunner(): CommandRunner {
       });
       child.once('close', (code) => {
         settle();
+        if (spawned) {
+          const failed = callHook(onSettled, spawned);
+          if (failed && !stopped) stopped = hookError('onSettled', failed, spawned);
+        }
         if (stopped) return reject(stopped);
         resolve({ code: code ?? 1, stdout: Buffer.concat(out).toString('utf8'), stderr: Buffer.concat(err).toString('utf8') });
       });
