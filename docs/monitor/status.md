@@ -12,7 +12,7 @@
 | X | client/server 适配 0.3.0 | 已释放 | monitor-X | 已合（813e25a；全量 1137 tests） | 2a9653d | server 一致性测试 NOT_YET_IMPLEMENTED 白名单 26 项，F2/F3/G 实现时逐项移出 |
 | C2 | Driver 修复（CliFailure 冻结、window release 分类、PDF 子树过滤） | 已释放 | monitor-C2 | 已合（f9dbc1e；全量 1181） | b99a2db | 窗口归还文案按源码构造未实测；开着 PDF 预览时快照 index 与 CLI index 不同（driver 内部映射） |
 | D2c | 管线三处小改（入口分发、status()、suspend_gui） | ctx_f53c25d0358d / monitor-D2c | monitor-D2c | 进行 | — | — |
-| R | 品牌化简历渲染 | — | — | 未派（待用户模板与 logo、N 邮件格式） | — | — |
+| R | 品牌化简历渲染 | — | — | 移出本项目（用户 2026-10-04：属于 ATS 功能，见 ~/orca/ats） | — | — |
 | B | 只读可行性验证与夹具 | ctx_1b25ee64eab9（已释放） | monitor-B | 已合（898edbd） | 201001d | 登录/二维码、新招呼首次打开、电话待同意/已交换/已拒绝、邮件转发内容、搜索输入后结果 → 留给 N/K |
 | C | Driver 适配器 | ctx_3dfbecec466d（已释放） | monitor-C | 已合（ecfe9da；client 入工作区 + relock，contracts+client 351 tests） | ec6aed9 | 定位器 text 同时匹配 label/value（比契约宽），0.2.0 契约里追认；CliDriver 未在 BOSS 上真机跑过 → N |
 | D1 | 本地账本 | 已释放 | monitor-D1 | 已合（079107c + 0.2.0 适配 69a9855） | 3a3a5b4 | 已回传数据保留期限待产品决定 |
@@ -60,7 +60,7 @@ Run：run_7d52e82ce7ed。分支 monitor-v1（a12a931，自 szrunworld/ss-runtime
 6. ~~硬上限~~ 已决定（2026-10-04）：每种对外动作每日 ≤40；间隔问候/求简历/转发 45 秒、换联系方式 60 秒、搜索 30 秒（D2b 实现）。
 7. ~~简历路线~~ 已决定（2026-10-04，二次）：求简历 → 候选人同意 → BOSS 自动发到公司预留邮箱；Monitor 不转发；邮箱按『邮箱即队列 + 消费 + 归档 + 核对』读取（任务 G）；对外版本套用公司模板与 logo（任务 R）。
 10. ~~邮箱~~ 已决定（2026-10-04）：zhaopin@remotedesk.io（别名 bosszhipin@），公司邮件服务 mail（remotedesk-resend）的公共邮箱；Monitor 订阅 mail.ready + integration key 取信；保留 30 天由 mail 留存任务执行，Monitor 不逐封删除。进展（2026-10-04）：公共邮箱 CV 已建（zhaopin@ + 别名 bosszhipin@）。部署时待办：retention_days 改为 30（默认 365）；Monitor 服务端部署后把其主机加入 mail 的 MAIL_WEBHOOK_ALLOWED_HOSTS 并为 CV 建 mail.ready 订阅；签发 mail.read API key 存服务端环境变量；BOSS 后台收简历邮箱改为上述地址之一；G0 不做（用户 2026-10-04：邮件服务侧已有专门服务监控收信，Monitor 不负责上游完整性）；BOSS 后台收件邮箱已设置（用户 2026-10-04 确认）。
-9. 任务 R 需要：公司简历模板（Word/PDF/HTML 样例均可）、logo 文件、字段取舍（是否含联系方式、是否去掉平台字样）。
+9. ~~任务 R~~ 移出本项目（属于 ATS）。原需要：公司简历模板（Word/PDF/HTML 样例均可）、logo 文件、字段取舍（是否含联系方式、是否去掉平台字样）。
 8. ~~搜索页问候按钮~~ 已决定（2026-10-04）：v1 去掉，搜索只返回快照。
 
 ## H1 接口请求裁决
