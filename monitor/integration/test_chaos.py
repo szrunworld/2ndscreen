@@ -10,10 +10,8 @@ from __future__ import annotations
 from datetime import timedelta
 
 from integration_kit import (
-    CANDIDATE,
     Screen,
     World,
-    at_local,
     boss_new_greeting,
     case_stage,
     reach_new_greeting,
@@ -296,8 +294,7 @@ def test_process_down_over_24h_rebuilds_baseline_before_claiming(w: World):
         w.clock.advance(45)
         m.run(2)
     assert seen and not any(seen)  # 每次领取时 needs_baseline 都已清除
-    hb_flags = [hb for hb in [w.server.device(m.identity.device_id)["last_heartbeat"]]]
-    assert hb_flags[0]["needs_baseline"] is False
+    assert w.server.device(m.identity.device_id)["last_heartbeat"]["needs_baseline"] is False
     assert w.server.events(kind="application_observed") == []  # 离线期间的会话不当新投递
     assert screen.outbound() == []
 
@@ -402,5 +399,3 @@ def test_crash_after_intake_before_ack_executes_once(w: World):
     _finish(w, m)
     assert screen.outbound() == FULL
     assert server_cmd(w, "send_greeting")["server_status"] == "succeeded"
-    assert CANDIDATE  # 保持导入（文档用）
-    assert at_local(0) is not None

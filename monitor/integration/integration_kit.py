@@ -23,8 +23,7 @@ import json
 import os
 import uuid
 from collections.abc import Callable, Iterable, Mapping
-from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -744,7 +743,7 @@ class LoginStandIn:
     其余情况原样委托给真实观察器 E。事件用 core 的 make_event 构造，形状与 K 将来产生的相同。
     """
 
-    def __init__(self, inner: Any, screen: "Screen", mode: str = "local"):
+    def __init__(self, inner: Any, screen: Screen, mode: str = "local"):
         self.inner = inner
         self.screen = screen
         self.mode = mode
@@ -987,19 +986,19 @@ def bind_locally(m: Monitor, account_id: str = ACCOUNT) -> None:
     m.runtime.bind_account(account_id, confirmed_by=CONSOLE_ACTOR)
 
 
-def reach_new_greeting(w: "World", fake: FakeDriver, m: "Monitor") -> None:
+def reach_new_greeting(w: World, fake: FakeDriver, m: Monitor) -> None:
     """建基线（19:05），然后 19:12 让候选人L 出现在『新招呼』里。"""
     m.run_until(lambda: m.runtime.state.baseline.established and not m.runtime.state.needs_baseline, what="建基线")
     w.clock.advance(max(0.0, (at_local(19, 12) - w.clock.now()).total_seconds()))
     fake.goto("list_new")
 
 
-def case_stage(w: "World") -> str | None:
+def case_stage(w: World) -> str | None:
     cases = w.server.cases()
     return cases[0]["stage"] if cases else None
 
 
-def reach_resume_requested(w: "World", **kw: Any) -> tuple["Monitor", FakeDriver, "Screen"]:
+def reach_resume_requested(w: World, **kw: Any) -> tuple[Monitor, FakeDriver, Screen]:
     """主线跑到 resume_requested 并全部回传。"""
     fake = boss_new_greeting(w.clock)
     screen = Screen(fake)
@@ -1010,22 +1009,13 @@ def reach_resume_requested(w: "World", **kw: Any) -> tuple["Monitor", FakeDriver
     return m, fake, screen
 
 
-def server_cmd(w: "World", action: str) -> dict[str, Any]:
+def server_cmd(w: World, action: str) -> dict[str, Any]:
     """服务端上该动作的唯一一条指令；还没有时返回 server_status=None 的占位。"""
     found = [c for c in w.server.commands() if c["command"]["action"] == action]
     if not found:
         return {"server_status": None, "result": None, "command": {}}
     [c] = found
     return c
-
-
-@contextmanager
-def world(tmp_path: Path, **kw: Any):
-    w = World(tmp_path, **kw)
-    try:
-        yield w
-    finally:
-        w.close()
 
 
 def find(items: Iterable[Mapping[str, Any]], **match: Any) -> list[Mapping[str, Any]]:
