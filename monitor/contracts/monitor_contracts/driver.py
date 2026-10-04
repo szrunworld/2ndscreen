@@ -73,7 +73,7 @@ class Element(_Frozen):
         """可读文本：label 去空白后非空则为 label，否则为 value。不拼接两者。
 
         这样输入框（label='搜索'、value=已输入的关键词）仍能被 Locator(text='搜索') 精确命中。
-        Locator 的 text / text_contains 都匹配本属性；定位与 evidence 默认用它。
+        evidence 默认用它；Locator 的文本匹配见 Locator（同时比较 text、label、value）。
         """
         return self.label if self.label.strip() else self.value
 
@@ -81,9 +81,14 @@ class Element(_Frozen):
 class Locator(_Frozen):
     """声明式定位条件，各条件取交集，至少给一项。
 
-    text 精确匹配 Element.text；text_contains 子串匹配；role 精确匹配；
+    text：规范化后与 Element.text、label、value 任一相等即命中；
+    text_contains：规范化后是 Element.text、label、value 任一的子串即命中；
+    规范化 = 去掉方向控制符（如 U+200E）、NFKC、合并连续空白、去首尾空白，区分大小写。
+    role 精确匹配；
     region 要求元素中心点落在该矩形内；index 直接指定快照内位置；
     right_of 要求元素与 right_of 命中的元素在同一行（垂直中心落在其高度范围内）且位于其右侧。
+    作为写方法的 target 时必须唯一命中：零个抛 TargetNotFoundError，多个抛
+    TargetAmbiguousError，不替调用方挑选。
     """
 
     text: str | None = None

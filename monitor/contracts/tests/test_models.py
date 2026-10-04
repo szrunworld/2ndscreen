@@ -100,7 +100,9 @@ def test_action_result_to_command_result():
     ar = ActionResult(
         status="succeeded",
         executed_at=NOW,
-        gui_write_performed=True,
+        navigation_performed=True,
+        outbound_action_performed=True,
+        externally_visible_side_effect=True,
         output=ContactOutput(exchange_type="phone", exchange_state="requested"),
     )
     result = ar.to_command_result(cmd, reported_at=NOW)
@@ -116,7 +118,9 @@ def test_action_result_rules_are_enforced():
     with pytest.raises(ValidationError):
         ActionResult(status="failed", executed_at=NOW).to_command_result(cmd, reported_at=NOW)  # 缺 reason
     with pytest.raises(ValidationError):
-        ActionResult(status="cancelled", gui_write_performed=True).to_command_result(cmd, reported_at=NOW)
+        ActionResult(
+            status="cancelled", outbound_action_performed=True, externally_visible_side_effect=True
+        ).to_command_result(cmd, reported_at=NOW)
 
 
 def test_action_result_check_for():
@@ -125,9 +129,9 @@ def test_action_result_check_for():
     with pytest.raises(ValueError):
         ActionResult(status="succeeded", executed_at=NOW).check_for("search_candidates")  # 缺快照
     with pytest.raises(ValueError):
-        ActionResult(status="succeeded", executed_at=NOW, gui_write_performed=True).check_for(
-            "request_resume", "verify_only"
-        )
+        ActionResult(
+            status="succeeded", executed_at=NOW, outbound_action_performed=True, externally_visible_side_effect=True
+        ).check_for("request_resume", "verify_only")
 
 
 # --- 敏感字段 ----------------------------------------------------------------------

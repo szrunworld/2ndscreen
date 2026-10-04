@@ -77,7 +77,8 @@ COMMAND_TRANSITIONS: Mapping[CommandState, frozenset[CommandState]] = {
     # 排队中：可开始执行；也可在执行前被取消、过期，或因前置检查失败
     # （账户不符、白名单关闭、限额、依赖未满足）直接 failed，此时不调用 driver。
     _S.QUEUED: frozenset({_S.RUNNING, _S.CANCELLED, _S.EXPIRED, _S.FAILED}),
-    # 执行中：得到最终结果。cancelled 只允许在尚未发生 GUI 写操作时使用；
+    # 执行中：得到最终结果。cancelled 只允许在尚未发生对外动作时使用
+    # （outbound_action_performed=false；导航过可以取消，见 command_result 规则）；
     # 崩溃恢复后由 verify_only 判定，仍不明则 unknown。不允许回到 queued（防止重做）。
     _S.RUNNING: frozenset(
         {_S.SUCCEEDED, _S.FAILED, _S.CANCELLED, _S.SKIPPED_PRECONDITION, _S.UNKNOWN}

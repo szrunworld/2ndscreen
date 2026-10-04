@@ -68,7 +68,10 @@ class ActionResult(BaseModel):
     reason_detail: str | None = None
     observed: Observed = Field(default_factory=Observed)
     evidence: Evidence = Field(default_factory=list)
-    gui_write_performed: bool = False
+    # 见 contracts.md 第四节。处理器必须如实设置；默认 false 只是"什么都没做"的便利值。
+    navigation_performed: bool = False
+    outbound_action_performed: bool = False
+    externally_visible_side_effect: bool = False
     executed_at: AwareDatetime | None = None
     output: ActionOutput | None = None
 
@@ -83,7 +86,9 @@ class ActionResult(BaseModel):
             reason_detail=self.reason_detail,
             observed=self.observed,
             evidence=self.evidence,
-            gui_write_performed=self.gui_write_performed,
+            navigation_performed=self.navigation_performed,
+            outbound_action_performed=self.outbound_action_performed,
+            externally_visible_side_effect=self.externally_visible_side_effect,
             executed_at=self.executed_at,
             reported_at=reported_at,
             output=self.output,
@@ -96,7 +101,9 @@ class ActionResult(BaseModel):
             status=self.status,
             reason=self.reason,
             execution_mode=execution_mode,
-            gui_write_performed=self.gui_write_performed,
+            navigation_performed=self.navigation_performed,
+            outbound_action_performed=self.outbound_action_performed,
+            externally_visible_side_effect=self.externally_visible_side_effect,
             executed_at=self.executed_at,
             output=self.output,
         )
@@ -107,10 +114,13 @@ class ActionHandler(Protocol):
     """单个动作的处理器。
 
     run：完整执行（定位与核对目标 → 检查是否已发生 → 执行 → 验证）。白名单未开启时
-    必须返回 failed(reason=action_not_allowed) 且不调用 driver 的任何写方法。
-    verify_only：只读界面判断该指令的动作是否已经发生，绝不调用写方法；用于崩溃恢复
-    与 execution_mode=verify_only。能确认已发生 → succeeded；确认未发生 → failed
-    (reason=verification_failed)；无法判断 → unknown。
+    必须返回 failed(reason=action_not_allowed) 且不调用 driver（三个标志都为 false）。
+    verify_only：判断该指令的动作是否已经发生；用于崩溃恢复与 execution_mode=verify_only。
+    允许导航（打开会话、切页签、滚动，navigation_performed 可为 true；打开未读会话产生
+    已读回执时 externally_visible_side_effect 也要如实为 true），不允许任何对外动作
+    （发送、确认、提交转发、点击求简历/换电话等，outbound_action_performed 必须为 false）。
+    能确认已发生 → succeeded；确认未发生 → failed(reason=verification_failed)；
+    无法判断 → unknown。
     """
 
     action: Action

@@ -1,6 +1,6 @@
 # 招聘 Monitor 契约说明
 
-契约版本：`monitor_contracts.__version__ = "0.1.1"`（2026-10-04）。本文说明 `monitor/contracts/` 的产物，是[方案](monitor-spec.md)第六、七节的落地版本。HTTP 接口见 [api.md](api.md)。
+契约版本：`monitor_contracts.__version__ = "0.2.0"`（2026-10-04）。本文说明 `monitor/contracts/` 的产物，是[方案](monitor-spec.md)第六、七节的落地版本。HTTP 接口见 [api.md](api.md)。
 
 本文中"已验证"只表示 `uv run pytest contracts` 通过的契约层行为，不代表 BOSS 客户端上的任何能力。
 
@@ -40,7 +40,7 @@ cd monitor && uv sync && uv run pytest contracts
 
 公共字段：`command_id`（UUID）、`workflow_id`（case_id，会话类动作必填，其余必须为 null）、`account_id`、`action`、`execution_mode`（`execute` | `verify_only`，默认 execute）、`target`、`payload`、`issued_at`、`expires_at`（必须晚于 issued_at）、`depends_on`（前置指令，可空，不能指向自己）。
 
-`execution_mode=verify_only`：对应控制台的"重新检查界面状态"。这类指令只调用 `ActionHandler.verify_only`，不做任何写操作，不受每日上限、最小间隔和白名单开关约束。它只用于会话类动作，`search_candidates` 和 `provide_input` 必须是 `execute`。它的结果 `gui_write_performed` 必须为 false。
+`execution_mode=verify_only`：对应控制台的"重新检查界面状态"。这类指令只调用 `ActionHandler.verify_only`，不受每日上限、最小间隔和白名单开关约束。它允许导航（打开会话、切页签、滚动），不允许任何对外动作，结果的 `outbound_action_performed` 必须为 false（见第四节）。它只用于会话类动作，`search_candidates` 和 `provide_input` 必须是 `execute`。
 
 | action | target | payload | output（结果中） |
 | --- | --- | --- | --- |
@@ -64,7 +64,7 @@ cd monitor && uv sync && uv run pytest contracts
 
 ## 四、结果 command_result（Monitor → 服务端）
 
-字段：`command_id`、`action`、`execution_mode`、`status`、`reason`、`reason_detail?`、`observed`、`evidence`、`gui_write_performed`、`executed_at`、`reported_at`、`output`。
+字段：`command_id`、`action`、`execution_mode`、`status`、`reason`、`reason_detail?`、`observed`、`evidence`、`navigation_performed`、`outbound_action_performed`、`externally_visible_side_effect`、`executed_at`、`reported_at`、`output`。
 
 跨字段规则（JSON Schema 与 pydantic 都会检查）：
 
@@ -72,8 +72,11 @@ cd monitor && uv sync && uv run pytest contracts
 | --- | --- |
 | `status=succeeded` | `reason` 必须为 null，`executed_at` 必填 |
 | `status ∈ {failed, unknown, skipped_precondition}` | `reason` 必填 |
-| `status ∈ {cancelled, expired}` | `executed_at` 必须为 null，`gui_write_performed=false` |
-| `execution_mode=verify_only` | `gui_write_performed=false` |
+| `status ∈ {cancelled, expired}` | `executed_at` 必须为 null |
+| `status=cancelled` | `outbound_action_performed=false`（导航过可以取消，`navigation_performed` / `externally_visible_side_effect` 如实填写） |
+| `status=expired` | 三个标志都为 false |
+| `execution_mode=verify_only` | `outbound_action_performed=false`（允许导航） |
+| `outbound_action_performed=true` | `externally_visible_side_effect=true` |
 | `search_candidates` + succeeded | 必须带 `output.snapshot`，且 coverage 不能是 unreadable |
 | `request_contact_exchange` + succeeded/skipped_precondition | 必须带 `output.exchange_state` |
 | `forward_resume` + succeeded | 必须带 output |
@@ -90,7 +93,7 @@ cd monitor && uv sync && uv run pytest contracts
 | `unknown_dialog` | 出现未知弹窗，没有点击任何未知控件 |
 | `login_required` | 登录失效 |
 | `captcha` | 验证码或风控 |
-| `account_mismatch` | 客户端当前账户与指令账户不一致 |
+| `account_mismatch` | 有证据表明客户端当前账户与指令账户不一致。v1 仅在有证据时使用（例如界面出现账户切换提示），目前没有检测手段，见第七节"账户来源" |
 | `paused` | 设备已暂停，指令未开始 |
 | `dependency_not_satisfied` | `depends_on` 的指令没有 succeeded（包括 unknown） |
 | `timeout` | 在上限时间内等不到可识别的结果状态 |
@@ -101,7 +104,19 @@ cd monitor && uv sync && uv run pytest contracts
 | `driver_error` | Driver 抛出窗口丢失、屏幕丢失、CLI 失败等错误 |
 | `crash_recovery` | 崩溃恢复后 verify_only 仍然无法确认（配合 unknown） |
 
-`gui_write_performed` 表示本次执行是否发生过任何点击、输入或按键。服务端用它区分"取消前确实没动过界面"和"动过但结果不明"。
+### 执行标志（0.2.0 起替代 `gui_write_performed`）
+
+三个布尔标志在线上必填（缺省会把"忘了填"误当成"什么都没做"）；`ActionResult` 里默认 false，处理器必须如实设置。
+
+| 标志 | 含义 | 例子 |
+| --- | --- | --- |
+| `navigation_performed` | 发生过只改变本机界面的 GUI 操作 | 点击打开会话、切换页签或筛选、滚动、关闭弹层、在搜索框输入关键词 |
+| `outbound_action_performed` | 发生过对候选人或第三方可见的动作 | 发送消息、点击确认、提交转发、点击求简历 / 换电话、代填并提交验证码 |
+| `externally_visible_side_effect` | 本次执行可能产生了对方可见的副作用 | 对外动作一定算；只打开未读会话也可能产生已读回执，此时没有对外动作但为 true |
+
+服务端用 `outbound_action_performed` 区分"取消前确实没有对外动作"和"做了但结果不明"，用 `externally_visible_side_effect` 判断候选人是否可能已经察觉（例如已读）。白名单关闭、限额、暂停、依赖未满足时 handler 不调用 driver，三个标志都为 false。
+
+与状态机的关系：`running → cancelled` 仅限 `outbound_action_performed=false`。已经导航（甚至已产生已读回执）但还没点任何对外按钮时可以取消，如实填写另外两个标志；对外动作已经发生时不能回报 cancelled，必须回报实际结果。`expired` 只从 `queued` 进入，三个标志都为 false。
 
 ## 五、搜索快照 search_snapshot
 
@@ -140,8 +155,17 @@ cd monitor && uv sync && uv run pytest contracts
 
 - **policy**：账户级策略。字段包括 `policy_version`（PUT 用 If-Match 做乐观锁）、`allowed_actions`（对外动作白名单，默认空即全部关闭；provide_input 和 verify_only 不受它控制）、`job_scope`、`greeting{enabled, template}`、`auto_request_resume`、`after_resume_received{action, wait_for_parse}`、`work_hours`（IANA 时区 + 窗口，空窗口表示任何时段都不生成对外指令）、`daily_limits` 与 `min_interval_seconds`（五个对外动作各一项）、`pause_on_anomaly`（只能为 true）、`paused`。Monitor 本地另有写死的硬上限和最小间隔下限，策略只能收紧、不能放宽。这些常量由 D2 定义，不在契约里。
 - **device_registration**：`POST /devices` 的请求体。字段包括 `enrollment_code`、`device_name`、`mode`、`platform`、`monitor_version`、`contracts_version`、`capabilities`。local 模式不能声明 `login_relay`。
-- **device_heartbeat**：默认 30 秒一次。字段包括 `mode`、`account_id`、`client_state`、`paused` + `pause_reason`（paused 时必填）、`needs_baseline`、`current_action`、`queue{queued_commands, undelivered_results, outbox_events}`、`last_error`、`monitor_version`。
+- **device_heartbeat**：默认 30 秒一次。字段包括 `mode`、`account_id`（绑定账户，见下文"账户来源"）、`client_state`、`paused` + `pause_reason`（paused 时必填）、`needs_baseline`、`current_action`、`queue{queued_commands, undelivered_results, outbox_events}`、`last_error`、`monitor_version`。
 - **login_qr**：`POST /login-qr` 的请求体。字段包括 `device_id`、`account_id?`、`qr_payload`（本地解码出的文本，不是图片）、`qr_seq`（内容每变一次 +1）、`captured_at`、`expires_at`（必须晚于 captured_at）、`decoder`。
+
+### 账户来源（0.2.0）
+
+P0 与任务 B 都确认：BOSS 客户端窗口里读不到当前登录的是哪个招聘账户。因此 v1 的规则是：
+
+- `account_id` 来自安装时的绑定：用户在控制台为这台设备确认绑定账户（`PUT /devices/{id}/account-binding`），Monitor 把绑定结果保存在本地。Monitor 不从界面读取账户，也不推断账户。
+- `device_heartbeat.account_id` 表示"本机保存的绑定账户"，不是"观察到的账户"；未绑定时为 null。服务端发现它与服务端记录的绑定不一致时，说明是配置问题（例如重装后未重新绑定），不说明用户在 BOSS 里换了账户。
+- 指令、事件里的 `account_id` 同样是绑定账户。
+- reason `account_mismatch` 和暂停原因 `account_switched` 保留，但 v1 只在有证据时使用（例如界面出现账户切换或被挤下线的提示）。当前没有检测手段，用户在 BOSS 里直接切换账户时 Monitor 察觉不到。这一项列入 N 阶段待验证。
 
 ## 八、状态机
 
@@ -194,7 +218,7 @@ stateDiagram-v2
     running --> failed
     running --> skipped_precondition: 动作已发生
     running --> unknown: 崩溃后 verify_only 仍不明
-    running --> cancelled: 仅限尚未发生写操作
+    running --> cancelled: 仅限 outbound_action_performed=false
     succeeded --> [*]
     failed --> [*]
     cancelled --> [*]
@@ -255,7 +279,9 @@ event_id = sha256_hex( JSON( ["monitor-event-v1", account_id or "", kind, 会话
 
 Driver 错误码（`DriverError.code`，可以写入 `heartbeat.last_error.code`）：`window_lost`、`screen_lost`、`timeout`、`snapshot_stale`、`cli_failed`、`target_ambiguous`、`target_not_found`，以及基类 `driver_error`。
 
-`Element` 的字段为 `index, role, label, value, frame, enabled`，另有可选的 `snapshot_id`（由 Driver 填写）和 `parent_index / depth`（仅 include_tree）。`enabled` 为 `bool | None`，默认 None，表示来源不提供（2ndscreen CLI 不输出该字段），不等于不可用。只读属性 `text`：label 去空白后非空就返回 label，否则返回 value，两者不拼接，所以输入框（label=搜索、value=关键词）仍能被 `Locator(text="搜索")` 命中。Locator 的 text 和 text_contains 都匹配这个属性，定位和 evidence 默认也用它。
+`Element` 的字段为 `index, role, label, value, frame, enabled`，另有可选的 `snapshot_id`（由 Driver 填写）和 `parent_index / depth`（仅 include_tree）。`enabled` 为 `bool | None`，默认 None，表示来源不提供（2ndscreen CLI 不输出该字段），不等于不可用。只读属性 `text`：label 去空白后非空就返回 label，否则返回 value，两者不拼接，所以输入框（label=搜索、value=关键词）仍能被 `Locator(text="搜索")` 命中。evidence 默认用这个属性。
+
+Locator 的文本匹配（0.2.0 追认任务 C 的实现）：`text` 在规范化后与元素的 `text`、`label`、`value` 任一相等即命中，`text_contains` 在规范化后是其中任一的子串即命中。规范化是去掉方向控制符（例如 Calculator 值里的 U+200E）、NFKC、合并连续空白、去首尾空白，区分大小写。这样弹出菜单（label=typeface、value=Helvetica）两个词都能定位，静态文本只在 value 上时也能命中。匹配面变宽后命中可能变多，唯一命中的要求不变：作为写方法的 target 时，零个命中抛 `TargetNotFoundError`，多个命中抛 `TargetAmbiguousError`，Driver 不替调用方挑选。
 
 ## 十一、夹具格式
 
@@ -286,6 +312,9 @@ Driver 错误码（`DriverError.code`，可以写入 `heartbeat.last_error.code`
 | `workflow_id` | 会话类动作必填；search_candidates 和 provide_input 为 null |
 | `reason` 与 status 的约束 | 见第四节 |
 | `monitor/uv.lock` | 由 A 提交；后续任务不提交 lock 改动，由监督者合并时统一重新 lock |
+| 写操作标志太粗（导航与对外动作混在一起，verify_only 无法导航） | 0.2.0 拆成三个标志，见第四节"执行标志" |
+| 账户读不到 | 0.2.0：account_id 来自安装时绑定，不从界面读取；`account_mismatch` 只在有证据时使用，见第七节"账户来源" |
+| Locator 文本匹配面 | 0.2.0 追认 C 的实现：text / text_contains 匹配 text、label、value 任一（规范化后），仍要求唯一命中 |
 
 ### 变更记录
 
@@ -293,3 +322,4 @@ Driver 错误码（`DriverError.code`，可以写入 `heartbeat.last_error.code`
 | --- | --- | --- | --- |
 | 0.1.0 | 2026-10-04 | 首版 | 全部 |
 | 0.1.1 | 2026-10-04 | Driver 协议两处修正：`Element.enabled` 改为 `bool \| None = None`（None 表示来源不提供；FixtureElement 与 ax-fixture schema 同步允许 null 或省略）；`Element.text` 改为 label 非空取 label，否则取 value，不再拼接。8.1 中推断的三条迁移经审查全部接受，未改 | C、E、H1–H3、B（夹具） |
+| 0.2.0 | 2026-10-04 | ① command_result / ActionResult 的 `gui_write_performed` 拆成 `navigation_performed`、`outbound_action_performed`、`externally_visible_side_effect`（线上必填）：verify_only 只禁对外动作、允许导航；cancelled 禁对外动作；expired 三个全 false；对外动作 ⇒ 对方可见；`running → cancelled` 仅限无对外动作；`ActionHandler.verify_only` 文档同步。② 账户来源：account_id 来自安装时绑定，heartbeat.account_id 是绑定账户而非观察到的账户；`account_mismatch` 保留但 v1 只在有证据时使用，列入 N 待验证。③ Locator 的 text / text_contains 匹配 Element.text、label、value 任一（规范化后），追认 C 的实现。forward_resume 与搜索字段未改 | D1、D2、E、H1–H3、F1（结果入库）、I1（展示）、C（文档追认，无代码变更） |
