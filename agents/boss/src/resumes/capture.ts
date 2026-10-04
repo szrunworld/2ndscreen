@@ -191,15 +191,28 @@ export function headerBand(shot: Pick<ScreenshotRef, 'widthPx' | 'heightPx' | 'c
  */
 export const HEADER_MARK = /^\s*◎\s*/;
 
+/**
+ * The one separator OCR reads between the name and its activity note in the
+ * BOSS 1.7.4 header (P0: "◎ <name>•在线", U+2022 BULLET). Only this
+ * character, only once, and only directly before a recognized activity
+ * note; any other punctuation or text there still makes the line not a header.
+ */
+export const HEADER_ACTIVITY_SEPARATOR = '\u2022';
+
 const isHeaderName = (line: string, want: string) => {
   const t = normalize(line.replace(HEADER_MARK, ''));
-  return t === want || (t.startsWith(want) && HEADER_ACTIVITY.test(t.slice(want.length)));
+  if (t === want) return true;
+  if (!t.startsWith(want)) return false;
+  const rest = t.slice(want.length);
+  const note = rest.startsWith(HEADER_ACTIVITY_SEPARATOR) ? rest.slice(HEADER_ACTIVITY_SEPARATOR.length) : rest;
+  return HEADER_ACTIVITY.test(note);
 };
 
 /**
  * Whether `name` is the resume's header on this screen: one OCR line that
- * reads exactly the name (or the name and its activity note), optionally
- * after the header's decorative mark (HEADER_MARK), starting in
+ * reads exactly the name (or the name and its activity note, optionally
+ * joined by HEADER_ACTIVITY_SEPARATOR), optionally after the header's
+ * decorative mark (HEADER_MARK), starting in
  * the band near the top and left, with no other text above it. The name
  * anywhere else, inside a longer line, or under other text is not a header.
  */
