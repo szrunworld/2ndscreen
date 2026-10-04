@@ -1215,6 +1215,50 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  /cases/{case_id}:request-wechat:
+    parameters:
+      - $ref: '#/components/parameters/CaseId'
+    post:
+      tags: [cases]
+      operationId: requestWechatExchange
+      summary: 人工触发换微信（生成 request_contact_exchange 指令）
+      description: |
+        0.3.0 起交换联系方式只能由人工在控制台触发，且只换微信：服务端记录 manual_action
+        （type=request_wechat，actor、时间、说明），生成一条 request_contact_exchange 指令
+        （payload.exchange_type=wechat，workflow_id=该流程），流程进入 contact_requested。
+        服务端不得在任何自动流程中生成 request_contact_exchange。
+        仅当流程处于 resume_linked 或 needs_human 时可调用（迁移表中只有这两个阶段能进入
+        contact_requested），否则返回 409 stage_not_allowed。策略白名单未开启
+        request_contact_exchange、账户或设备暂停、超出每日上限时返回 409（policy_blocked）。
+        已有未完成的换微信指令时返回 409 already_requested，existing 中附上该指令。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RequiredNoteBody'
+      responses:
+        '201':
+          description: 已生成指令
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManualCommandCreated'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 阶段不允许（stage_not_allowed）、策略不允许（policy_blocked）或已在请求中（already_requested）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+
   /login-qr:
     post:
       tags: [login]
@@ -2096,7 +2140,7 @@ components:
     ContactExchangeStatus:
       type: string
       enum: [not_requested, request_sent, pending_acceptance, available, refused, pending_confirmation]
-      description: 服务端交换状态（方案 8.3）："请求已发送"是指令成功，"联系方式可用"是业务事件，两者不混用
+      description: 服务端微信交换状态（方案 8.3；0.3.0 起只换微信、只能人工触发）："请求已发送"是指令成功，"联系方式可用"是业务事件，两者不混用；v1 不回传微信号原文
     CaseSummary:
       type: object
       required: [case_id, account_id, candidate_name, job_title, stage, paused, needs_human, updated_at]
@@ -2186,7 +2230,7 @@ components:
           type: string
         type:
           type: string
-          enum: [confirm_sent, link_resume, stop_case, recheck, cancel_command]
+          enum: [confirm_sent, link_resume, stop_case, recheck, cancel_command, request_wechat]
         actor:
           type: string
         at:
@@ -2203,6 +2247,16 @@ components:
               enum: [command, resume_document, case]
             id:
               type: string
+
+    ManualCommandCreated:
+      type: object
+      required: [manual_action, command]
+      additionalProperties: false
+      properties:
+        manual_action:
+          $ref: '#/components/schemas/ManualAction'
+        command:
+          $ref: '#/components/schemas/CommandRecord'
 
     LoginQrAccepted:
       type: object

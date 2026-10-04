@@ -141,22 +141,22 @@
         "action": {
           "type": "string",
           "enum": [
-            "none",
-            "request_contact_exchange"
+            "none"
           ],
           "default": "none",
-          "description": "简历关联（resume_linked）后的自动动作。默认 none：收到简历后不自动交换联系方式。"
+          "description": "简历关联后的自动动作。0.3.0 起只能是 none：交换联系方式（换微信）只能由人工在控制台触发（POST /cases/{case_id}:request-wechat），服务端不得在任何自动流程中生成 request_contact_exchange。"
         },
         "wait_for_parse": {
           "type": "boolean",
-          "description": "是否等 PDF 解析完成再发起后续动作。",
+          "description": "保留字段，当前没有自动后续动作，不起作用。",
           "default": true
         }
       },
       "default": {
         "action": "none",
         "wait_for_parse": true
-      }
+      },
+      "description": "保留对象以便以后扩展；0.3.0 起不产生任何自动动作。"
     },
     "resume_mail_timeout_days": {
       "type": "integer",

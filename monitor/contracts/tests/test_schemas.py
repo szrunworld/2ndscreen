@@ -143,7 +143,7 @@ def test_coverage_mode_exchange_enums_match_models():
     assert _enum("search_snapshot.json", "properties", "coverage") == list(get_args(models.Coverage))
     assert _enum("common.json", "$defs", "mode") == list(get_args(models.Mode))
     assert _enum("common.json", "$defs", "exchange_state") == list(get_args(models.ExchangeState))
-    assert _enum("common.json", "$defs", "exchange_type") == ["phone"]
+    assert _enum("common.json", "$defs", "exchange_type") == ["wechat"]
 
 
 def test_version_is_consistent():

@@ -204,3 +204,12 @@ def test_mail_verification_record_wraps_contract():
     }
     assert not list(v.iter_errors({"verification": verification, "received_at": "2026-10-04T11:00:02+08:00"}))
     assert list(v.iter_errors({"verification": verification}))
+
+
+def test_request_wechat_is_manual_console_endpoint():
+    op = _spec()["paths"]["/cases/{case_id}:request-wechat"]["post"]
+    assert op["requestBody"]["content"]["application/json"]["schema"]["$ref"] == "#/components/schemas/RequiredNoteBody"
+    assert "security" not in op  # 继承全局 consoleSession：只有控制台能触发
+    assert {"201", "401", "404", "409", "422"} <= set(op["responses"])
+    enum = _spec()["components"]["schemas"]["ManualAction"]["properties"]["type"]["enum"]
+    assert "request_wechat" in enum

@@ -17,7 +17,7 @@
     "bucket": "2026-10-04T01:00:00Z/3600",
     "observed_at": "2026-10-04T09:31:05+08:00",
     "payload": {
-      "exchange_type": "phone",
+      "exchange_type": "wechat",
       "exchange_state": "available",
       "evidence": []
     }

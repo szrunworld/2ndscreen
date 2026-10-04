@@ -1,6 +1,6 @@
 {
   "contract": "command",
-  "description": "第一版只支持电话",
+  "description": "0.3.0 起只支持微信，电话被拒绝",
   "data": {
     "command_id": "00000000-0000-4000-8000-000000000004",
     "workflow_id": "case_001",
@@ -17,7 +17,7 @@
       }
     },
     "payload": {
-      "exchange_type": "wechat"
+      "exchange_type": "phone"
     },
     "issued_at": "2026-10-04T09:30:00+08:00",
     "expires_at": "2026-10-04T09:40:00+08:00",

@@ -118,7 +118,8 @@ class ActionHandler(Protocol):
     verify_only：判断该指令的动作是否已经发生；用于崩溃恢复与 execution_mode=verify_only。
     允许导航（打开会话、切页签、滚动，navigation_performed 可为 true；打开未读会话产生
     已读回执时 externally_visible_side_effect 也要如实为 true），不允许任何对外动作
-    （发送、确认、提交转发、点击求简历/换电话等，outbound_action_performed 必须为 false）。
+    （发送、确认、点击求简历/换微信、代填并提交等，outbound_action_performed 必须为 false）。
+    打开会话产生的已读回执是用户已接受的副作用，如实记录即可。
     能确认已发生 → succeeded；确认未发生 → failed(reason=verification_failed)；
     无法判断 → unknown。
     """

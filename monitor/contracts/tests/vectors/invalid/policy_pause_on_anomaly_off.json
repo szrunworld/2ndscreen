@@ -20,7 +20,7 @@
     },
     "auto_request_resume": true,
     "after_resume_received": {
-      "action": "request_contact_exchange",
+      "action": "none",
       "wait_for_parse": false
     },
     "resume_mail_timeout_days": 3,

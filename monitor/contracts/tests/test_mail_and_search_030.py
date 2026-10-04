@@ -268,3 +268,21 @@ def test_policy_mailbox_must_be_email_or_null():
     data = _vector("valid", "policy_default")
     assert check("policy", dict(data, company_mailbox=None)) == []
     assert check("policy", dict(data, company_mailbox="not-an-email"))
+
+
+# ---------------------------------------------------------------------------
+# 换微信（0.3.0 追加，用户确认）
+# ---------------------------------------------------------------------------
+
+
+def test_contact_exchange_is_wechat_only():
+    data = _vector("valid", "command_contact_exchange")
+    assert validate_command(data).payload.exchange_type == "wechat"
+    data["payload"]["exchange_type"] = "phone"
+    assert [e.path for e in check("command", data)] == ["payload.exchange_type"]
+
+
+def test_policy_cannot_auto_request_contact_exchange():
+    data = _vector("valid", "policy_default")
+    data["after_resume_received"]["action"] = "request_contact_exchange"
+    assert [e.path for e in check("policy", data)] == ["after_resume_received.action"]

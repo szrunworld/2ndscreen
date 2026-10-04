@@ -46,7 +46,7 @@ cd monitor && uv sync && uv run pytest contracts
 | --- | --- | --- | --- |
 | `send_greeting` | 会话目标 | `{text}` 1–500 字 | 无 |
 | `request_resume` | 会话目标 | `{}`（不接受参数） | 无 |
-| `request_contact_exchange` | 会话目标 | `{exchange_type: "phone"}` | `{exchange_type, exchange_state}` |
+| `request_contact_exchange` | 会话目标 | `{exchange_type: "wechat"}` | `{exchange_type, exchange_state}` |
 | `search_candidates` | `{scope: "current_page"}` | `{search_id, query, max_results 1–100}` | `{snapshot}` |
 | `provide_input` | `{input_request_id}` | `{value}` 1–64 字 | 无 |
 
@@ -60,7 +60,7 @@ cd monitor && uv sync && uv run pytest contracts
 
 - **send_greeting**：问候。服务端已按策略模板渲染好 `text`，Monitor 不再拼接。执行前要核对目标会话，执行后要读到聊天区出现该文本才算 succeeded。结果为 `unknown` 时，服务端不自动推进求简历（方案 8.1 第 5 条）。
 - **request_resume**：请求简历。界面已有"已请求"标记时返回 `skipped_precondition`（`reason=precondition_already_done`）。执行后要读到请求消息出现才算成功。只允许点击 N 阶段记录的那一个确认按钮。成功结果的 `executed_at` 是邮件关联的时间窗起点：候选人同意后，BOSS 会把附件简历自动发到公司邮箱（第七节"公司邮箱"）。
-- **request_contact_exchange**：交换联系方式，第一版只支持电话（以后加微信时契约版本 +1）。界面已是 `available` 或 `pending_acceptance` 时返回 `skipped_precondition` 并在 output 中给出当前状态。点击并确认请求已发出时返回 succeeded，`exchange_state=requested`。succeeded 和 skipped_precondition 都必须带 output。"请求已发送"是指令结果，"联系方式可用"是业务事件 `contact_exchange_updated`，两者不要混用。v1 契约不传号码原文。
+- **request_contact_exchange**：交换联系方式，0.3.0 起**只换微信**、**只能人工触发**（用户 2026-10-04 确认）。依据：任务 B 在真机观察到换微信后的系统提示『请求交换微信已发送』，同时『换微信』置灰（capabilities.md 1.7，`contact_exchange_state#1`）；换电话的提示没有观察到。服务端只在控制台调用 `POST /cases/{case_id}:request-wechat` 时生成这条指令，任何自动流程都不得生成。界面已是 `available` 或 `pending_acceptance` 时返回 `skipped_precondition` 并在 output 中给出当前状态。点击并确认请求已发出时返回 succeeded，`exchange_state=requested`。succeeded 和 skipped_precondition 都必须带 output。"请求已发送"是指令结果，"联系方式可用"是业务事件 `contact_exchange_updated`，两者不要混用。v1 契约不传微信号原文，是否回传仍未决定。
 - **search_candidates**：在当前页搜索，不翻页，`workflow_id` 为 null。见第五节。
 - **provide_input**：把控制台人工输入的值（如短信验证码）代填到 `human_input_required` 所指的输入框。值不得写入日志或 evidence。
 
@@ -112,8 +112,8 @@ cd monitor && uv sync && uv run pytest contracts
 | 标志 | 含义 | 例子 |
 | --- | --- | --- |
 | `navigation_performed` | 发生过只改变本机界面的 GUI 操作 | 点击打开会话、切换页签或筛选、滚动、关闭弹层、在搜索框输入关键词 |
-| `outbound_action_performed` | 发生过对候选人或第三方可见的动作 | 发送消息、点击确认、提交转发、点击求简历 / 换电话、代填并提交验证码 |
-| `externally_visible_side_effect` | 本次执行可能产生了对方可见的副作用 | 对外动作一定算；只打开未读会话也可能产生已读回执，此时没有对外动作但为 true |
+| `outbound_action_performed` | 发生过对候选人或第三方可见的动作 | 发送消息、点击确认、点击求简历 / 换微信、代填并提交验证码 |
+| `externally_visible_side_effect` | 本次执行可能产生了对方可见的副作用 | 对外动作一定算；只打开未读会话也可能产生已读回执，此时没有对外动作但为 true。用户已接受打开会话产生的已读回执（2026-10-04），它是可接受的副作用，如实记录即可 |
 
 服务端用 `outbound_action_performed` 区分"取消前确实没有对外动作"和"做了但结果不明"，用 `externally_visible_side_effect` 判断候选人是否可能已经察觉（例如已读）。白名单关闭、限额、暂停、依赖未满足时 handler 不调用 driver，三个标志都为 false。
 
@@ -153,7 +153,7 @@ cd monitor && uv sync && uv run pytest contracts
 | --- | --- | --- | --- |
 | `application_observed` | 必填 | `{marker_text?, evidence}` | 只对能明确识别为"新投递"的会话产生，普通未读不算。首次启动和 needs_baseline 时只建基线，不产生事件。识别规则来自 B 的夹具标注 |
 | `attachment_available` | 必填 | `{attachment_name?, evidence}` | 会话中出现可用的附件简历。只是可选观察：服务端可据此把流程记为 `resume_received`，但简历文件只从公司邮箱读取，不据此下发任何指令 |
-| `contact_exchange_updated` | 必填 | `{exchange_type, exchange_state, evidence}` | observe 看到交换状态变化（例如候选人同意）。v1 不带号码原文 |
+| `contact_exchange_updated` | 必填 | `{exchange_type, exchange_state, evidence}` | observe 看到交换状态变化（例如候选人同意）。0.3.0 起 `exchange_type` 只有 `wechat`；v1 不带微信号原文，只报状态 |
 | `conversation_ambiguous` | 必填 | `{match_count ≥ 2, candidates[≥2]{position, hints, summary?}, evidence}` | 同一岗位下出现同名会话。服务端转人工处理，不建立新投递。candidates 只放脱敏摘要 |
 | `login_required` | null | `{reason, mode}` | 登录失效或回到登录页。Monitor 暂停对外动作。local 模式只通知用户在本机登录 |
 | `login_qr` | null | `{qr_seq, expires_at}` | 仅 remote 模式。只通知二维码已更新，二维码内容只经 `POST /login-qr` 上传，过期即删，不进事件表 |
@@ -167,7 +167,7 @@ cd monitor && uv sync && uv run pytest contracts
 ## 七、其他消息
 
 - **policy**：账户级策略。字段包括 `policy_version`（PUT 用 If-Match 做乐观锁）、`allowed_actions`（对外动作白名单，默认空即全部关闭；provide_input 和 verify_only 不受它控制）、`job_scope`、`greeting{enabled, template}`、`auto_request_resume`、`after_resume_received{action, wait_for_parse}`、`resume_mail_timeout_days`、`company_mailbox`、`work_hours`（IANA 时区 + 窗口，空窗口表示任何时段都不生成对外指令）、`daily_limits` 与 `min_interval_seconds`（四个对外动作各一项：send_greeting、request_resume、request_contact_exchange、search_candidates）、`pause_on_anomaly`（只能为 true）、`paused`。Monitor 本地另有写死的硬上限和最小间隔下限，策略只能收紧、不能放宽。这些常量由 D2 定义，不在契约里。
-  - `after_resume_received.action` 默认 `none`（0.3.0）：收到并关联简历后**不**自动交换联系方式；`wait_for_parse` 默认 true。线上仍必须写全，默认值只用于模型构造和控制台初始值。交换联系方式的类型（`exchange_type`）本版未改，等用户确认后在 0.3.1 处理。
+  - `after_resume_received.action` 0.3.0 起只能是 `none`（也是默认值）：收到并关联简历后不做任何自动动作。换微信只能人工触发（`POST /cases/{case_id}:request-wechat`），服务端不得在任何自动流程中生成 `request_contact_exchange`。对象保留以便以后扩展；`wait_for_parse` 默认 true，目前不起作用。线上仍必须写全。`request_contact_exchange` 仍在 `allowed_actions` 白名单与上限里：人工触发的指令到了 Monitor 也要白名单开启才执行。
   - `resume_mail_timeout_days`（默认 3，范围 1–30）：求简历成功后超过该天数仍未收到并关联简历邮件，服务端把流程转 `needs_human`（`needs_human_reason=resume_mail_timeout`），核对任务也会把它列为提醒。
   - `company_mailbox`：BOSS 账户设置里预留的公司邮箱，只读展示，以服务端配置为准；PUT 时服务端忽略请求里的值。未配置时为 null。不加 `resume_route`：v1 只有这一条简历路线。
 - **device_registration**：`POST /devices` 的请求体。字段包括 `enrollment_code`、`device_name`、`mode`、`platform`、`monitor_version`、`contracts_version`、`capabilities`。local 模式不能声明 `login_relay`。
@@ -236,7 +236,7 @@ stateDiagram-v2
     resume_requested --> resume_linked: 邮件到达并唯一关联（主路径）
     resume_requested --> resume_received: 看到附件（可选观察）
     resume_received --> resume_linked
-    resume_linked --> contact_requested
+    resume_linked --> contact_requested: 人工换微信
     contact_requested --> contact_available
     contact_available --> closed
     new_application --> needs_human
@@ -257,7 +257,7 @@ stateDiagram-v2
 
 除 `contact_available` 外，每个非终态都可以直接进入 `closed`（停止流程、明确拒绝），图中省略这些边。
 
-简历的**主路径**是 `resume_requested → resume_linked`：邮件到达公司邮箱并唯一关联到本流程（0.3.0）。`resume_received` 指界面上看到了附件简历，只是可选观察，不是必经阶段。求简历成功后超过 `policy.resume_mail_timeout_days` 未收到邮件，或邮件关联歧义时，`resume_requested → needs_human`；人工关联后 `needs_human → resume_linked`。`resume_linked` 之后是否请求联系方式由 `after_resume_received.action` 决定，默认不请求。迁移表本身 0.3.0 没有增删边。
+简历的**主路径**是 `resume_requested → resume_linked`：邮件到达公司邮箱并唯一关联到本流程（0.3.0）。`resume_received` 指界面上看到了附件简历，只是可选观察，不是必经阶段。求简历成功后超过 `policy.resume_mail_timeout_days` 未收到邮件，或邮件关联歧义时，`resume_requested → needs_human`；人工关联后 `needs_human → resume_linked`。`resume_linked` 之后不做自动动作；换微信只能由人工在控制台触发，流程从 `resume_linked`（或 `needs_human`）进入 `contact_requested`。迁移表本身 0.3.0 没有增删边。
 
 ### 8.2 指令执行（Monitor command_ledger）
 
@@ -381,7 +381,7 @@ Locator 的文本匹配（0.2.0 追认任务 C 的实现）：`text` 在规范�
 | E 需要"歧义事件" | 新增 kind `conversation_ambiguous` |
 | E 的"不支持的呈现只上报一次" | 用 `heartbeat.last_error`，`code=unsupported_presentation` + `scene` |
 | 控制台"重新检查界面状态" | 指令增加 `execution_mode: verify_only`，不受限额、间隔和白名单约束 |
-| 联系方式事件是否带号码 | v1 不带号码，状态加 `unknown`；是否回传号码由用户另行决定 |
+| 联系方式事件是否带号码 | v1 不带号码，状态加 `unknown`；是否回传号码由用户另行决定（0.3.0 起只换微信，仍不带微信号） |
 | `workflow_id` | 会话类动作必填；search_candidates 和 provide_input 为 null |
 | `reason` 与 status 的约束 | 见第四节 |
 | `monitor/uv.lock` | 由 A 提交；后续任务不提交 lock 改动，由监督者合并时统一重新 lock |
@@ -391,6 +391,8 @@ Locator 的文本匹配（0.2.0 追认任务 C 的实现）：`text` 在规范�
 | 简历路线 | 0.3.0（用户 2026-10-04）：求简历 → 候选人同意 → BOSS 自动发到公司邮箱；Monitor 不转发，`forward_resume` 移除，名字保留 |
 | mail_messages 由谁写 | 0.3.0（协调者裁决）：邮件接入用 `PUT /mail-messages/{mail_message_id}` 幂等 upsert；主键确定性生成，Message-ID 缺失时用 (邮箱, UIDVALIDITY, UID) 兜底；状态迁移表进 `states.py` |
 | 搜索结果是否识别身份 | 0.3.0（用户 2026-10-04）：不识别。卡片只原样返回可读文本与道具卡文案；搜索结果不能作为指令目标（删除会话目标的 `result_ref`） |
+| 交换联系方式 | 0.3.0（用户 2026-10-04 确认）：只换微信（`exchange_type` 只有 `wechat`，依据 B 观察到的『请求交换微信已发送』）；只能人工触发，新增 `POST /cases/{case_id}:request-wechat`，`after_resume_received.action` 只能为 none |
+| 已读回执 | 0.3.0（用户 2026-10-04）：打开会话产生的已读回执可以接受，`externally_visible_side_effect` 如实记录 |
 | 邮件关联依据 | 0.3.0：`link_method` 的 `forward_record` 改为 `resume_request`（按 request_resume 执行时间窗），`command_id` 指向 request_resume 指令 |
 
 ### 变更记录
@@ -400,4 +402,4 @@ Locator 的文本匹配（0.2.0 追认任务 C 的实现）：`text` 在规范�
 | 0.1.0 | 2026-10-04 | 首版 | 全部 |
 | 0.1.1 | 2026-10-04 | Driver 协议两处修正：`Element.enabled` 改为 `bool \| None = None`（None 表示来源不提供；FixtureElement 与 ax-fixture schema 同步允许 null 或省略）；`Element.text` 改为 label 非空取 label，否则取 value，不再拼接。8.1 中推断的三条迁移经审查全部接受，未改 | C、E、H1–H3、B（夹具） |
 | 0.2.0 | 2026-10-04 | ① command_result / ActionResult 的 `gui_write_performed` 拆成 `navigation_performed`、`outbound_action_performed`、`externally_visible_side_effect`（线上必填）：verify_only 只禁对外动作、允许导航；cancelled 禁对外动作；expired 三个全 false；对外动作 ⇒ 对方可见；`running → cancelled` 仅限无对外动作；`ActionHandler.verify_only` 文档同步。② 账户来源：account_id 来自安装时绑定，heartbeat.account_id 是绑定账户而非观察到的账户；`account_mismatch` 保留但 v1 只在有证据时使用，列入 N 待验证。③ Locator 的 text / text_contains 匹配 Element.text、label、value 任一（规范化后），追认 C 的实现。forward_resume 与搜索字段未改 | D1、D2、E、H1–H3、F1（结果入库）、I1（展示）、C（文档追认，无代码变更） |
-| 0.3.0 | 2026-10-04 | ① 移除 `forward_resume`：action 枚举、payload / output、结果规则、策略白名单与 daily_limits / min_interval_seconds、设备能力；`attachment_available` 只作可选观察。② policy 增加 `company_mailbox`（只读）与 `resume_mail_timeout_days`（默认 3）；`after_resume_received` 默认 `{action: none, wait_for_parse: true}`。③ case 主路径 `resume_requested → resume_linked`，`resume_received` 为可选观察，`resume_requested → needs_human` 用于超时或关联歧义（迁移表未增删边，只改说明）。④ 新增 `mail_message`、`mail_verification` 两个契约与 `MAIL_TRANSITIONS`、`compute_mail_message_id`、`mail_message_key`、`mail_verification_key`；`resume_document_key` 的第一个参数改为来源标识。⑤ 搜索快照卡片改为 `{result_ref, position, fields[], masked_name?, prop_card_texts[]}`，删除 `display_name / summary / stable_candidate_id`；会话目标删除 `result_ref`，v1 搜索结果不能作为指令目标。⑥ openapi：新增 `/mail-messages`、`/mail-verifications`；resume_document 增加 `variant / derived_from / mail_message_id`，`link_method` 的 `forward_record` 改为 `resume_request`；补齐 F1 报告列出的 401 / 403 / 422。交换联系方式（`exchange_type`）未改，留给 0.3.1 | D2（限额常量、testing 夹具）、D1（testing 夹具）、F1（一致性白名单清空）、F2（策略默认值、超时转人工、关联方式）、F3（搜索快照存储）、G（mail_messages、核对、关联方式）、H2（卡片形状）、I1/I2（策略页邮箱与超时、搜索页、邮件队列）、R（branded 版本写入） |
+| 0.3.0 | 2026-10-04 | ① 移除 `forward_resume`：action 枚举、payload / output、结果规则、策略白名单与 daily_limits / min_interval_seconds、设备能力；`attachment_available` 只作可选观察。② policy 增加 `company_mailbox`（只读）与 `resume_mail_timeout_days`（默认 3）；`after_resume_received` 默认 `{action: none, wait_for_parse: true}`。③ case 主路径 `resume_requested → resume_linked`，`resume_received` 为可选观察，`resume_requested → needs_human` 用于超时或关联歧义（迁移表未增删边，只改说明）。④ 新增 `mail_message`、`mail_verification` 两个契约与 `MAIL_TRANSITIONS`、`compute_mail_message_id`、`mail_message_key`、`mail_verification_key`；`resume_document_key` 的第一个参数改为来源标识。⑤ 搜索快照卡片改为 `{result_ref, position, fields[], masked_name?, prop_card_texts[]}`，删除 `display_name / summary / stable_candidate_id`；会话目标删除 `result_ref`，v1 搜索结果不能作为指令目标。⑥ openapi：新增 `/mail-messages`、`/mail-verifications`；resume_document 增加 `variant / derived_from / mail_message_id`，`link_method` 的 `forward_record` 改为 `resume_request`；补齐 F1 报告列出的 401 / 403 / 422。⑦ 交换联系方式只换微信：`exchange_type` 枚举改为 `["wechat"]`（指令、结果、`contact_exchange_updated` 事件同步）；只能人工触发：`after_resume_received.action` 只允许 none，新增 `POST /cases/{case_id}:request-wechat`（ManualAction 类型 `request_wechat`，响应 `{manual_action, command}`）。⑧ 已读回执可接受，`externally_visible_side_effect` 说明补充 | D2（限额常量、testing 夹具）、D1（testing 夹具）、F1（一致性白名单清空）、F2（策略默认值、超时转人工、关联方式）、F3（搜索快照存储）、G（mail_messages、核对、关联方式）、H2（卡片形状）、H3（只换微信）、E（contact_exchange_updated 只报 wechat）、I1/I2（策略页邮箱与超时、去掉自动交换选项、流程详情"换微信"按钮、搜索页、邮件队列）、R（branded 版本写入） |

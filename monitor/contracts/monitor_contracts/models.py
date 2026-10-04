@@ -86,7 +86,7 @@ CONVERSATION_EVENT_KINDS: frozenset[str] = frozenset(
 
 Mode = Literal["local", "remote"]
 ExecutionMode = Literal["execute", "verify_only"]
-ExchangeType = Literal["phone"]
+ExchangeType = Literal["wechat"]  # 0.3.0 起只换微信
 ExchangeState = Literal["requested", "pending_acceptance", "available", "refused", "unknown"]
 Coverage = Literal["partial", "complete", "unreadable", "empty_confirmed"]
 PauseReason = Literal["user_request", "login_required", "account_switched", "anomaly", "server_request", "rebaseline"]
@@ -713,9 +713,10 @@ class GreetingPolicy(ContractModel):
 
 
 class AfterResumeReceived(ContractModel):
-    """简历关联（resume_linked）后的自动动作。默认 none：收到简历后不自动交换联系方式（0.3.0）。"""
+    """简历关联（resume_linked）后的自动动作。0.3.0 起只能是 none：换微信只能由人工在控制台触发，
+    服务端不得在任何自动流程中生成 request_contact_exchange。wait_for_parse 保留，当前不起作用。"""
 
-    action: Literal["none", "request_contact_exchange"] = "none"
+    action: Literal["none"] = "none"
     wait_for_parse: bool = True
 
 
