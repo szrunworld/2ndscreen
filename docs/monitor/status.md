@@ -11,6 +11,7 @@
 | A3b | 契约 0.3.1（换微信阶段、mail 服务字段） | ctx_8843cb3ab30c / monitor-A3 | monitor-A3 | 进行 | — | — |
 | X | client/server 适配 0.3.0 | 已释放 | monitor-X | 已合（813e25a；全量 1137 tests） | 2a9653d | server 一致性测试 NOT_YET_IMPLEMENTED 白名单 26 项，F2/F3/G 实现时逐项移出 |
 | C2 | Driver 修复（CliFailure 冻结、window release 分类、PDF 子树过滤） | ctx_e08c23aa3891 / monitor-C2 | monitor-C2 | 进行 | — | — |
+| D2c | 管线三处小改（入口分发、status()、suspend_gui） | ctx_f53c25d0358d / monitor-D2c | monitor-D2c | 进行 | — | — |
 | R | 品牌化简历渲染 | — | — | 未派（待用户模板与 logo、N 邮件格式） | — | — |
 | B | 只读可行性验证与夹具 | ctx_1b25ee64eab9（已释放） | monitor-B | 已合（898edbd） | 201001d | 登录/二维码、新招呼首次打开、电话待同意/已交换/已拒绝、邮件转发内容、搜索输入后结果 → 留给 N/K |
 | C | Driver 适配器 | ctx_3dfbecec466d（已释放） | monitor-C | 已合（ecfe9da；client 入工作区 + relock，contracts+client 351 tests） | ec6aed9 | 定位器 text 同时匹配 label/value（比契约宽），0.2.0 契约里追认；CliDriver 未在 BOSS 上真机跑过 → N |
@@ -67,7 +68,7 @@ Run：run_7d52e82ce7ed。分支 monitor-v1（a12a931，自 szrunworld/ss-runtime
 - Driver 层过滤附件 PDF 预览子树：同意，作为 C 的后续小任务排队（目前由 actions/common.py 在动作层过滤）。
 - hints 不随时间变化：E/F2 生成 hints 时只用稳定字段（岗位、会话入口），不用时间或未读数。
 
-## 排队中的 core 小改（X 合并后派 D2c）
+## core 小改（已派 D2c）
 
 - `python -m monitor install|mode` 分发到 `monitor.install.cli:main`（J 请求 1）。
 - `MonitorRuntime.status()` 增加 outbox 计数、last_error.message、当前指令 id 与开始时间（J 请求 2）。
