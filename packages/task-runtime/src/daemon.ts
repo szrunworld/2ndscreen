@@ -6,13 +6,28 @@
 // work; the GUI belongs to the runner's session, a separate lock.
 //
 // Ownership: a daemon runs tasks only while it holds the daemon lease (one
-// per machine and ledger), renewed by a heartbeat. Losing it stops its
-// workers. On taking ownership it finds orphans — tasks left running by a
-// worker that is gone — and moves them to paused, resumable, never to a
-// success. A daemon that cannot get the lease only serves control calls.
+// per machine and ledger), renewed by a heartbeat; a daemon without it only
+// serves control calls. The lease decides who may start an actor. It never
+// proves that an earlier actor has stopped: an expired lease may belong to a
+// daemon that is merely stalled, and the exploration bridge runs in detached
+// process groups that outlive their parent. So every worker is recorded with
+// an epoch and its process identity, and a task's actor counts as stopped
+// only on positive evidence:
+//
+// - `worker_finished` with actorExited, written by the worker's own daemon
+//   after runner.run resolved (the runner resolves only after its session
+//   closed, and the session only after the bridge child exited), or
+// - `actor_exit_verified`, from an injected verifier (A7) that checked the
+//   recorded identities, e.g. that the bridge's process group is gone.
+//
+// Without evidence a task stays as it is — running or cancelling, its pause
+// or cancel kept as intent — and no new actor starts for any task, since all
+// tasks of the skill drive the same app. Nothing is killed here.
 
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { closeSync, openSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   RuntimeError,
   TERMINAL_TASK_STATUSES,
@@ -38,19 +53,52 @@ import {
   type TaskStore,
   type Usage,
 } from './contracts.ts';
-import { join } from 'node:path';
 import { accountProblem } from './runner.ts';
 import { parseUsage } from './telemetry.ts';
 
 /** The lease scope that makes one daemon the owner of the ledger's tasks. */
 export const DAEMON_LEASE_SCOPE = leaseScopeKey('2ndscreen.task-daemon');
 
+/**
+ * Item id of the daemon's control events (publication, worker lifecycle,
+ * exit evidence, pause and resume intent). Kept apart from candidate events
+ * so they are always read in full, however many other events a task writes.
+ */
+export const CONTROL_ITEM = '~daemon';
+
 export const DAEMON_DEFAULTS = {
   /** Daemon lease; renewed every third of it. */
   leaseTtlMs: 15_000,
   /** How often the owner looks at the ledger for new tasks and requests from other processes. */
   pollMs: 500,
+  /** Least time between two verifier calls for the same worker. */
+  verifyRetryMs: 5_000,
 } as const;
+
+/** Who ran (or runs) a task's actor. */
+export interface WorkerRecord {
+  taskId: string;
+  /** Unique per worker start. */
+  epoch: string;
+  /** Unique per daemon instance. */
+  daemonId: string;
+  ownerPid: number;
+  /** Start time of the owner process (ps lstart, ISO), so a reused pid is not taken for it. */
+  processStartedAt?: string;
+  startedAt: string;
+  /** Recorded by a daemon before epochs existed: no exit of it can be on record, only verified. */
+  legacy?: true;
+}
+
+export type ActorExitVerdict = { stopped: true; evidence: string } | { stopped: false; reason: string };
+
+/**
+ * Proves that a recorded worker's actor has stopped — every process that
+ * could still send input for it, including detached bridge groups. It may
+ * stop such processes itself, but only ones whose identity it has verified.
+ * Answer stopped only with evidence; anything else leaves the task waiting.
+ */
+export type ActorExitVerifier = (worker: WorkerRecord, context: { signal: AbortSignal }) => Promise<ActorExitVerdict>;
 
 /** Optional additions to the contract's dependencies; all have defaults. */
 export interface TaskDaemonOptions {
@@ -66,17 +114,32 @@ export interface TaskDaemonOptions {
    * 1000 ms. They never claim stopped before the actor has.
    */
   ackWaitMs?: number;
+  /** Checks a worker whose exit no daemon recorded. Without one, such a task stays unresolved. */
+  verifyActorExit?: ActorExitVerifier;
+  verifyRetryMs?: number;
+  /** The explicit account for a new task, bound before the task is published to the scheduler. */
+  accountFor?: (skillId: string, input: CollectResumesInput) => AccountScope | undefined;
 }
 
 /** What the daemon offers beyond the contract's TaskControl. */
 export interface TaskDaemon extends TaskControl {
   /**
-   * Bind a BOSS account to a task that is not running (queued, paused or
-   * waiting_user) — the explicit binding the runner requires when the window
-   * shows no readable account. Refused once the task holds candidates of
-   * another account.
+   * submit, optionally with the explicit account the task is bound to. The
+   * account is written before the task is published, so no worker can start
+   * it unbound.
+   */
+  submit(skillId: string, input: CollectResumesInput, options?: { account?: AccountScope }): Promise<{ taskId: string }>;
+  /**
+   * Bind the account of a paused or waiting task that has none (the runner
+   * waits with account_changed when it finds none). A bound key never changes.
    */
   bindAccount(taskId: string, account: AccountScope): Promise<TaskRecord>;
+  /**
+   * Explicitly publish a queued task that was never published (made before
+   * publication existed, or straight through the store). Such tasks are
+   * never started on their own; each gets a publication_missing event.
+   */
+  publish(taskId: string): Promise<TaskRecord>;
   /** Stop scheduling, stop workers (their tasks become paused) and give up the daemon lease. */
   shutdown(): Promise<void>;
   /** Whether this daemon holds the daemon lease right now. */
@@ -100,12 +163,73 @@ class StateLocks {
 }
 
 interface Worker {
-  taskId: string;
+  record: WorkerRecord;
   controller: AbortController;
   done: Promise<void>;
   /** Why it was told to stop; decides what settle writes once the actor has exited. */
   stop?: 'pause' | 'cancel' | 'shutdown' | 'lease_lost';
 }
+
+/** A task's control events, folded. */
+interface ControlState {
+  published: boolean;
+  /** The latest worker started for the task. */
+  worker?: WorkerRecord;
+  /** That worker's actor is proven stopped. */
+  exited: boolean;
+  /** The last lifecycle mark: a resume after the worker ended means "start again", not orphan. */
+  lifecycle?: 'resume' | 'started' | 'exited';
+  pausePending: boolean;
+  /** An unproven exit of the latest worker is already on record. */
+  unprovenNoted: boolean;
+  /** A missing publication is already on record. */
+  publicationNoted: boolean;
+}
+
+function foldControl(events: TaskEvent[]): ControlState {
+  const state: ControlState = { published: false, exited: false, pausePending: false, unprovenNoted: false, publicationNoted: false };
+  for (const e of events) {
+    const d = e.detail ?? {};
+    switch (e.type) {
+      case 'task_published':
+        state.published = true;
+        break;
+      case 'publication_missing':
+        state.publicationNoted = true;
+        break;
+      case 'worker_started':
+        state.worker = d as unknown as WorkerRecord;
+        state.exited = false;
+        state.unprovenNoted = false;
+        state.lifecycle = 'started';
+        break;
+      case 'worker_finished':
+      case 'actor_exit_verified':
+        if (state.worker && d.epoch === state.worker.epoch && (e.type === 'actor_exit_verified' || d.actorExited === true)) {
+          state.exited = true;
+          state.lifecycle = 'exited';
+        }
+        break;
+      case 'actor_exit_unproven':
+        if (state.worker && d.epoch === state.worker.epoch) state.unprovenNoted = true;
+        break;
+      case 'resume_requested':
+        state.lifecycle = 'resume';
+        state.pausePending = false;
+        break;
+      case 'pause_requested':
+        state.pausePending = true;
+        break;
+      case 'pause_applied':
+        state.pausePending = false;
+        break;
+    }
+  }
+  return state;
+}
+
+/** No actor can be running for the task: none was ever started, or the latest one is proven stopped. */
+const actorProvenStopped = (state: ControlState): boolean => !state.worker || state.exited;
 
 export function createTaskDaemon(
   deps: {
@@ -122,8 +246,13 @@ export function createTaskDaemon(
   const pollMs = deps.pollMs ?? DAEMON_DEFAULTS.pollMs;
   const claim = deps.claim ?? true;
   const ackWaitMs = deps.ackWaitMs ?? 1_000;
+  const verifyRetryMs = deps.verifyRetryMs ?? DAEMON_DEFAULTS.verifyRetryMs;
+  const daemonId = randomUUID();
+  const processStartedAt = processStartTime(ownerPid);
   const locks = new StateLocks();
   const workers = new Map<string, Worker>();
+  const lastVerify = new Map<string, number>();
+  const lifetime = new AbortController();
   let lease: SessionLease | undefined;
   let stopped = false;
   let ticking: Promise<void> | undefined;
@@ -132,6 +261,30 @@ export function createTaskDaemon(
   const now = () => clock.now().toISOString();
   const event = (taskId: string, type: string, detail?: Record<string, unknown>) =>
     store.appendEvent({ taskId, type, at: now(), ...(detail ? { detail } : {}) });
+  const control = (taskId: string, type: string, detail?: Record<string, unknown>) =>
+    store.appendEvent({ taskId, itemId: CONTROL_ITEM, type, at: now(), ...(detail ? { detail } : {}) });
+  /** Tasks known to carry no worker record from before epochs; events are append-only. */
+  const noLegacy = new Set<string>();
+
+  /**
+   * The task's control events, folded. A task whose only worker record is a
+   * pre-upgrade `worker_started` (no control item, no epoch) gets that worker
+   * as its latest one, never proven stopped by itself, so an old in-flight
+   * task cannot look actor-free.
+   */
+  async function controlState(taskId: string): Promise<ControlState> {
+    const events = await store.listEvents(taskId, { itemId: CONTROL_ITEM });
+    const state = foldControl(events);
+    if (state.worker || noLegacy.has(taskId)) return state;
+    const legacy = (await store.listEvents(taskId)).filter((e) => e.itemId === undefined && e.type === 'worker_started').at(-1);
+    if (!legacy) {
+      noLegacy.add(taskId);
+      return state;
+    }
+    const worker: WorkerRecord = { taskId, epoch: `legacy-${legacy.at}`, daemonId: 'legacy', ownerPid: Number(legacy.detail?.ownerPid ?? 0), startedAt: legacy.at, legacy: true };
+    const synthetic: TaskEvent = { taskId, itemId: CONTROL_ITEM, type: 'worker_started', at: legacy.at, detail: { ...worker } };
+    return foldControl([synthetic, ...events]);
+  }
 
   /** Compare-and-set transition; retried against the status it finds when another writer got there first. */
   async function move(taskId: string, decide: (task: TaskRecord) => { to: TaskStatus; patch?: Parameters<TaskStore['transitionTask']>[2] } | TaskRecord): Promise<TaskRecord> {
@@ -156,8 +309,11 @@ export function createTaskDaemon(
       try {
         lease = await store.renewLease(lease.leaseId, leaseTtlMs);
         return true;
-      } catch {
-        // Expired or taken: this daemon is no longer the owner.
+      } catch (error) {
+        // A busy or failing ledger is not a lost lease while it has time left; retried next poll.
+        const gone = isRuntimeError(error, 'conflict') || isRuntimeError(error, 'not_found') || Date.parse(lease.expiresAt) <= clock.now().getTime();
+        if (!gone) return true;
+        // Expired or taken: another daemon may own the ledger now.
         lease = undefined;
         await stopWorkers('lease_lost');
         return false;
@@ -165,7 +321,6 @@ export function createTaskDaemon(
     }
     try {
       lease = await store.acquireLease({ scopeKey: DAEMON_LEASE_SCOPE, holder: 'runtime', ownerPid, ttlMs: leaseTtlMs });
-      await recoverOrphans();
       return true;
     } catch (error) {
       if (isRuntimeError(error, 'lease_held')) return false;
@@ -174,35 +329,41 @@ export function createTaskDaemon(
   }
 
   /**
-   * Tasks left running whose worker is gone. A task is running before its
-   * worker starts (the daemon writes `worker_started` right after moving it
-   * to running), so only a running task with a worker start after its last
-   * move to running, and no worker here, was orphaned.
+   * Whether the task's latest actor is proven stopped, asking the verifier
+   * (at most every verifyRetryMs) when no daemon recorded its exit. Records
+   * an unproven exit once per worker.
    */
-  async function recoverOrphans(): Promise<void> {
-    for (const task of await store.listTasks({ status: ['running'] })) {
-      if (workers.has(task.id) || !(await workerStartedSinceRunning(task.id))) continue;
-      await locks.run(task.id, async () => {
+  async function provenStopped(taskId: string, state: ControlState): Promise<boolean> {
+    if (actorProvenStopped(state)) return true;
+    const worker = state.worker!;
+    if (workers.get(taskId)?.record.epoch === worker.epoch) return false;
+    let reason = 'no daemon recorded the exit of this worker and no verifier is configured; lease expiry is not proof';
+    const verify = deps.verifyActorExit;
+    if (verify) {
+      const last = lastVerify.get(worker.epoch);
+      if (last === undefined || Date.now() - last >= verifyRetryMs) {
+        lastVerify.set(worker.epoch, Date.now());
+        let verdict: ActorExitVerdict;
         try {
-          await store.transitionTask(task.id, 'paused', { error: { code: 'lease_held', message: 'the worker running this task stopped without finishing it; resume to continue' } }, 'running');
-          await event(task.id, 'orphan_recovered', { ownerPid });
+          verdict = await verify(worker, { signal: lifetime.signal });
         } catch (error) {
-          if (!isRuntimeError(error, 'conflict')) throw error;
+          verdict = { stopped: false, reason: `verifier failed: ${error instanceof Error ? error.message : String(error)}` };
         }
-      });
+        if (verdict.stopped && verdict.evidence.trim()) {
+          await control(taskId, 'actor_exit_verified', { epoch: worker.epoch, source: 'verifier', evidence: verdict.evidence, by: daemonId });
+          // The caller decides on this state: the worker ended, so the task is an orphan, not one to start.
+          state.exited = true;
+          state.lifecycle = 'exited';
+          return true;
+        }
+        reason = verdict.stopped ? 'the verifier gave no evidence' : verdict.reason;
+      } else reason = 'waiting to ask the verifier again';
     }
-  }
-
-  async function workerStartedSinceRunning(taskId: string): Promise<boolean> {
-    const isRunningMove = (e: TaskEvent) => e.type === 'task_status' && e.detail?.to === 'running';
-    const scan = (events: TaskEvent[]): boolean | undefined => {
-      for (let i = events.length - 1; i >= 0; i--) {
-        if (events[i]!.type === 'worker_started') return true;
-        if (isRunningMove(events[i]!)) return false;
-      }
-      return undefined;
-    };
-    return scan(await store.listEvents(taskId, { limit: 200 })) ?? scan(await store.listEvents(taskId)) ?? false;
+    if (!state.unprovenNoted) {
+      await control(taskId, 'actor_exit_unproven', { epoch: worker.epoch, ownerPid: worker.ownerPid, reason, by: daemonId });
+      state.unprovenNoted = true;
+    }
+    return false;
   }
 
   // -------------------------------------------------------------------------
@@ -231,83 +392,106 @@ export function createTaskDaemon(
   async function tick(): Promise<void> {
     if (stopped || !(await holdLease())) return;
     const active = await store.listTasks({ status: ['queued', 'running', 'cancelling', 'paused', 'waiting_user'] });
+    let blocked = false;
+    const startable: TaskRecord[] = [];
     for (const task of active) {
+      const state = await controlState(task.id);
       const worker = workers.get(task.id);
       if (worker) {
-        // Cancelled or moved by someone else: stop the actor.
+        // Cancelled, paused or moved by someone else: stop the actor; settle records the rest.
         if (task.status === 'cancelling') stopWorker(worker, 'cancel');
-        else if (task.status !== 'running') stopWorker(worker, 'pause');
-        else if (await pauseRequested(task.id)) stopWorker(worker, 'pause');
+        else if (task.status !== 'running' || state.pausePending) stopWorker(worker, 'pause');
         continue;
       }
-      if (task.status === 'running' && (await pauseRequested(task.id))) {
-        // Asked to pause with no actor running it: nothing to wait for.
-        await locks.run(task.id, () => store.transitionTask(task.id, 'paused', {}, 'running').catch(ignoreConflict));
+      if (!(await provenStopped(task.id, state))) {
+        // An actor may still drive the app: decide nothing, start nothing.
+        blocked = true;
         continue;
       }
-      if (task.status === 'cancelling') {
-        // No actor of this daemon runs it, and only the owner runs tasks: confirm.
-        await locks.run(task.id, () => store.transitionTask(task.id, 'cancelled', { terminationReason: 'cancelled' }, 'cancelling').catch(ignoreConflict));
-      } else if (task.status === 'running' && (await workerStartedSinceRunning(task.id))) {
-        await recoverOrphans();
-      }
+      await locks.run(task.id, async () => {
+        if (task.status === 'cancelling') {
+          await store.transitionTask(task.id, 'cancelled', { terminationReason: 'cancelled' }, 'cancelling').catch(ignoreConflict);
+        } else if (task.status === 'running' && state.pausePending) {
+          if (await store.transitionTask(task.id, 'paused', {}, 'running').catch(ignoreConflict)) await control(task.id, 'pause_applied', { by: daemonId });
+        } else if (task.status === 'running' && state.worker && state.lifecycle === 'exited') {
+          // Its worker ended without finishing it (crash, lost lease): resumable, never a success.
+          const paused = await store
+            .transitionTask(task.id, 'paused', { error: { code: 'lease_held', message: 'the worker running this task stopped without finishing it; resume to continue' } }, 'running')
+            .catch(ignoreConflict);
+          if (paused) await control(task.id, 'orphan_recovered', { epoch: state.worker.epoch, by: daemonId });
+        } else if (task.status === 'running' || (task.status === 'queued' && state.published)) {
+          startable.push(task);
+        } else if (task.status === 'queued' && !state.publicationNoted) {
+          // Not silently ignored: on record until someone publishes or cancels it.
+          await control(task.id, 'publication_missing', { reason: 'queued without task_published; call publish() to run it', by: daemonId });
+        }
+      });
     }
     // One task at a time: tasks of one skill drive the same app.
-    if (workers.size > 0 || stopped) return;
-    const next = active.find((t) => t.status === 'running' && !workers.has(t.id)) ?? active.find((t) => t.status === 'queued');
+    if (blocked || workers.size > 0 || stopped) return;
+    const next = startable.find((t) => t.status === 'running') ?? startable.find((t) => t.status === 'queued');
     if (next) await start(next);
   }
 
   async function start(task: TaskRecord): Promise<void> {
+    const record: WorkerRecord = {
+      taskId: task.id,
+      epoch: randomUUID(),
+      daemonId,
+      ownerPid,
+      ...(processStartedAt ? { processStartedAt } : {}),
+      startedAt: now(),
+    };
     const started = await locks.run(task.id, async () => {
       try {
         if (task.status === 'queued') await store.transitionTask(task.id, 'running', { phase: 'preparing' }, 'queued');
         else if ((await store.getTask(task.id))?.status !== 'running') return false;
-        await event(task.id, 'worker_started', { ownerPid });
+        // On record before the runner can act.
+        await control(task.id, 'worker_started', { ...record });
         return true;
       } catch (error) {
         if (isRuntimeError(error, 'conflict')) return false;
         throw error;
       }
     });
-    if (!started || stopped) return;
+    if (!started) return;
     const controller = new AbortController();
     const worker: Worker = {
-      taskId: task.id,
+      record,
       controller,
       done: runner
         .run(task.id, controller.signal)
         .then(
-          () => undefined,
-          async (error: unknown) => {
-            // The runner could not finish its own bookkeeping; leave the task resumable.
-            const message = error instanceof Error ? error.message : String(error);
-            await store
-              .transitionTask(task.id, 'paused', { error: { code: isRuntimeError(error) ? error.code : 'io', message } }, 'running')
-              .catch(() => undefined);
-          },
+          () => ({ exited: true }) as const,
+          (error: unknown) => ({ exited: false, error: error instanceof Error ? error.message : String(error) }) as const,
         )
-        .then(() => settle(worker))
+        .then((result) => settle(worker, result))
         .finally(() => {
           workers.delete(task.id);
           kick();
         }),
     };
     workers.set(task.id, worker);
+    if (stopped) stopWorker(worker, 'shutdown');
   }
 
-  /** After the actor has exited: confirm a cancel or a pause, record the end of the worker. */
-  async function settle(worker: Worker): Promise<void> {
-    const { taskId } = worker;
-    if (worker.stop === 'lease_lost') return; // another daemon may own the task now
+  /**
+   * After runner.run has settled. Its exit is recorded first — even by a
+   * daemon that lost the lease, since it is evidence, not a decision — and
+   * only then is a cancel or pause confirmed. A runner that threw proves
+   * nothing about its session, so its exit stays unproven.
+   */
+  async function settle(worker: Worker, result: { exited: true } | { exited: false; error: string }): Promise<void> {
+    const { taskId, epoch } = worker.record;
+    await control(taskId, 'worker_finished', { epoch, actorExited: result.exited, ...(!result.exited ? { error: result.error } : {}), by: daemonId }).catch(() => undefined);
+    if (worker.stop === 'lease_lost' || !result.exited) return;
     await locks.run(taskId, async () => {
       const task = await store.getTask(taskId).catch(() => undefined);
       if (task?.status === 'cancelling') await store.transitionTask(taskId, 'cancelled', { terminationReason: 'cancelled' }, 'cancelling').catch(ignoreConflict);
       else if (task?.status === 'running' && (worker.stop === 'pause' || worker.stop === 'shutdown')) {
-        await store.transitionTask(taskId, 'paused', {}, 'running').catch(ignoreConflict);
-        if (worker.stop === 'shutdown') await event(taskId, 'daemon_shutdown', { ownerPid }).catch(() => undefined);
+        if (await store.transitionTask(taskId, 'paused', {}, 'running').catch(ignoreConflict))
+          await control(taskId, worker.stop === 'pause' ? 'pause_applied' : 'daemon_shutdown', { by: daemonId }).catch(() => undefined);
       }
-      await event(taskId, 'worker_finished', { ownerPid }).catch(() => undefined);
     });
   }
 
@@ -318,7 +502,7 @@ export function createTaskDaemon(
   }
 
   function stopWorker(worker: Worker, why: NonNullable<Worker['stop']>): void {
-    // A cancel outranks a pause; a lost lease outranks both (this daemon may no longer write).
+    // A cancel outranks a pause; a lost lease outranks both (this daemon no longer decides).
     if (worker.stop !== 'lease_lost' && !(worker.stop === 'cancel' && why === 'pause')) worker.stop = why;
     worker.controller.abort(new RuntimeError('cancelled', why));
   }
@@ -330,17 +514,6 @@ export function createTaskDaemon(
     let timer: NodeJS.Timeout | undefined;
     await Promise.race([worker.done, new Promise<void>((r) => (timer = setTimeout(r, ackWaitMs)))]);
     clearTimeout(timer);
-  }
-
-  /** A pause request written after the task's latest move to running or worker start, not yet applied. */
-  async function pauseRequested(taskId: string): Promise<boolean> {
-    const events = await store.listEvents(taskId, { limit: 200 });
-    for (let i = events.length - 1; i >= 0; i--) {
-      const e = events[i]!;
-      if (e.type === 'pause_requested') return true;
-      if (e.type === 'worker_started' || (e.type === 'task_status' && e.detail?.to === 'running')) return false;
-    }
-    return false;
   }
 
   const timer = claim ? setInterval(kick, pollMs) : undefined;
@@ -361,14 +534,23 @@ export function createTaskDaemon(
     }
   };
 
-  const control: TaskDaemon = {
-    async submit(skillId: string, input: CollectResumesInput): Promise<{ taskId: string }> {
+  const daemon: TaskDaemon = {
+    async submit(skillId: string, input: CollectResumesInput, options: { account?: AccountScope } = {}): Promise<{ taskId: string }> {
       const spec = specs(skillId);
       if (!spec) throw new RuntimeError('not_found', `no skill ${skillId}`);
       const value = assertValid(validateCollectResumesInput(input, clock.now()), 'task input');
       if ((value.analysis ?? spec.defaults.analysis) === 'on')
         throw new RuntimeError('capability_missing', 'resume analysis is not implemented; submit with analysis "off"');
+      const account = options.account ?? deps.accountFor?.(skillId, value);
+      const problem = account && accountProblem(account);
+      if (problem) throw new RuntimeError('invalid_input', problem);
       const task = await store.createTask(spec, value);
+      // Bound first, published second: the scheduler starts only published tasks.
+      if (account) {
+        await store.transitionTask(task.id, 'queued', { account }, 'queued');
+        await control(task.id, 'account_bound', { binding: account.binding, by: daemonId });
+      }
+      await control(task.id, 'task_published', { account: account !== undefined, by: daemonId });
       kick();
       return { taskId: task.id };
     },
@@ -391,38 +573,36 @@ export function createTaskDaemon(
         if (task.status === 'paused') return;
         if (task.status !== 'running' && task.status !== 'waiting_user')
           throw new RuntimeError('conflict', `task ${taskId} is ${task.status} and cannot be paused`, { current: task.status });
-        if (task.status === 'waiting_user') {
-          // The runner ended its run to wait; nothing acts while a task waits.
-          await store.transitionTask(taskId, 'paused', {}, 'waiting_user').catch(ignoreConflict);
-          return;
-        }
         const worker = workers.get(taskId);
         if (worker) {
           // Paused once the actor has stopped; settle writes it.
-          await event(taskId, 'pause_requested', { by: ownerPid });
+          await control(taskId, 'pause_requested', { by: daemonId });
           stopWorker(worker, 'pause');
           return;
         }
-        if (!(await otherOwnerAlive())) {
-          // No actor runs it anywhere: paused now.
-          await store.transitionTask(taskId, 'paused', {}, task.status).catch(ignoreConflict);
+        if (actorProvenStopped(await controlState(taskId))) {
+          // No actor can be running it: paused now.
+          if (await store.transitionTask(taskId, 'paused', {}, task.status).catch(ignoreConflict)) await control(taskId, 'pause_applied', { by: daemonId });
           return;
         }
-        // The owning daemon stops its actor, then marks it paused.
-        await event(taskId, 'pause_requested', { by: ownerPid });
+        // An actor may be live (another daemon's, or unproven): the intent waits for its exit.
+        await control(taskId, 'pause_requested', { by: daemonId });
       });
       await briefly(taskId);
       return (await store.getTask(taskId))!;
     },
 
     async resume(taskId: string): Promise<TaskRecord> {
-      const task = await locks.run(taskId, () =>
-        move(taskId, (t) => {
-          if (t.status === 'running' || t.status === 'queued') return t;
-          if (t.status !== 'paused' && t.status !== 'waiting_user') throw new RuntimeError('conflict', `task ${taskId} is ${t.status} and cannot be resumed`, { current: t.status });
-          return { to: 'running', patch: { phase: 'preparing', error: null } };
-        }),
-      );
+      const task = await locks.run(taskId, async () => {
+        const current = await store.getTask(taskId);
+        if (!current) throw new RuntimeError('not_found', `no task ${taskId}`);
+        if (current.status === 'running' || current.status === 'queued') return current;
+        if (current.status !== 'paused' && current.status !== 'waiting_user')
+          throw new RuntimeError('conflict', `task ${taskId} is ${current.status} and cannot be resumed`, { current: current.status });
+        // The intent goes first, so an owner never mistakes the resumed task for an orphan.
+        await control(taskId, 'resume_requested', { by: daemonId });
+        return move(taskId, (t) => (t.status === 'paused' || t.status === 'waiting_user' ? { to: 'running', patch: { phase: 'preparing', error: null } } : t));
+      });
       kick();
       return task;
     },
@@ -438,7 +618,10 @@ export function createTaskDaemon(
       );
       const worker = workers.get(taskId);
       if (worker) stopWorker(worker, 'cancel');
-      else if (task.status === 'cancelling') await confirmCancelWithoutActor(taskId);
+      else if (task.status === 'cancelling' && actorProvenStopped(await controlState(taskId))) {
+        // No actor can be running it, here or in any other process.
+        await locks.run(taskId, () => store.transitionTask(taskId, 'cancelled', { terminationReason: 'cancelled' }, 'cancelling').catch(ignoreConflict));
+      }
       kick();
       await briefly(taskId);
       return (await store.getTask(taskId)) ?? task;
@@ -459,12 +642,26 @@ export function createTaskDaemon(
       return locks.run(taskId, async () => {
         const task = await store.getTask(taskId);
         if (!task) throw new RuntimeError('not_found', `no task ${taskId}`);
-        if (task.status !== 'queued' && task.status !== 'paused' && task.status !== 'waiting_user')
-          throw new RuntimeError('conflict', `task ${taskId} is ${task.status}; bind its account before it runs or while it waits`, { current: task.status });
+        if (task.status !== 'paused' && task.status !== 'waiting_user')
+          throw new RuntimeError('conflict', `task ${taskId} is ${task.status}; bind an account at submit, or while the task is paused or waiting`, { current: task.status });
+        if (task.account && task.account.accountKey !== account.accountKey)
+          throw new RuntimeError('conflict', `task ${taskId} is bound to another account; start a new task`);
         const bound = await store.transitionTask(taskId, task.status, { account }, task.status);
-        await event(taskId, 'account_bound', { binding: account.binding });
+        await control(taskId, 'account_bound', { binding: account.binding, by: daemonId });
         return bound;
       });
+    },
+
+    async publish(taskId: string): Promise<TaskRecord> {
+      const task = await locks.run(taskId, async () => {
+        const current = await store.getTask(taskId);
+        if (!current) throw new RuntimeError('not_found', `no task ${taskId}`);
+        if (current.status !== 'queued') throw new RuntimeError('conflict', `task ${taskId} is ${current.status}; only a queued task is published`, { current: current.status });
+        if (!(await controlState(taskId)).published) await control(taskId, 'task_published', { migrated: true, account: current.account !== undefined, by: daemonId });
+        return current;
+      });
+      kick();
+      return task;
     },
 
     isOwner: () => lease !== undefined,
@@ -475,61 +672,82 @@ export function createTaskDaemon(
       if (timer) clearInterval(timer);
       await ticking;
       await stopWorkers('shutdown');
+      lifetime.abort();
       if (lease) await store.releaseLease(lease.leaseId).catch(() => undefined);
       lease = undefined;
     },
   };
 
-  /** Whether a daemon other than this one holds the daemon lease. */
-  async function otherOwnerAlive(): Promise<boolean> {
-    if (lease) return false;
-    return daemonRunning(store, ownerPid);
-  }
-
-  /**
-   * A cancel no worker here will confirm. When this daemon owns the ledger,
-   * or no daemon does (the lease can be taken), no actor runs the task, so
-   * the cancel is confirmed now; otherwise the owning daemon confirms it once
-   * its actor has exited.
-   */
-  async function confirmCancelWithoutActor(taskId: string): Promise<void> {
-    let probe: SessionLease | undefined;
-    if (!lease) {
-      try {
-        probe = await store.acquireLease({ scopeKey: DAEMON_LEASE_SCOPE, holder: 'runtime', ownerPid, ttlMs: leaseTtlMs });
-      } catch (error) {
-        if (isRuntimeError(error, 'lease_held')) return;
-        throw error;
-      }
-    }
-    try {
-      if (workers.has(taskId)) return;
-      await locks.run(taskId, () => store.transitionTask(taskId, 'cancelled', { terminationReason: 'cancelled' }, 'cancelling').catch(ignoreConflict));
-    } finally {
-      if (probe) await store.releaseLease(probe.leaseId).catch(() => undefined);
-    }
-  }
-
-  return control;
+  return daemon;
 }
 
+/** Returns the value for a transition that went through, undefined for one another writer pre-empted. */
 function ignoreConflict(error: unknown): undefined {
   if (isRuntimeError(error, 'conflict')) return undefined;
   throw error;
 }
 
 // ---------------------------------------------------------------------------
+// Process identity: building blocks for an ActorExitVerifier. Nothing here kills.
+
+/** A process's start time (ps lstart) as ISO, or undefined when it cannot be read. */
+export function processStartTime(pid: number): string | undefined {
+  if (!Number.isInteger(pid) || pid <= 0) return undefined;
+  try {
+    const out = execFileSync('/bin/ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' }, timeout: 2_000, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    const ms = Date.parse(out);
+    return out && !Number.isNaN(ms) ? new Date(ms).toISOString() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Whether the process recorded as (pid, startedAt) is still the one running:
+ * 'gone' when no such pid exists or the pid now belongs to a process started
+ * at another time; 'unknown' when that cannot be told (no start time on
+ * record, or ps unreadable).
+ */
+export function processIdentity(pid: number, startedAt: string | undefined): 'alive' | 'gone' | 'unknown' {
+  try {
+    process.kill(pid, 0);
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ESRCH' ? 'gone' : 'unknown';
+  }
+  if (!startedAt) return 'unknown';
+  const current = processStartTime(pid);
+  if (!current) return 'unknown';
+  return current === startedAt ? 'alive' : 'gone';
+}
+
+// ---------------------------------------------------------------------------
 // The worker process
 
-/** Whether some process holds the daemon lease now. Takes and returns it at once when free. */
-export async function daemonRunning(store: TaskStore, ownerPid: number = process.pid): Promise<boolean> {
+/** The pid holding the daemon lease now, or undefined when nobody does. Takes and returns the lease at once when free. */
+export async function daemonOwnerPid(store: TaskStore, ownerPid: number = process.pid): Promise<number | undefined> {
   try {
     const probe = await store.acquireLease({ scopeKey: DAEMON_LEASE_SCOPE, holder: 'runtime', ownerPid, ttlMs: 1_000 });
     await store.releaseLease(probe.leaseId);
-    return false;
+    return undefined;
   } catch (error) {
-    if (isRuntimeError(error, 'lease_held')) return true;
+    if (isRuntimeError(error, 'lease_held')) return Number(error.details?.ownerPid);
     throw error;
+  }
+}
+
+/** Whether some process holds the daemon lease now. */
+export async function daemonRunning(store: TaskStore, ownerPid: number = process.pid): Promise<boolean> {
+  return (await daemonOwnerPid(store, ownerPid)) !== undefined;
+}
+
+/** The process group of a pid, or undefined when it cannot be read. */
+function processGroup(pid: number): number | undefined {
+  try {
+    const out = execFileSync('/bin/ps', ['-o', 'pgid=', '-p', String(pid)], { encoding: 'utf8', timeout: 2_000, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    const pgid = Number(out);
+    return out && Number.isInteger(pgid) ? pgid : undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -543,34 +761,90 @@ export interface DetachedWorkerCommand {
   logPath?: string;
 }
 
-/**
- * Starts the daemon as its own session-less background process that keeps
- * running after the caller exits: detached into a new process group, no
- * inherited stdio, not waited for. Returns its pid.
- */
-export function spawnDetachedWorker(command: DetachedWorkerCommand): number {
-  const fd = command.logPath ? openSync(command.logPath, 'a') : undefined;
-  try {
-    const child = spawn(command.command, [...command.args], {
-      detached: true,
-      stdio: ['ignore', fd ?? 'ignore', fd ?? 'ignore'],
-      env: { ...process.env, ...command.env },
-      ...(command.cwd ? { cwd: command.cwd } : {}),
-    });
-    if (child.pid === undefined) throw new RuntimeError('capability_missing', `could not start ${command.command}`);
-    child.unref();
-    return child.pid;
-  } finally {
-    if (fd !== undefined) closeSync(fd);
-  }
+interface Launched {
+  pid: number;
+  exit: Promise<{ code: number | null; signal: string | null }>;
+}
+
+function launch(command: DetachedWorkerCommand): Promise<Launched> {
+  return new Promise((resolve, reject) => {
+    let fd: number | undefined;
+    const closeLog = () => {
+      if (fd !== undefined) closeSync(fd);
+      fd = undefined;
+    };
+    try {
+      if (command.logPath) fd = openSync(command.logPath, 'a');
+      const child = spawn(command.command, [...command.args], {
+        detached: true,
+        stdio: ['ignore', fd ?? 'ignore', fd ?? 'ignore'],
+        env: { ...process.env, ...command.env },
+        ...(command.cwd ? { cwd: command.cwd } : {}),
+      });
+      const exit = new Promise<{ code: number | null; signal: string | null }>((r) => child.once('exit', (code, signal) => r({ code, signal })));
+      child.once('error', (error) => {
+        closeLog();
+        reject(new RuntimeError('capability_missing', `could not start ${command.command}: ${error.message}`));
+      });
+      child.once('spawn', () => {
+        closeLog();
+        // Later errors (e.g. a failed kill) must not crash the caller.
+        child.on('error', () => undefined);
+        child.unref();
+        resolve({ pid: child.pid!, exit });
+      });
+    } catch (error) {
+      closeLog();
+      reject(isRuntimeError(error) ? error : new RuntimeError('io', `could not start ${command.command}: ${error instanceof Error ? error.message : String(error)}`));
+    }
+  });
 }
 
 /**
- * Makes sure a daemon owns the ledger: starts a detached worker when none
- * holds the daemon lease. Two callers racing may both start one; only one
- * gets the lease and the other serves nothing and can exit.
+ * Starts the daemon as its own background process that keeps running after
+ * the caller exits: detached into a new process group, no inherited stdio,
+ * not waited for. Resolves with its pid once it has started; rejects with
+ * capability_missing when it cannot be started.
  */
-export async function ensureDaemon(store: TaskStore, command: DetachedWorkerCommand): Promise<{ started: boolean; pid?: number }> {
-  if (await daemonRunning(store)) return { started: false };
-  return { started: true, pid: spawnDetachedWorker(command) };
+export async function spawnDetachedWorker(command: DetachedWorkerCommand): Promise<number> {
+  return (await launch(command)).pid;
+}
+
+/**
+ * Makes sure a daemon owns the ledger. When none holds the daemon lease,
+ * starts a detached worker and resolves only once an unexpired lease is
+ * held, within readyTimeoutMs; `ownedBySpawned` says whether its holder is
+ * the spawned process (or one in its process group) rather than another
+ * daemon that won a race. Rejects as soon as the worker exits first (io,
+ * with its code and signal) or when the time runs out (timeout, the
+ * still-running pid in details).
+ */
+export async function ensureDaemon(
+  store: TaskStore,
+  command: DetachedWorkerCommand,
+  options: { readyTimeoutMs?: number; pollMs?: number } = {},
+): Promise<{ started: false; ownerPid: number } | { started: true; pid: number; ownerPid: number; ownedBySpawned: boolean }> {
+  const existing = await daemonOwnerPid(store);
+  if (existing !== undefined) return { started: false, ownerPid: existing };
+  const child = await launch(command);
+  let exited: { code: number | null; signal: string | null } | undefined;
+  void child.exit.then((e) => (exited = e));
+  const deadline = Date.now() + (options.readyTimeoutMs ?? 10_000);
+  const pause = options.pollMs ?? 100;
+  for (;;) {
+    if (exited) throw new RuntimeError('io', `the daemon exited (code ${exited.code}, signal ${exited.signal}) before taking ownership`, { pid: child.pid, ...exited });
+    const owner = await daemonOwnerPid(store);
+    if (owner !== undefined) {
+      const ownedBySpawned = owner === child.pid || processGroup(owner) === child.pid;
+      return { started: true, pid: child.pid, ownerPid: owner, ownedBySpawned };
+    }
+    if (Date.now() >= deadline) throw new RuntimeError('timeout', `the daemon (pid ${child.pid}) did not take ownership in time; it was left running`, { pid: child.pid });
+    await new Promise<void>((r) => {
+      const t = setTimeout(r, pause);
+      void child.exit.then(() => {
+        clearTimeout(t);
+        r();
+      });
+    });
+  }
 }
