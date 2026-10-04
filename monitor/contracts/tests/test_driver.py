@@ -35,10 +35,19 @@ def el(i, label="", value="", **kw):
 
 def test_element_text():
     assert el(0, "发送").text == "发送"
+    # 只有 value 时 text == value
     assert el(0, "", "你好").text == "你好"
-    assert el(0, "备注", "你好").text == "备注 你好"
+    assert el(0, "   ", "你好").text == "你好"
+    # label 与 value 都有时 text == label，不拼接（输入框 label='搜索'、value=关键词）
+    assert el(0, "搜索", "golang 后端").text == "搜索"
     assert el(0, "发送", "发送").text == "发送"
     assert el(0).text == ""
+
+
+def test_element_enabled_defaults_to_none():
+    assert el(0, "x").enabled is None  # 来源不提供
+    assert el(0, "x", enabled=False).enabled is False
+    assert el(0, "x", enabled=True).enabled is True
 
 
 def test_frame_helpers():

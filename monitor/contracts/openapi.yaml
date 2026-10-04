@@ -1,10 +1,10 @@
 openapi: 3.1.0
 info:
   title: 招聘 Monitor 服务端 API
-  version: 0.1.0
+  version: 0.1.1
   summary: Monitor 设备、指令、事件、简历文档、搜索、人工处理、登录接力与策略接口
   description: |
-    与 monitor_contracts 0.1.0 对应（info.version 与契约版本同步）。说明见 docs/monitor/api.md。
+    与 monitor_contracts 0.1.1 对应（info.version 与契约版本同步）。说明见 docs/monitor/api.md。
 
     - 传输：只暴露 HTTPS。第一版用轮询，领取指令为长轮询（最长 30 秒），不使用 WebSocket。
     - 认证：设备接口用设备令牌（deviceToken）；控制台接口用控制台会话（consoleSession）；

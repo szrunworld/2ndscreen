@@ -53,6 +53,7 @@ class Element(_Frozen):
 
     index 是该元素在所属快照 elements 中的位置，只在同一快照内有意义。
     label 是标题/描述类文本，value 是值类文本（输入框内容、静态文本值），都可为空串。
+    enabled 为 None 表示来源不提供该信息（2ndscreen CLI 实测不输出 enabled），不等于不可用。
     snapshot_id 由 Driver 填写，用于写方法检测快照过期；夹具中省略。
     parent_index / depth 只在 state(include_tree=True) 时填写。
     """
@@ -62,18 +63,19 @@ class Element(_Frozen):
     label: str = ""
     value: str = ""
     frame: Frame
-    enabled: bool = True
+    enabled: bool | None = None
     snapshot_id: str | None = None
     parent_index: Annotated[int, Field(ge=0)] | None = None
     depth: Annotated[int, Field(ge=0)] | None = None
 
     @property
     def text(self) -> str:
-        """可读文本：label 与 value 以空格拼接（去掉空项与重复）。定位与 evidence 默认用它。"""
-        parts = [p for p in (self.label.strip(), self.value.strip()) if p]
-        if len(parts) == 2 and parts[0] == parts[1]:
-            parts = parts[:1]
-        return " ".join(parts)
+        """可读文本：label 去空白后非空则为 label，否则为 value。不拼接两者。
+
+        这样输入框（label='搜索'、value=已输入的关键词）仍能被 Locator(text='搜索') 精确命中。
+        Locator 的 text / text_contains 都匹配本属性；定位与 evidence 默认用它。
+        """
+        return self.label if self.label.strip() else self.value
 
 
 class Locator(_Frozen):

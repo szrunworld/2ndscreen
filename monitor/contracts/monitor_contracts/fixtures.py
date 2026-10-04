@@ -36,7 +36,7 @@ class FixtureElement(BaseModel):
     label: str
     value: str
     frame: Frame
-    enabled: bool
+    enabled: bool | None = None
     parent_index: Annotated[int, Field(ge=0)] | None = None
     depth: Annotated[int, Field(ge=0)] | None = None
 
