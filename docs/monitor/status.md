@@ -103,3 +103,9 @@ Run：run_7d52e82ce7ed。分支 monitor-v1（a12a931，自 szrunworld/ss-runtime
 - M-1 客户端部分：读取心跳回执的 account_binding，写入本机绑定并按需重建基线。
 - M-2：退避期间不空转。
 - M-3：心跳 4xx 不让进程崩溃，记录 last_error 并按退避重试或暂停。
+
+## 仓库拆分（用户 2026-10-05）
+
+- 服务端（monitor/server、monitor/mail、执行器协议）全部并入 recruiting：交接总文档 docs/monitor/handover-server-to-recruiting.md（附件：ats-contract-change-request.md、handover-mail-ingestion.md、handover-device-console.md），由用户安排另一个主线程执行。
+- 客户端单独建仓库（建议 amplifistudio/remotedesk-boss-agent，私有），待用户确认后创建。
+- 2ndscreen 仓库：monitor-v1 与 ss-runtime-integration 分支归档，不提 PR。
