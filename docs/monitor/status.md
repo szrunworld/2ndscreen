@@ -21,7 +21,7 @@
 | F1 | 服务端基础 | 已释放 | monitor-F1 | 已合（2b1dff2 + 0.2.0 适配 8abbf54） | c7bbc4b | openapi 缺 401/422/403 → A3 |
 | F2 | 服务端业务 | ctx_6788843f9e4a / monitor-F2 | monitor-F2 | 进行 | — | — |
 | F3 | 服务端扩展 | — | — | 未派 | — | — |
-| G | 邮件接入 | — | — | 未派 | — | — |
+| G | 邮件接入（mail 服务订阅方） | ctx_395a7105195f / monitor-G | monitor-G | 进行 | — | 真实接入待管理员配置 zhaopin@ 邮箱、webhook、API key |
 | H1 | 动作公共层 + 问候 + 求简历 | 已释放 | monitor-H1 | 已合（合并时全量 963 tests） | — | 9 条界面假设待 N（H1.md 第五节）；接口请求：Driver 层过滤 PDF 子树、hints 稳定 |
 | H2 | 搜索动作 | — | — | 未派 | — | — |
 | H3 | 换联系方式 + 转发简历 | — | — | 未派 | — | — |
