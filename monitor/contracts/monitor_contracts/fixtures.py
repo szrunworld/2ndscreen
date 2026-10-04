@@ -26,6 +26,24 @@ PageKind = Literal[
 ]
 
 
+class FixtureElement(BaseModel):
+    """夹具中的元素：与 Element 相同但没有 snapshot_id（回放时由 FakeDriver 填写）。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    index: Annotated[int, Field(ge=0)]
+    role: Annotated[str, Field(min_length=1, max_length=64)]
+    label: str
+    value: str
+    frame: Frame
+    enabled: bool
+    parent_index: Annotated[int, Field(ge=0)] | None = None
+    depth: Annotated[int, Field(ge=0)] | None = None
+
+    def to_element(self, snapshot_id: str | None = None) -> Element:
+        return Element(**self.model_dump(), snapshot_id=snapshot_id)
+
+
 class ConversationAnnotation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -61,7 +79,7 @@ class FixtureStep(BaseModel):
 
     label: Annotated[str, Field(min_length=1, max_length=120)]
     window: WindowInfo | None
-    elements: list[Element]
+    elements: list[FixtureElement]
     annotations: StepAnnotations
 
     @model_validator(mode="after")

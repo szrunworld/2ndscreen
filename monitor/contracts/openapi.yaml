@@ -1,0 +1,1958 @@
+openapi: 3.1.0
+info:
+  title: 招聘 Monitor 服务端 API
+  version: 0.1.0
+  summary: Monitor 设备、指令、事件、简历文档、搜索、人工处理、登录接力与策略接口
+  description: |
+    与 monitor_contracts 0.1.0 对应（info.version 与契约版本同步）。说明见 docs/monitor/api.md。
+
+    - 传输：只暴露 HTTPS。第一版用轮询，领取指令为长轮询（最长 30 秒），不使用 WebSocket。
+    - 认证：设备接口用设备令牌（deviceToken）；控制台接口用控制台会话（consoleSession）；
+      邮件接入服务用服务令牌（serviceToken）。
+    - 幂等：所有写接口（POST / PUT）必须带 Idempotency-Key。同键重放返回首次响应；
+      同键不同请求体返回 422（code=idempotency_key_reused）。
+    - 消息体：command / command_result / event / search_snapshot / policy /
+      device_registration / device_heartbeat / login_qr 直接引用 schemas/*.json。
+    - 错误：统一为 Problem，validation 错误带字段级 errors[]。
+servers:
+  - url: https://monitor.example.invalid/api/v1
+    description: 占位地址，部署时替换
+tags:
+  - name: devices
+    description: 设备注册、心跳、绑定、暂停
+  - name: commands
+    description: 指令领取、确认、结果回报、取消与人工处理
+  - name: events
+    description: 事件批量上报与查询
+  - name: resume-documents
+    description: 邮件接入写入简历文档
+  - name: search
+    description: 搜索任务
+  - name: cases
+    description: 招聘流程与人工处理
+  - name: login
+    description: 登录接力与人工输入
+  - name: policy
+    description: 策略读写
+  - name: overview
+    description: 控制台总览
+
+security:
+  - consoleSession: []
+
+paths:
+  /device-enrollments:
+    post:
+      tags: [devices]
+      operationId: createDeviceEnrollment
+      summary: 控制台生成一次性设备注册码
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mode]
+              additionalProperties: false
+              properties:
+                mode:
+                  type: string
+                  enum: [local, remote]
+                note:
+                  type: string
+                  maxLength: 200
+      responses:
+        '201':
+          description: 已生成
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Enrollment'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+
+  /devices:
+    post:
+      tags: [devices]
+      operationId: registerDevice
+      summary: Monitor 用注册码注册设备，换取设备令牌
+      description: 注册码一次性使用。设备令牌只在本响应中出现一次，服务端只存哈希。
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './schemas/device_registration.json'
+      responses:
+        '201':
+          description: 注册成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceRegistered'
+        '403':
+          description: 注册码无效、已使用或已过期
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: 契约版本不兼容（code=contracts_version_unsupported）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+    get:
+      tags: [devices]
+      operationId: listDevices
+      summary: 设备列表（控制台）
+      responses:
+        '200':
+          description: 设备列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Device'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /devices/{device_id}:
+    parameters:
+      - $ref: '#/components/parameters/DeviceId'
+    get:
+      tags: [devices]
+      operationId: getDevice
+      summary: 设备详情（控制台）
+      responses:
+        '200':
+          description: 设备
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Device'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /devices/{device_id}:revoke:
+    parameters:
+      - $ref: '#/components/parameters/DeviceId'
+    post:
+      tags: [devices]
+      operationId: revokeDeviceToken
+      summary: 吊销设备令牌
+      description: 吊销后该设备所有请求返回 401；已领取未完成的指令回到可领取状态前需人工确认。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: 已吊销
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Device'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /devices/{device_id}/account-binding:
+    parameters:
+      - $ref: '#/components/parameters/DeviceId'
+    put:
+      tags: [devices]
+      operationId: confirmAccountBinding
+      summary: 控制台确认设备与招聘账户的绑定
+      description: 第一版一台设备只绑定一个账户。设备心跳上报的 account_id 与绑定不一致时，服务端停止下发指令。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [account_id]
+              additionalProperties: false
+              properties:
+                account_id:
+                  $ref: './schemas/common.json#/$defs/account_id'
+                note:
+                  type: string
+                  maxLength: 200
+      responses:
+        '200':
+          description: 绑定已确认
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountBinding'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+
+  /devices/{device_id}:pause:
+    parameters:
+      - $ref: '#/components/parameters/DeviceId'
+    post:
+      tags: [devices]
+      operationId: pauseDevice
+      summary: 暂停设备（停止领取与新的对外动作；已发生的动作仍完成记录与回传）
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NoteBody'
+      responses:
+        '200':
+          description: 已暂停
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Device'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /devices/{device_id}:resume:
+    parameters:
+      - $ref: '#/components/parameters/DeviceId'
+    post:
+      tags: [devices]
+      operationId: resumeDevice
+      summary: 恢复设备
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NoteBody'
+      responses:
+        '200':
+          description: 已恢复
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Device'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /devices/{device_id}/heartbeat:
+    parameters:
+      - $ref: '#/components/parameters/DeviceId'
+    post:
+      tags: [devices]
+      operationId: postHeartbeat
+      summary: 设备心跳（默认 30 秒）
+      security:
+        - deviceToken: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './schemas/device_heartbeat.json'
+      responses:
+        '200':
+          description: 已记录；响应携带服务端要求的暂停状态、策略版本与需要取消的指令
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HeartbeatAck'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+
+  /devices/{device_id}/commands:claim:
+    parameters:
+      - $ref: '#/components/parameters/DeviceId'
+    post:
+      tags: [commands]
+      operationId: claimCommands
+      summary: 长轮询领取指令
+      description: |
+        原子领取：只返回该设备已绑定账户的、依赖已 succeeded、未过期、未取消的指令。
+        没有可领取指令时最长等待 wait_seconds 秒后返回空列表。领取后指令进入租约
+        （lease_seconds）；租约内未收到 ack 的指令可再次被领取（同一 command_id，
+        Monitor 按 command_id 去重）。同一 Idempotency-Key 重放返回同一批指令。
+        设备暂停、needs_baseline 或账户未确认时返回空列表。
+      security:
+        - deviceToken: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClaimRequest'
+      responses:
+        '200':
+          description: 领取结果（可能为空）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClaimResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+
+  /commands:
+    get:
+      tags: [commands]
+      operationId: listCommands
+      summary: 指令列表（控制台执行记录；邮件接入查询转发记录）
+      security:
+        - consoleSession: []
+        - serviceToken: []
+      parameters:
+        - name: case_id
+          in: query
+          schema:
+            type: string
+        - name: account_id
+          in: query
+          schema:
+            type: string
+        - name: action
+          in: query
+          schema:
+            $ref: './schemas/common.json#/$defs/action'
+        - name: status
+          in: query
+          description: 可重复，如 status=unknown&status=failed
+          schema:
+            type: array
+            items:
+              $ref: '#/components/schemas/CommandServerStatus'
+          style: form
+          explode: true
+        - name: executed_after
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: executed_before
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: 指令列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CommandRecord'
+                  next_cursor:
+                    type: [string, 'null']
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /commands/{command_id}:
+    parameters:
+      - $ref: '#/components/parameters/CommandId'
+    get:
+      tags: [commands]
+      operationId: getCommand
+      summary: 指令详情（含结果、人工处理记录）
+      responses:
+        '200':
+          description: 指令
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandRecord'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /commands/{command_id}/ack:
+    parameters:
+      - $ref: '#/components/parameters/CommandId'
+    post:
+      tags: [commands]
+      operationId: ackCommand
+      summary: Monitor 确认已把指令写入本地账本
+      description: ack 后服务端不再把该指令交给其他领取；重复 ack 返回 200。
+      security:
+        - deviceToken: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AckRequest'
+      responses:
+        '200':
+          description: 已确认
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandRecord'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 指令不属于该设备
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  /commands/{command_id}/result:
+    parameters:
+      - $ref: '#/components/parameters/CommandId'
+    post:
+      tags: [commands]
+      operationId: reportCommandResult
+      summary: 回报指令最终结果
+      description: |
+        每个指令只接受一个结果。重复回报与首次相同的结果返回 200 且 duplicate=true；
+        与首次不同返回 409（code=result_conflict），响应带首次结果。Monitor 收到 200 后
+        把本地 delivery 标记为 delivered。路径中的 command_id 必须与请求体一致。
+      security:
+        - deviceToken: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './schemas/command_result.json'
+      responses:
+        '200':
+          description: 已接收
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultAccepted'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 与已记录的结果冲突
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+
+  /commands/{command_id}:cancel:
+    parameters:
+      - $ref: '#/components/parameters/CommandId'
+    post:
+      tags: [commands]
+      operationId: cancelCommand
+      summary: 取消指令
+      description: 未领取的指令直接 cancelled；已领取的指令通过心跳与领取响应的 cancellations 通知设备，最终状态以设备回报为准（动作已发生则回报实际结果）。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NoteBody'
+      responses:
+        '200':
+          description: 已登记取消
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandRecord'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 指令已有最终结果
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  /commands/{command_id}:confirm-sent:
+    parameters:
+      - $ref: '#/components/parameters/CommandId'
+    post:
+      tags: [commands, cases]
+      operationId: confirmCommandSent
+      summary: 人工确认已发送（用于 unknown 结果）
+      description: 记录 manual_action（操作者、时间、说明），推进对应流程；不覆盖原始执行结果与证据。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RequiredNoteBody'
+      responses:
+        '200':
+          description: 已记录
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManualAction'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 指令结果不是 unknown
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  /commands/{command_id}:recheck:
+    parameters:
+      - $ref: '#/components/parameters/CommandId'
+    post:
+      tags: [commands, cases]
+      operationId: recheckCommand
+      summary: 重新检查界面状态
+      description: 为同一动作与目标创建一条 execution_mode=verify_only 的新指令（只读，不受白名单与限额约束），不是重试。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '201':
+          description: 已创建只读检查指令
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandRecord'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 该动作不支持只读检查（search_candidates / provide_input）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  /events:
+    post:
+      tags: [events]
+      operationId: postEvents
+      summary: 批量上报事件（按 event_id 幂等）
+      description: |
+        逐条按 event_id 去重：已存在返回 duplicate，校验失败返回 rejected（带字段错误），
+        其余 accepted。整批不因单条失败而失败。Monitor 对 accepted 与 duplicate 的事件都
+        标记 delivered；rejected 的事件保留在 outbox 并上报异常，不自动重发。
+      security:
+        - deviceToken: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EventBatch'
+      responses:
+        '200':
+          description: 逐条结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventBatchResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+    get:
+      tags: [events]
+      operationId: listEvents
+      summary: 事件列表（控制台最近活动）
+      parameters:
+        - name: account_id
+          in: query
+          schema:
+            type: string
+        - name: case_id
+          in: query
+          schema:
+            type: string
+        - name: kind
+          in: query
+          schema:
+            type: string
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: 事件列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/EventRecord'
+                  next_cursor:
+                    type: [string, 'null']
+
+  /resume-documents:
+    post:
+      tags: [resume-documents]
+      operationId: createResumeDocument
+      summary: 邮件接入写入一份简历附件
+      description: |
+        按 (mail.message_id, attachment.sha256) 去重：重复写入返回 200 与已有文档（duplicate=true）。
+        同一候选人多份简历按版本保留，不覆盖。附件哈希只用于文件去重，不作为候选人身份。
+        link 由邮件接入按"可靠标识 → 转发记录 → 账户+岗位+姓名"给出；不能唯一命中时
+        method=none 并列出候选 case，进入人工关联队列。
+      security:
+        - serviceToken: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResumeDocumentCreate'
+      responses:
+        '200':
+          description: 重复写入，返回已有文档
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResumeDocument'
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResumeDocument'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+    get:
+      tags: [resume-documents]
+      operationId: listResumeDocuments
+      summary: 简历文档列表（含待人工关联队列）
+      parameters:
+        - name: link_status
+          in: query
+          schema:
+            $ref: '#/components/schemas/LinkStatus'
+        - name: case_id
+          in: query
+          schema:
+            type: string
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: 列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ResumeDocument'
+                  next_cursor:
+                    type: [string, 'null']
+
+  /resume-documents/{doc_id}:
+    parameters:
+      - $ref: '#/components/parameters/DocId'
+    get:
+      tags: [resume-documents]
+      operationId: getResumeDocument
+      summary: 简历文档详情
+      security:
+        - consoleSession: []
+        - serviceToken: []
+      responses:
+        '200':
+          description: 文档
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResumeDocument'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /resume-documents/{doc_id}/parse-result:
+    parameters:
+      - $ref: '#/components/parameters/DocId'
+    post:
+      tags: [resume-documents]
+      operationId: postParseResult
+      summary: 邮件接入回报 PDF 文本解析结果
+      security:
+        - serviceToken: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ParseResult'
+      responses:
+        '200':
+          description: 已记录
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResumeDocument'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+
+  /resume-documents/{doc_id}:link:
+    parameters:
+      - $ref: '#/components/parameters/DocId'
+    post:
+      tags: [resume-documents, cases]
+      operationId: linkResumeDocument
+      summary: 人工关联简历到招聘流程
+      description: 记录 manual_action；把文档 link_status 置为 linked（method=manual），推进流程。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [case_id, note]
+              additionalProperties: false
+              properties:
+                case_id:
+                  type: string
+                  minLength: 1
+                note:
+                  type: string
+                  minLength: 1
+                  maxLength: 500
+      responses:
+        '200':
+          description: 已关联
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManualAction'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 文档已关联到其他流程
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  /search-runs:
+    post:
+      tags: [search]
+      operationId: createSearchRun
+      summary: 控制台提交搜索（创建 search_candidates 指令）
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchRunCreate'
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchRun'
+        '409':
+          description: 策略未开启搜索、设备暂停或超出每日上限
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+    get:
+      tags: [search]
+      operationId: listSearchRuns
+      summary: 搜索任务列表
+      parameters:
+        - name: account_id
+          in: query
+          schema:
+            type: string
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: 列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SearchRun'
+                  next_cursor:
+                    type: [string, 'null']
+
+  /search-runs/{search_id}:
+    parameters:
+      - name: search_id
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{1,64}$'
+    get:
+      tags: [search]
+      operationId: getSearchRun
+      summary: 搜索任务与快照
+      responses:
+        '200':
+          description: 搜索任务
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchRun'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /cases:
+    get:
+      tags: [cases]
+      operationId: listCases
+      summary: 招聘流程列表（以 recruitment_case 为行）
+      parameters:
+        - name: account_id
+          in: query
+          schema:
+            type: string
+        - name: stage
+          in: query
+          schema:
+            type: array
+            items:
+              $ref: '#/components/schemas/CaseStage'
+          style: form
+          explode: true
+        - name: job_title
+          in: query
+          schema:
+            type: string
+        - name: needs_human
+          in: query
+          schema:
+            type: boolean
+        - name: q
+          in: query
+          description: 姓名或岗位关键字
+          schema:
+            type: string
+            maxLength: 64
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: 列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CaseSummary'
+                  next_cursor:
+                    type: [string, 'null']
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /cases/{case_id}:
+    parameters:
+      - $ref: '#/components/parameters/CaseId'
+    get:
+      tags: [cases]
+      operationId: getCase
+      summary: 流程详情（时间线、简历文件、最近操作、人工处理记录）
+      security:
+        - consoleSession: []
+        - serviceToken: []
+      responses:
+        '200':
+          description: 详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaseDetail'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /cases/{case_id}:stop:
+    parameters:
+      - $ref: '#/components/parameters/CaseId'
+    post:
+      tags: [cases]
+      operationId: stopCase
+      summary: 人工停止此流程
+      description: 流程进入 closed；未领取的指令取消；已领取的指令按取消规则处理。记录 manual_action。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RequiredNoteBody'
+      responses:
+        '200':
+          description: 已停止
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManualAction'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /login-qr:
+    post:
+      tags: [login]
+      operationId: postLoginQr
+      summary: 独立设备上传登录二维码内容
+      description: |
+        仅 mode=remote 的设备可调用（本机模式返回 403）。服务端只保存到 expires_at；
+        同一设备新的 qr_seq 覆盖旧的。同时 Monitor 另发 login_qr 事件（不含内容）。
+      security:
+        - deviceToken: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './schemas/login_qr.json'
+      responses:
+        '201':
+          description: 已保存
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginQrAccepted'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+
+  /devices/{device_id}/login-qr:
+    parameters:
+      - $ref: '#/components/parameters/DeviceId'
+    get:
+      tags: [login]
+      operationId: getLoginQr
+      summary: 控制台读取当前登录二维码（记录查看者）
+      responses:
+        '200':
+          description: 当前有效二维码
+          headers:
+            Cache-Control:
+              description: 固定为 no-store
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginQrView'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '410':
+          description: 二维码已过期或已撤下，不返回内容
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  /devices/{device_id}/login-qr:withdraw:
+    parameters:
+      - $ref: '#/components/parameters/DeviceId'
+    post:
+      tags: [login]
+      operationId: withdrawLoginQr
+      summary: 撤下二维码（登录完成或设备放弃本次登录）
+      description: 服务端收到 login_ok 事件时也会自动撤下。撤下后读取返回 410。
+      security:
+        - deviceToken: []
+        - consoleSession: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '204':
+          description: 已撤下（重复调用同样返回 204）
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /devices/{device_id}/login-qr/views:
+    parameters:
+      - $ref: '#/components/parameters/DeviceId'
+    get:
+      tags: [login]
+      operationId: listLoginQrViews
+      summary: 二维码查看记录
+      responses:
+        '200':
+          description: 记录
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/LoginQrViewRecord'
+
+  /input-requests/{input_request_id}/response:
+    parameters:
+      - name: input_request_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      tags: [login]
+      operationId: respondInputRequest
+      summary: 控制台提交人工输入（生成 provide_input 指令）
+      description: 只能用于 human_input_required 中 can_fill=true 的请求；值不写入日志与事件。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [value]
+              additionalProperties: false
+              properties:
+                value:
+                  type: string
+                  minLength: 1
+                  maxLength: 64
+                  writeOnly: true
+      responses:
+        '201':
+          description: 已生成 provide_input 指令
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandRecord'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 该请求不可代填、已回应或已过期
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  /accounts/{account_id}/policy:
+    parameters:
+      - name: account_id
+        in: path
+        required: true
+        schema:
+          $ref: './schemas/common.json#/$defs/account_id'
+    get:
+      tags: [policy]
+      operationId: getPolicy
+      summary: 读取策略（控制台与设备均可）
+      security:
+        - consoleSession: []
+        - deviceToken: []
+      responses:
+        '200':
+          description: 当前策略
+          headers:
+            ETag:
+              description: 等于 policy_version
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: './schemas/policy.json'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [policy]
+      operationId: putPolicy
+      summary: 保存策略（乐观锁）
+      description: |
+        请求体中的 policy_version、updated_at、updated_by 由服务端覆盖：保存成功后
+        policy_version = 原值 + 1。If-Match 必须等于当前 policy_version，否则 412。
+        pause_on_anomaly 必须为 true。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: If-Match
+          in: header
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './schemas/policy.json'
+      responses:
+        '200':
+          description: 已保存
+          content:
+            application/json:
+              schema:
+                $ref: './schemas/policy.json'
+        '412':
+          description: 版本冲突
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+
+  /overview:
+    get:
+      tags: [overview]
+      operationId: getOverview
+      summary: 控制台总览（分别计数，不合并成"成功数"）
+      parameters:
+        - name: account_id
+          in: query
+          schema:
+            type: string
+        - name: date
+          in: query
+          description: 统计日期（账户所在时区），默认今天
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: 总览
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Overview'
+
+components:
+  securitySchemes:
+    deviceToken:
+      type: http
+      scheme: bearer
+      description: 设备令牌（POST /devices 返回，可吊销）。
+    consoleSession:
+      type: http
+      scheme: bearer
+      description: 控制台用户会话。服务端从中取得 actor 写入 manual_actions 与查看记录。
+    serviceToken:
+      type: http
+      scheme: bearer
+      description: 内部服务（邮件接入）令牌。
+
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: 写接口幂等键，8–128 位 [A-Za-z0-9._:-]。生成规则见 docs/monitor/contracts.md。
+      schema:
+        type: string
+        pattern: '^[A-Za-z0-9._:-]{8,128}$'
+    DeviceId:
+      name: device_id
+      in: path
+      required: true
+      schema:
+        $ref: './schemas/common.json#/$defs/device_id'
+    CommandId:
+      name: command_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    CaseId:
+      name: case_id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+    DocId:
+      name: doc_id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+    Cursor:
+      name: cursor
+      in: query
+      schema:
+        type: string
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+
+  responses:
+    Unauthorized:
+      description: 未认证或令牌已吊销
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Forbidden:
+      description: 无权操作（如设备 ID 与令牌不符、本机模式调用登录接力）
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    NotFound:
+      description: 资源不存在
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    ValidationFailed:
+      description: 请求体不符合契约（errors 为字段级错误），或幂等键被不同请求体复用
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+
+  schemas:
+    Command:
+      $ref: './schemas/command.json'
+    CommandResult:
+      $ref: './schemas/command_result.json'
+    Event:
+      $ref: './schemas/event.json'
+    SearchSnapshot:
+      $ref: './schemas/search_snapshot.json'
+    Policy:
+      $ref: './schemas/policy.json'
+    DeviceRegistration:
+      $ref: './schemas/device_registration.json'
+    DeviceHeartbeat:
+      $ref: './schemas/device_heartbeat.json'
+    LoginQr:
+      $ref: './schemas/login_qr.json'
+
+    Problem:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: 稳定错误码，如 validation_failed、idempotency_key_reused、result_conflict、not_found、qr_expired
+        message:
+          type: string
+        errors:
+          type: array
+          items:
+            $ref: '#/components/schemas/FieldError'
+        existing:
+          description: 409 冲突时附带已记录的对象（如首次结果）
+    FieldError:
+      type: object
+      required: [path, message, code]
+      properties:
+        path:
+          type: string
+          description: 点号与下标路径，如 payload.text、items[0].result_ref
+        message:
+          type: string
+        code:
+          type: string
+    NoteBody:
+      type: object
+      additionalProperties: false
+      properties:
+        note:
+          type: string
+          maxLength: 500
+    RequiredNoteBody:
+      type: object
+      required: [note]
+      additionalProperties: false
+      properties:
+        note:
+          type: string
+          minLength: 1
+          maxLength: 500
+
+    Enrollment:
+      type: object
+      required: [enrollment_code, mode, expires_at]
+      properties:
+        enrollment_code:
+          type: string
+        mode:
+          type: string
+          enum: [local, remote]
+        expires_at:
+          type: string
+          format: date-time
+    DeviceRegistered:
+      type: object
+      required: [device_id, device_token, server_time, contracts_version]
+      properties:
+        device_id:
+          type: string
+        device_token:
+          type: string
+          description: 只返回一次。Monitor 存 keychain 或 0600 文件。
+        server_time:
+          type: string
+          format: date-time
+        contracts_version:
+          type: string
+    AccountBinding:
+      type: object
+      required: [device_id, account_id, bound_at, confirmed_by]
+      properties:
+        device_id:
+          type: string
+        account_id:
+          type: string
+        bound_at:
+          type: string
+          format: date-time
+        confirmed_by:
+          type: string
+    Device:
+      type: object
+      required: [device_id, device_name, mode, status, paused, revoked, capabilities, last_heartbeat, account_binding]
+      properties:
+        device_id:
+          type: string
+        device_name:
+          type: string
+        mode:
+          type: string
+          enum: [local, remote]
+        status:
+          type: string
+          enum: [online, offline, needs_login, paused, revoked]
+          description: 服务端综合心跳得出的展示状态；超过 90 秒无心跳为 offline。
+        paused:
+          type: boolean
+        revoked:
+          type: boolean
+        capabilities:
+          type: array
+          items:
+            type: string
+        monitor_version:
+          type: string
+        contracts_version:
+          type: string
+        last_heartbeat:
+          oneOf:
+            - $ref: './schemas/device_heartbeat.json'
+            - type: 'null'
+        last_heartbeat_at:
+          type: [string, 'null']
+          format: date-time
+        account_binding:
+          oneOf:
+            - $ref: '#/components/schemas/AccountBinding'
+            - type: 'null'
+        login_qr_active:
+          type: boolean
+          description: 是否有未过期的登录二维码（仅 remote）
+    HeartbeatAck:
+      type: object
+      required: [server_time, paused, policy_version, cancellations]
+      properties:
+        server_time:
+          type: string
+          format: date-time
+        paused:
+          type: boolean
+          description: 服务端要求的暂停状态（控制台暂停）
+        policy_version:
+          type: [integer, 'null']
+          description: 当前策略版本；与本地不同时 Monitor 重新 GET 策略
+        cancellations:
+          type: array
+          description: 已领取但被控制台取消的指令
+          items:
+            type: string
+            format: uuid
+        account_confirmed:
+          type: boolean
+
+    ClaimRequest:
+      type: object
+      required: [account_id, max_commands, wait_seconds]
+      additionalProperties: false
+      properties:
+        account_id:
+          $ref: './schemas/common.json#/$defs/account_id'
+        max_commands:
+          type: integer
+          minimum: 1
+          maximum: 10
+          description: 第一版 Monitor 串行执行，建议 1
+        wait_seconds:
+          type: integer
+          minimum: 0
+          maximum: 30
+    ClaimResponse:
+      type: object
+      required: [commands, cancellations, lease_seconds, server_time]
+      properties:
+        commands:
+          type: array
+          items:
+            $ref: './schemas/command.json'
+        cancellations:
+          type: array
+          items:
+            type: string
+            format: uuid
+        lease_seconds:
+          type: integer
+          minimum: 1
+          description: 领取后多少秒内必须 ack，否则可被重新领取
+        server_time:
+          type: string
+          format: date-time
+    AckRequest:
+      type: object
+      required: [device_id, ledger_state, received_at]
+      additionalProperties: false
+      properties:
+        device_id:
+          type: string
+        ledger_state:
+          type: string
+          enum: [queued, running, succeeded, failed, cancelled, expired, skipped_precondition, unknown]
+          description: 写入本地账本时的状态（重复送达时可能已是终态）
+        received_at:
+          type: string
+          format: date-time
+    ResultAccepted:
+      type: object
+      required: [command_id, duplicate, recorded_result]
+      properties:
+        command_id:
+          type: string
+          format: uuid
+        duplicate:
+          type: boolean
+        recorded_result:
+          $ref: './schemas/command_result.json'
+    CommandServerStatus:
+      type: string
+      enum: [pending, claimed, acked, succeeded, failed, cancelled, expired, skipped_precondition, unknown]
+      description: 服务端视角的指令状态：pending 待领取、claimed 已领取未确认、acked 已写入设备账本，其余同 command_result.status
+    CommandRecord:
+      type: object
+      required: [command, server_status, device_id, created_at, result, manual_actions]
+      properties:
+        command:
+          $ref: './schemas/command.json'
+        case_id:
+          type: [string, 'null']
+        server_status:
+          $ref: '#/components/schemas/CommandServerStatus'
+        device_id:
+          type: [string, 'null']
+        created_at:
+          type: string
+          format: date-time
+        claimed_at:
+          type: [string, 'null']
+          format: date-time
+        acked_at:
+          type: [string, 'null']
+          format: date-time
+        cancel_requested:
+          type: boolean
+        result:
+          oneOf:
+            - $ref: './schemas/command_result.json'
+            - type: 'null'
+        manual_actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/ManualAction'
+
+    EventBatch:
+      type: object
+      required: [device_id, events]
+      additionalProperties: false
+      properties:
+        device_id:
+          type: string
+        events:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            description: 每条按 event 契约逐条校验；单条不合法只影响该条（rejected）
+            type: object
+    EventBatchResult:
+      type: object
+      required: [results]
+      properties:
+        results:
+          type: array
+          items:
+            type: object
+            required: [index, status]
+            properties:
+              index:
+                type: integer
+                minimum: 0
+              event_id:
+                type: [string, 'null']
+              status:
+                type: string
+                enum: [accepted, duplicate, rejected]
+              errors:
+                type: array
+                items:
+                  $ref: '#/components/schemas/FieldError'
+    EventRecord:
+      type: object
+      required: [event, received_at, case_id]
+      properties:
+        event:
+          $ref: './schemas/event.json'
+        received_at:
+          type: string
+          format: date-time
+        case_id:
+          type: [string, 'null']
+
+    LinkStatus:
+      type: string
+      enum: [linked, needs_manual, unlinked]
+    ResumeDocumentCreate:
+      type: object
+      required: [mail, attachment, link]
+      additionalProperties: false
+      properties:
+        mail:
+          type: object
+          required: [mailbox, message_id, received_at]
+          additionalProperties: false
+          properties:
+            mailbox:
+              type: string
+            message_id:
+              type: string
+              description: 邮件 Message-ID
+            uid:
+              type: [integer, 'null']
+              description: IMAP UID（如有）
+            received_at:
+              type: string
+              format: date-time
+            subject:
+              type: [string, 'null']
+              maxLength: 500
+            from_address:
+              type: [string, 'null']
+            raw_storage_uri:
+              type: [string, 'null']
+              description: 原始 .eml 的存储位置（本地路径或对象存储 URI）
+        attachment:
+          type: object
+          required: [filename, sha256, size_bytes, content_type, storage_uri]
+          additionalProperties: false
+          properties:
+            filename:
+              type: string
+              maxLength: 255
+            sha256:
+              type: string
+              pattern: '^[0-9a-f]{64}$'
+            size_bytes:
+              type: integer
+              minimum: 0
+            content_type:
+              type: string
+            storage_uri:
+              type: string
+        link:
+          $ref: '#/components/schemas/LinkDecision'
+        parse:
+          oneOf:
+            - $ref: '#/components/schemas/ParseResult'
+            - type: 'null'
+    LinkDecision:
+      type: object
+      required: [method, case_id]
+      additionalProperties: false
+      properties:
+        method:
+          type: string
+          enum: [reliable_id, forward_record, name_match, none]
+          description: 关联依据，按优先级：邮件可靠标识 → 转发记录 → 账户+岗位+姓名；none = 进入人工关联队列
+        case_id:
+          type: [string, 'null']
+        command_id:
+          type: [string, 'null']
+          format: uuid
+          description: method=forward_record 时对应的 forward_resume 指令
+        candidate_case_ids:
+          type: array
+          items:
+            type: string
+          description: method=none 时可能的流程（供人工选择）
+    ParseResult:
+      type: object
+      required: [parse_status]
+      additionalProperties: false
+      properties:
+        parse_status:
+          type: string
+          enum: [pending, parsed, suspected_scanned, failed]
+        text_storage_uri:
+          type: [string, 'null']
+        page_count:
+          type: [integer, 'null']
+          minimum: 0
+        error:
+          type: [string, 'null']
+    ResumeDocument:
+      type: object
+      required: [doc_id, case_id, link_status, link_method, version, sha256, filename, parse_status, created_at, duplicate]
+      properties:
+        doc_id:
+          type: string
+        case_id:
+          type: [string, 'null']
+        link_status:
+          $ref: '#/components/schemas/LinkStatus'
+        link_method:
+          type: string
+          enum: [reliable_id, forward_record, name_match, manual, none]
+        version:
+          type: integer
+          minimum: 1
+          description: 同一流程下第几份简历
+        sha256:
+          type: string
+        filename:
+          type: string
+        message_id:
+          type: string
+        parse_status:
+          type: string
+          enum: [pending, parsed, suspected_scanned, failed]
+        created_at:
+          type: string
+          format: date-time
+        duplicate:
+          type: boolean
+
+    SearchRunCreate:
+      type: object
+      required: [account_id, query, max_results]
+      additionalProperties: false
+      properties:
+        account_id:
+          $ref: './schemas/common.json#/$defs/account_id'
+        query:
+          type: string
+          minLength: 1
+          maxLength: 100
+        max_results:
+          type: integer
+          minimum: 1
+          maximum: 100
+        ttl_seconds:
+          type: integer
+          minimum: 60
+          maximum: 3600
+          default: 600
+    SearchRun:
+      type: object
+      required: [search_id, account_id, query, max_results, command_id, status, outcome, created_at, expires_at, snapshot]
+      properties:
+        search_id:
+          type: string
+        account_id:
+          type: string
+        query:
+          type: string
+        max_results:
+          type: integer
+        command_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [pending, running, completed, failed, expired, cancelled]
+        outcome:
+          type: [string, 'null']
+          enum: [results, no_results, unreadable, null]
+          description: 由 snapshot.coverage 得出：partial|complete → results；empty_confirmed → no_results；unreadable → unreadable。三者分开展示
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        snapshot:
+          oneOf:
+            - $ref: './schemas/search_snapshot.json'
+            - type: 'null'
+
+    CaseStage:
+      type: string
+      enum: [new_application, greeted, resume_requested, resume_received, resume_linked, contact_requested, contact_available, closed, needs_human]
+    ContactExchangeStatus:
+      type: string
+      enum: [not_requested, request_sent, pending_acceptance, available, refused, pending_confirmation]
+      description: 服务端交换状态（方案 8.3）："请求已发送"是指令成功，"联系方式可用"是业务事件，两者不混用
+    CaseSummary:
+      type: object
+      required: [case_id, account_id, candidate_name, job_title, stage, paused, needs_human, updated_at]
+      properties:
+        case_id:
+          type: string
+        account_id:
+          type: string
+        candidate_name:
+          type: string
+        job_title:
+          type: string
+        conversation_hints:
+          type: array
+          items:
+            type: string
+        stage:
+          $ref: '#/components/schemas/CaseStage'
+        paused:
+          type: boolean
+        needs_human:
+          type: boolean
+        needs_human_reason:
+          type: [string, 'null']
+        contact_status:
+          $ref: '#/components/schemas/ContactExchangeStatus'
+        latest_command:
+          oneOf:
+            - $ref: '#/components/schemas/CommandRecord'
+            - type: 'null'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    CaseDetail:
+      allOf:
+        - $ref: '#/components/schemas/CaseSummary'
+        - type: object
+          required: [timeline, resume_documents, commands, manual_actions]
+          properties:
+            timeline:
+              type: array
+              items:
+                $ref: '#/components/schemas/TimelineEntry'
+            resume_documents:
+              type: array
+              items:
+                $ref: '#/components/schemas/ResumeDocument'
+            commands:
+              type: array
+              items:
+                $ref: '#/components/schemas/CommandRecord'
+            manual_actions:
+              type: array
+              items:
+                $ref: '#/components/schemas/ManualAction'
+    TimelineEntry:
+      type: object
+      required: [at, type, ref_id, summary]
+      properties:
+        at:
+          type: string
+          format: date-time
+        type:
+          type: string
+          enum: [event, command, command_result, resume_document, manual_action, stage_change]
+        ref_id:
+          type: string
+        stage_from:
+          oneOf:
+            - $ref: '#/components/schemas/CaseStage'
+            - type: 'null'
+        stage_to:
+          oneOf:
+            - $ref: '#/components/schemas/CaseStage'
+            - type: 'null'
+        summary:
+          type: string
+    ManualAction:
+      type: object
+      required: [manual_action_id, type, actor, at, note, target]
+      properties:
+        manual_action_id:
+          type: string
+        type:
+          type: string
+          enum: [confirm_sent, link_resume, stop_case, recheck, cancel_command]
+        actor:
+          type: string
+        at:
+          type: string
+          format: date-time
+        note:
+          type: string
+        target:
+          type: object
+          required: [kind, id]
+          properties:
+            kind:
+              type: string
+              enum: [command, resume_document, case]
+            id:
+              type: string
+
+    LoginQrAccepted:
+      type: object
+      required: [device_id, qr_seq, expires_at]
+      properties:
+        device_id:
+          type: string
+        qr_seq:
+          type: integer
+        expires_at:
+          type: string
+          format: date-time
+    LoginQrView:
+      type: object
+      required: [device_id, qr_payload, qr_seq, captured_at, expires_at]
+      properties:
+        device_id:
+          type: string
+        qr_payload:
+          type: string
+          description: 控制台据此重新渲染二维码
+        qr_seq:
+          type: integer
+        captured_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+    LoginQrViewRecord:
+      type: object
+      required: [viewer, viewed_at, qr_seq]
+      properties:
+        viewer:
+          type: string
+        viewed_at:
+          type: string
+          format: date-time
+        qr_seq:
+          type: integer
+
+    Overview:
+      type: object
+      required: [date, new_applications, resume_requested, resume_received, resume_parsed, needs_human, devices]
+      properties:
+        date:
+          type: string
+          format: date
+        new_applications:
+          type: integer
+          minimum: 0
+        resume_requested:
+          type: integer
+          minimum: 0
+        resume_received:
+          type: integer
+          minimum: 0
+        resume_parsed:
+          type: integer
+          minimum: 0
+        needs_human:
+          type: integer
+          minimum: 0
+        unknown_results:
+          type: integer
+          minimum: 0
+        devices:
+          type: array
+          items:
+            $ref: '#/components/schemas/Device'
