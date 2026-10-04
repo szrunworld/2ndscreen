@@ -177,6 +177,8 @@ import { RuntimeError, type TaskControl } from ${JSON.stringify(join(PACKAGE, 's
 import { appendFileSync } from 'node:fs';
 // Synthetic control for this smoke only: it records, it runs nothing. task-7 is the one known task.
 if (process.env.SYNTH_LOG) appendFileSync(process.env.SYNTH_LOG, JSON.stringify(process.argv.slice(2)) + '\\n');
+// A runtime that says ok but fails: the exit status must decide.
+if (process.argv[3] === 'task-exit') { process.stdout.write(JSON.stringify({ ok: true, command: process.argv[2], result: { task: { id: 'task-exit' } } }) + '\\n'); process.exit(3); }
 const none = async (): Promise<never> => { throw new RuntimeError('not_found', 'none'); };
 const known = ${JSON.stringify(SYNTH_TASK)};
 const control = {
@@ -352,6 +354,7 @@ test('MCP links task resources and reads them through the same task commands, an
     read(7, '2ndscreen://tasks/task-7/artifacts'),
     read(8, '2ndscreen://tasks/task-9'),
     { jsonrpc: '2.0', id: 9, method: 'resources/templates/list' },
+    read(11, '2ndscreen://tasks/task-exit'),
     { jsonrpc: '2.0', id: 10, method: 'resources/list' },
   ], env);
   const byId = new Map(replies.map((r) => [r.id, r]));
@@ -387,11 +390,14 @@ test('MCP links task resources and reads them through the same task commands, an
   assert.equal(missing.error.data.error.code, 'not_found');
   assert.deepEqual(byId.get(9)!.result.resourceTemplates.map((t: any) => t.uriTemplate), ['2ndscreen://tasks/{taskId}', '2ndscreen://tasks/{taskId}/artifacts']);
   assert.deepEqual(byId.get(10)!.result.resources, []);
+  const exited = byId.get(11)!;
+  assert.equal(exited.result, undefined, 'ok:true with a failing exit status is not a resource');
+  assert.equal(exited.error.code, -32603);
 
   // Only the task commands ran, with the IDs as given.
   const calls = (await readFile(log, 'utf8')).trim().split('\n').map((l) => JSON.parse(l));
   assert.deepEqual(calls.filter((c) => c[0] !== 'run'), [
-    ['status', 'task-7'], ['artifacts', 'task-7'], ['status', 'task-9'], ['status', 'task-7'], ['artifacts', 'task-7'], ['status', 'task-9'],
+    ['status', 'task-7'], ['artifacts', 'task-7'], ['status', 'task-9'], ['status', 'task-7'], ['artifacts', 'task-7'], ['status', 'task-9'], ['status', 'task-exit'],
   ]);
 });
 
@@ -407,6 +413,9 @@ test('MCP refuses every URI that is not exactly a task or its artifacts, before 
     '2ndscreen://tasks/task-7?x=1', '2ndscreen://tasks/task-7#a', '2ndscreen://tasks/task%2D7', '2ndscreen://tasks/task 7', '2ndscreen://tasks/-rf',
     '2ndscreen://other/task-7', '2ndscreen://user@tasks/task-7', '2ndscreen://tasks:80/task-7', 'file:///etc/passwd', 'https://tasks/task-7',
     '2NDSCREEN://tasks/task-7', `2ndscreen://tasks/${'a'.repeat(129)}`, 'tasks/task-7', '', 7, null,
+    '2ndscreen://tasks/task-7\n', '2ndscreen://tasks/task-7\r', '2ndscreen://tasks/task-7\r\n', '2ndscreen://tasks/task-7/artifacts\n',
+    '2ndscreen://tasks/task-7%2Fartifacts', '2ndscreen://tasks/..%2F..%2Fetc', '2ndscreen://tasks/task-7%0A', '2ndscreen://tasks/task\u00e9',
+    '2ndscreen://tasks/task-7\\artifacts', '2ndscreen://tasks/task-7/./artifacts', '2ndscreen://tasks/\uff54ask-7',
   ];
   const replies = await mcp(bad.map((uri, i) => ({ jsonrpc: '2.0', id: i + 1, method: 'resources/read', params: { uri } })), env);
   assert.equal(replies.length, bad.length);

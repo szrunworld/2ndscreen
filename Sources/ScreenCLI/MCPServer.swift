@@ -557,9 +557,17 @@ struct TaskResource {
     let taskID: String
     let kind: Kind
 
-    /// The runtime's own task ID rule (packages/task-runtime/src/cli.ts).
+    /// The runtime's own task ID rule (packages/task-runtime/src/cli.ts):
+    /// 1-128 ASCII letters, digits, '.', '_', ':' or '-', starting with a letter
+    /// or digit. Checked character by character over the whole string, so no
+    /// trailing newline or other character can slip past an anchor.
     static func validID(_ id: String) -> Bool {
-        id.range(of: "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$", options: .regularExpression) != nil
+        let scalars = Array(id.unicodeScalars)
+        guard (1...128).contains(scalars.count) else { return false }
+        func alphanumeric(_ c: Unicode.Scalar) -> Bool {
+            ("a"..."z").contains(c) || ("A"..."Z").contains(c) || ("0"..."9").contains(c)
+        }
+        return alphanumeric(scalars[0]) && scalars.allSatisfy { alphanumeric($0) || ".:_-".unicodeScalars.contains($0) }
     }
 
     static func uri(_ id: String, _ kind: Kind) -> String {
@@ -591,14 +599,14 @@ struct TaskResource {
     /// The current status report or artifact index, as the CLI prints its `result`.
     func read(_ runSelf: ([String], Bool) -> (Int32, String)) -> Result<[String: Any], Problem> {
         let uri = Self.uri(taskID, kind)
-        let (_, output) = runSelf(["task", kind == .status ? "status" : "artifacts", taskID], true)
+        let (status, output) = runSelf(["task", kind == .status ? "status" : "artifacts", taskID], true)
         guard let line = output.split(separator: "\n").last.map(String.init),
               let data = line.data(using: .utf8),
               let reply = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else {
             return .failure(Problem(code: -32603, message: "the task runtime gave no readable answer", data: ["uri": uri]))
         }
-        guard reply["ok"] as? Bool == true, let value = reply["result"] else {
+        guard status == 0, reply["ok"] as? Bool == true, let value = reply["result"] else {
             let error = reply["error"] as? [String: Any] ?? [:]
             let code = error["code"] as? String ?? "internal"
             // MCP's resource-not-found code for a task the ledger does not have.
