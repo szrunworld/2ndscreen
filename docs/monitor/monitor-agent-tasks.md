@@ -72,7 +72,7 @@
 | G | 邮件接入 | `monitor/mail/**` | A | 4 人日 |
 | H1 | 动作公共层 + 问候 + 求简历 | `monitor/client/monitor/actions/{common,greeting,request_resume}.py`、对应测试 | A、B | 3 人日 |
 | H2 | 搜索动作 | `monitor/client/monitor/actions/search.py`、对应测试 | A、B | 2 人日 |
-| H3 | 换联系方式 | `monitor/client/monitor/actions/contact_exchange.py`、对应测试 | A、B、H1 合并、N 的写操作结论 | 1.5 人日 |
+| H3 | 换微信（人工触发） | `monitor/client/monitor/actions/contact_exchange.py`、对应测试 | A、B、H1 合并、N 的写操作结论 | 1.5 人日 |
 | I1 | 控制台骨架、mock、总览、连接与策略 | `monitor/console/**`（除 I2 页面目录） | A（openapi.yaml） | 3 人日 |
 | I2 | 控制台候选人流程、执行记录、搜索页 | `monitor/console/src/pages/{cases,log,search}/**` | A、I1 合并 | 3 人日 |
 | J | 安装、模式、launchd、bootstrap、状态窗口 | `monitor/client/monitor/{install,bootstrap,statusbar}/**`、`monitor/launchd/**`、对应测试 | A、C、D2 合并 | 3–4 人日 |
@@ -220,7 +220,7 @@
 
 ### H3 换联系方式
 
-目标：`request_contact_exchange`（第一版只电话）。范围：读取当前交换状态并按方案 8.3 分支；点击、验证请求已发出。转发简历不在 v1（用户 2026-10-04 决定简历由 BOSS 自动发到公司邮箱）。验收：三种初始状态各有测试。
+目标：`request_contact_exchange(exchange_type=wechat)`，只由人工在控制台触发（用户 2026-10-04 决定，不换电话）。范围：读取当前交换状态并按方案 8.3 分支；点击『换微信』、验证『请求交换微信已发送』出现。转发简历不在 v1（用户 2026-10-04 决定简历由 BOSS 自动发到公司邮箱）。验收：三种初始状态各有测试。
 
 ### I1 控制台骨架、mock、总览、连接与策略
 
