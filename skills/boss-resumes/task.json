@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "id": "boss.collect-resumes",
+  "version": "1.0.0",
+  "platforms": ["macos"],
+  "application": "com.zhipin.www",
+  "windowProfile": "boss-macos-1440x900",
+  "workflow": "boss-resumes-v1",
+  "inputSchema": "collect-resumes-input-v1",
+  "capabilities": ["ui.read", "ui.navigate", "resume.capture", "artifact.write"],
+  "submitAllowed": false,
+  "foregroundAllowed": false,
+  "learning": { "promoteAfterSuccesses": 3 },
+  "defaults": { "captureMode": "available", "analysis": "off" }
+}

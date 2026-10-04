@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 2,
+  "id": "seed.boss.collect-resumes.open_resume.1",
+  "key": {
+    "skill": "boss.collect-resumes",
+    "skillVersion": "1.0.0",
+    "unit": "open_resume",
+    "platform": "macos",
+    "appVersion": "1.7.4",
+    "profile": "boss-macos-1440x900"
+  },
+  "version": 1,
+  "status": "seeded",
+  "source": "seed",
+  "parameters": [],
+  "preconditions": [
+    { "kind": "element", "locator": { "kind": "element", "role": "AXTextArea" }, "present": true },
+    { "kind": "text", "pattern": "确定向牛人请求简历", "present": false }
+  ],
+  "postconditions": [
+    { "kind": "text", "pattern": "举报", "present": true },
+    { "kind": "text", "pattern": "正在加载简历", "present": false },
+    { "kind": "text", "pattern": "确定向牛人请求简历", "present": false }
+  ],
+  "steps": [
+    {
+      "id": "click-online-resume",
+      "action": {
+        "kind": "click",
+        "target": { "kind": "element", "role": "AXLink", "label": "在线简历" },
+        "effect": "navigation"
+      },
+      "fallbacks": [{ "kind": "element", "label": "在线简历" }],
+      "expect": {
+        "condition": {
+          "kind": "any",
+          "conditions": [
+            { "kind": "all", "conditions": [
+              { "kind": "text", "pattern": "举报", "present": true },
+              { "kind": "text", "pattern": "正在加载简历", "present": false }
+            ] },
+            { "kind": "text", "pattern": "确定向牛人请求简历", "present": true }
+          ]
+        },
+        "timeoutMs": 15000,
+        "pollMs": 500
+      }
+    }
+  ],
+  "counters": { "successes": 0, "failures": 0, "successItemIds": [], "consecutiveFailures": 0 },
+  "createdAt": "2026-10-04T00:00:00.000Z",
+  "updatedAt": "2026-10-04T00:00:00.000Z"
+}
