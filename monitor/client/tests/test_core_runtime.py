@@ -592,7 +592,8 @@ def test_suspend_gui_stops_observe_execute_and_keeps_real_error():
     assert rt.last_error.code == "bootstrap_takeover"  # 没被 window_lost 覆盖
     sent = [hb["last_error"]["code"] for hb in env.server.heartbeats if hb["last_error"]]
     assert sent == ["bootstrap_takeover"]
-    assert env.server.heartbeats[-1]["client_state"] == "unknown"  # 契约没有 suspended，如实报 unknown
+    assert env.server.heartbeats[-1]["client_state"] == "suspended"  # 契约 0.3.3
+    assert st["client_state"] == "suspended"
     assert env.server.heartbeats[-1]["paused"] is False  # 挂起不是暂停
     # 挂起期间 window_lost 直接上报也不记
     rt.record_error("window_lost", "x")
@@ -851,7 +852,7 @@ def test_heartbeat_409_pauses_claims_and_execution_until_accepted():
     assert rt.contract_incompatible and rt.last_error.code == "contract_incompatible"
     assert rt.status()["contract_incompatible"] is True
     claims = env.server.count("claim")
-    for step in (1, 2):
+    for _ in range(2):
         idle = rt.run_once()
         assert idle > 0  # 不空转
         env.clock.advance(idle)

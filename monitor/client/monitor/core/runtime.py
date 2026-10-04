@@ -29,7 +29,7 @@ import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Literal, get_args
+from typing import Any, Literal
 from uuid import UUID
 
 from monitor_contracts import (
@@ -37,7 +37,6 @@ from monitor_contracts import (
     ActionHandler,
     Baseline,
     CommandState,
-    DeviceHeartbeat,
     Driver,
     DriverError,
     EventModel,
@@ -73,8 +72,6 @@ ReportedClientState = Literal["running", "not_running", "login_required", "block
 # 这些暂停原因下界面已不归 Monitor（用户拿回窗口、换了账户），连观察也停止；
 # 其他原因（登录失效、异常、服务端要求）仍继续只读观察，以便发现恢复。
 _NO_OBSERVE_PAUSE_REASONS = frozenset({"user_request", "account_switched"})
-# TODO(D2d)：F5 的契约 0.3.3 合入后删除，直接报 suspended
-_SUSPENDED_SUPPORTED = "suspended" in get_args(DeviceHeartbeat.model_fields["client_state"].annotation)
 # last_online_at 的落盘节流
 _ONLINE_PERSIST_EVERY = timedelta(seconds=60)
 
@@ -716,9 +713,7 @@ class MonitorRuntime:
 
     def _reported_client_state(self) -> ReportedClientState:
         # 契约 0.3.3 起 client_state 有 suspended（D2c 报告接口请求 1）
-        if self.gui_suspended:
-            return "suspended" if _SUSPENDED_SUPPORTED else "unknown"
-        return self.client_state
+        return "suspended" if self.gui_suspended else self.client_state
 
     def pause(self, reason: str, *, by: Literal["user", "monitor", "server"], detail: str | None = None) -> None:
         """停止领取与启动新动作；已发生的动作照常记录与回传。重复暂停不覆盖首个原因。"""

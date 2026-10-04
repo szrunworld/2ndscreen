@@ -414,6 +414,7 @@ class FakeServer:
         }
         if self.report_binding:
             ack["account_binding"] = copy.deepcopy(binding)
+            assert check("heartbeat_ack", ack) == [], "FakeServer 的心跳回执不合契约 0.3.3"
         return httpx.Response(200, json=ack)
 
     def bind(self, account_id: str = "acct_demo", *, confirmed_by: str = "tester", bound_at: datetime | None = None) -> None:
