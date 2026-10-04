@@ -12,7 +12,8 @@ import type {
   UnitContext,
 } from '../../../../packages/task-runtime/src/contracts.ts';
 import { identify, listCandidates, listEnded, normalize } from './candidates.ts';
-import { overlayShowsName } from './capture.ts';
+import { look, type Env } from './actions.ts';
+import { DEFAULT_CAPTURE_LIMITS, readResumeHeader, type CaptureLimits, type HeaderReading } from './capture.ts';
 import { ALL_JOBS, classifyPage, jobFilter, listRows, requestDialog, resumeOverlay, text } from './pages.ts';
 
 const verdict = (ok: boolean, observation: Observation | undefined, ...evidence: string[]): CheckResult => ({
@@ -60,7 +61,47 @@ export interface VerifyMemory {
   resolvedJob(taskId: string, job: string): string | undefined;
 }
 
-export async function verifyUnit(unit: BossUnitName, context: UnitContext, observation: Observation, memory: VerifyMemory): Promise<CheckResult> {
+/** What some verdicts need beyond the tree: local OCR for the resume header. */
+export interface VerifyEnv {
+  env: Env;
+  limits?: Partial<CaptureLimits>;
+}
+
+const HEADER_EVIDENCE: Record<Exclude<HeaderReading, 'match'>, string> = {
+  other: 'the resume header does not show the listed name',
+  no_pane: 'the resume pane is not open and loaded',
+  no_screenshot: 'no screenshot of the resume pane',
+  not_this_image: 'the screenshot is not of this resume pane',
+  ocr_failed: 'local OCR could not read the resume header',
+};
+
+/**
+ * The open resume is `name`'s by its image header. The observation's own
+ * pane screenshot is read when it has one; otherwise, or when that file no
+ * longer is what the observation captured, one fresh screenshot of the pane
+ * is taken and judged on its own. Only one fresh read: waiting is open_resume's job.
+ */
+async function resumeHeaderVerdict(context: UnitContext, observation: Observation, name: string, verify: VerifyEnv | undefined): Promise<CheckResult> {
+  const vision = verify?.env.vision;
+  if (!verify || !vision)
+    return verdict(false, observation, 'online resume is open but local OCR is not available to read its header (capability missing)');
+  const limits = { ...DEFAULT_CAPTURE_LIMITS, ...verify.limits };
+  let seen = observation;
+  let reading: HeaderReading = observation.screenshot
+    ? await readResumeHeader(vision, observation, name, limits, context.signal, verify.env)
+    : 'no_screenshot';
+  if (reading !== 'match' && reading !== 'other') {
+    const pane = resumeOverlay(observation)!.pane;
+    seen = await look(context.session, verify.env, context.signal, { screenshot: true, region: pane });
+    if (seen.pageClass !== 'online_resume') return verdict(false, seen, `page is ${seen.pageClass}, not a resume`);
+    reading = await readResumeHeader(vision, seen, name, limits, context.signal, verify.env);
+  }
+  return reading === 'match'
+    ? verdict(true, seen, 'online resume header shows the listed name')
+    : verdict(false, seen, `online resume is open but ${HEADER_EVIDENCE[reading]}`);
+}
+
+export async function verifyUnit(unit: BossUnitName, context: UnitContext, observation: Observation, memory: VerifyMemory, verify?: VerifyEnv): Promise<CheckResult> {
   const page = classifyPage(observation);
   const account = context.task.account;
   switch (unit) {
@@ -100,11 +141,9 @@ export async function verifyUnit(unit: BossUnitName, context: UnitContext, obser
       const name = context.candidate?.name ?? context.item?.ref.name;
       if (page === 'attachment_preview') return verdict(true, observation, 'attachment preview is open');
       if (page !== 'online_resume') return verdict(false, observation, `page is ${page}, not a resume`);
-      const overlay = resumeOverlay(observation)!;
       if (!name) return verdict(false, observation, 'no candidate to check the resume against');
-      return overlayShowsName(observation, overlay, name)
-        ? verdict(true, observation, 'online resume is open beside the listed name')
-        : verdict(false, observation, 'online resume is open but does not show the listed name');
+      // Side-column text is not proven to be the overlay's; only the image header decides.
+      return resumeHeaderVerdict(context, observation, name, verify);
     }
     case 'acquire_resume': {
       if (!context.staging) return verdict(false, undefined, 'no staging area');
