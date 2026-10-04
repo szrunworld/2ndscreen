@@ -5,12 +5,13 @@
 | 代号 | 任务 | Worker / 工作区 | 分支 | 状态 | 最近 commit | 未决问询 |
 | --- | --- | --- | --- | --- | --- | --- |
 | A | 契约、协议与 API 规范 | ctx_0786c7296951→ctx_edd92e2bd40f（已释放） | monitor-A | 已合（928dc10，契约 0.1.1，170 tests） | ffd598b | — |
+| A2 | 契约 0.2.0 审查修正（写操作标志拆分、账户不可读、定位器语义） | ctx_6b7c4980f328 / monitor-A2 | monitor-A2 | 进行 | — | forward_resume 来源与搜索页问候待用户决定，下一版处理 |
 | B | 只读可行性验证与夹具 | ctx_1b25ee64eab9（已释放） | monitor-B | 已合（898edbd） | 201001d | 登录/二维码、新招呼首次打开、电话待同意/已交换/已拒绝、邮件转发内容、搜索输入后结果 → 留给 N/K |
-| C | Driver 适配器 | ctx_3dfbecec466d / monitor-C（自建屏幕 monitor-c） | monitor-C | 进行（第 1 阶段；等 A 先提交 Driver 协议） | — | — |
+| C | Driver 适配器 | ctx_3dfbecec466d（已释放） | monitor-C | 已合（ecfe9da；client 入工作区 + relock，contracts+client 351 tests） | ec6aed9 | 定位器 text 同时匹配 label/value（比契约宽），0.2.0 契约里追认；CliDriver 未在 BOSS 上真机跑过 → N |
 | D1 | 本地账本 | — | — | 未派 | — | — |
-| D2 | 指令客户端与执行管线 | — | — | 未派 | — | — |
+| D2 | 指令客户端与执行管线 | ctx_be925b1cfd1f / monitor-D2 | monitor-D2 | 进行 | — | — |
 | E | 观察模块 | — | — | 未派 | — | — |
-| F1 | 服务端基础 | — | — | 未派 | — | — |
+| F1 | 服务端基础 | ctx_5b46093fd09a / monitor-F1 | monitor-F1 | 进行 | — | — |
 | F2 | 服务端业务 | — | — | 未派 | — | — |
 | F3 | 服务端扩展 | — | — | 未派 | — | — |
 | G | 邮件接入 | — | — | 未派 | — | — |
@@ -30,6 +31,12 @@
 | --- | --- | --- | --- |
 | 0.1.1 | 2026-10-04 | Element.enabled 改 bool\|None=None（CLI 不提供）；Element.text 改为 label 优先否则 value | C、E、H、K |
 | 0.1.0 | 2026-10-04 | A 问询裁决：新增 event kind `conversation_ambiguous`；command 加 `execution_mode: execute\|verify_only`（verify_only 不受上限、不看白名单）；contact_exchange_updated 只报 state（含 unknown），不带号码；workflow_id 对四个流程动作必填；command_result reason 枚举与组合约束；unsupported_presentation 走 heartbeat.last_error；monitor/uv.lock 归 A，后续任务不提交 lock 改动，监督者合并时重新 lock | 全部 |
+
+## 已知风险（待 N 验证）
+
+- 2ndscreen CLI 的 `--index` 指向菜单栏应用缓存的最近一次 state，任何进程调用 state 都会替换它。CliDriver 写前会重读核对，但同机其他 agent 并发使用 CLI 仍有竞争窗口；Monitor 运行时同机不应有其他 agent 操作 2ndscreen。
+- `--text` 点击不报歧义，CliDriver 一律先定位再按 index 点击。
+- 全局坐标随显示器增删平移；CliDriver 只用窗口相对几何。
 
 ## 用户待决事项
 

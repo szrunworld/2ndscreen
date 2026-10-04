@@ -1,0 +1,18 @@
+{
+  "note": "应用退出后点击",
+  "argv": [
+    "click",
+    "--screen",
+    "monitor-c",
+    "--pid",
+    "59225",
+    "--index",
+    "7"
+  ],
+  "exit_code": 1,
+  "stdout": {
+    "error": "pid 59225 has no window on screen \"monitor-c\"; launch or move it there first",
+    "ok": false
+  },
+  "stderr": ""
+}

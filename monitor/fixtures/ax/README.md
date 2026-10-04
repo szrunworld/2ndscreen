@@ -32,3 +32,17 @@
 - 附件 PDF 预览的文字层整步删除（`x_dropped_elements`）。
 - 岗位名、年龄、年限、学历、薪资、普通寒暄消息原样保留。
 - 截图只留在本机临时目录，没有进入仓库。
+
+## 迁移记录（任务 C，2026-10-04）
+
+契约 0.1.1 的夹具元素是 `{index, role, label, value, frame, enabled}`，本目录原来的 `text` 形状不再通过
+`validate_ax_fixture`。经协调者授权，任务 C 用 `monitor/client/monitor/driver/tools/migrate_legacy_fixture.py`
+一次性迁移了 7 个 `fixture.json`（commit `0604a29`）。只改元素形状，观察结论、标注、窗口与步骤都没有改动。
+
+- `text` 含 ` | ` 的，按上面"`text` 的取法"拆成 `label` 与 `value`（共 42 个元素）。
+- 不含的按角色放：`AXTextField`、`AXTextArea`、`AXComboBox`、`AXSearchField`、`AXStaticText` 放 `value`，
+  其余放 `label`，另一边为空串。`AXStaticText` 归 `value` 的依据：2ndscreen 的
+  `Sources/SecondScreenCore/Accessibility.swift` 只在静态文本有 value 时才列出它
+  （`interesting = actionable || (role == "AXStaticText" && value != nil)`），真机输出的文字在 `value` 上。
+- `enabled` 一律改为 `null`：CLI 不输出可用状态，原来的 `true` 不是观察结果。置灰信息仍在 `annotations.x_visual_state`。
+- 上面"格式约定"里关于 `text` 与 `enabled` 的两条描述的是迁移前的形状。

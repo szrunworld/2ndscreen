@@ -1,0 +1,18 @@
+{
+  "note": "文本未命中",
+  "argv": [
+    "click",
+    "--screen",
+    "monitor-c",
+    "--pid",
+    "52468",
+    "--text",
+    "zzz-no-such-control"
+  ],
+  "exit_code": 1,
+  "stdout": {
+    "error": "no element matches \"zzz-no-such-control\"; run state to see what is there",
+    "ok": false
+  },
+  "stderr": ""
+}

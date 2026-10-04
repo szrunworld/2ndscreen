@@ -1,0 +1,48 @@
+{
+  "note": "启动成功",
+  "argv": [
+    "app",
+    "launch",
+    "--screen",
+    "monitor-c",
+    "--bundle",
+    "com.apple.calculator",
+    "--new-instance"
+  ],
+  "exit_code": 0,
+  "stdout": {
+    "ok": true,
+    "pid": 59225,
+    "screen": {
+      "displayID": 394,
+      "expiresIn": 7120,
+      "frame": {
+        "height": 800,
+        "width": 1280,
+        "x": 4800,
+        "y": 0
+      },
+      "height": 800,
+      "hiDPI": true,
+      "idleTimeout": 3600,
+      "kind": "agent",
+      "name": "monitor-c",
+      "width": 1280
+    },
+    "windows": [
+      {
+        "app": "Calculator",
+        "frame": {
+          "height": 350,
+          "width": 198,
+          "x": 5483,
+          "y": 144
+        },
+        "pid": 59225,
+        "title": "Calculator",
+        "windowID": 131508
+      }
+    ]
+  },
+  "stderr": ""
+}

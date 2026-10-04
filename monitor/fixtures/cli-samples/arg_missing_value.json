@@ -1,0 +1,12 @@
+{
+  "note": "参数解析失败：只写 stderr、退出码 2、无 JSON",
+  "argv": [
+    "state",
+    "--screen",
+    "monitor-c",
+    "--pid"
+  ],
+  "exit_code": 2,
+  "stdout": null,
+  "stderr": "--pid needs a value\n"
+}

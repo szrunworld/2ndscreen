@@ -1,0 +1,16 @@
+{
+  "note": "错误 pid（与窗口丢失同一文案）",
+  "argv": [
+    "state",
+    "--screen",
+    "monitor-c",
+    "--pid",
+    "999999"
+  ],
+  "exit_code": 1,
+  "stdout": {
+    "error": "pid 999999 has no window on screen \"monitor-c\"; launch or move it there first",
+    "ok": false
+  },
+  "stderr": ""
+}

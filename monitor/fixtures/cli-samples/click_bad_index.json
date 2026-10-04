@@ -1,0 +1,18 @@
+{
+  "note": "不存在的 index（快照过期同一文案）",
+  "argv": [
+    "click",
+    "--screen",
+    "monitor-c",
+    "--pid",
+    "52468",
+    "--index",
+    "9999"
+  ],
+  "exit_code": 1,
+  "stdout": {
+    "error": "no element 9999 in the window; run state again",
+    "ok": false
+  },
+  "stderr": ""
+}

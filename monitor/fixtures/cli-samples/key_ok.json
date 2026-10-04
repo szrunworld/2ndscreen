@@ -1,0 +1,28 @@
+{
+  "note": "按键",
+  "argv": [
+    "key",
+    "--screen",
+    "monitor-c",
+    "--pid",
+    "52468",
+    "--key",
+    "return"
+  ],
+  "exit_code": 0,
+  "stdout": {
+    "app": "TextEdit",
+    "ok": true,
+    "pid": 52468,
+    "route": "event.key",
+    "screen": "monitor-c",
+    "windowFrame": {
+      "height": 775,
+      "width": 1280,
+      "x": 4800,
+      "y": 25
+    },
+    "windowID": 131479
+  },
+  "stderr": ""
+}

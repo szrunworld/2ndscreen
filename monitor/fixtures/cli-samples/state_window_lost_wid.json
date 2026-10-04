@@ -1,0 +1,18 @@
+{
+  "note": "应用退出后带 --window-id 的 state",
+  "argv": [
+    "state",
+    "--screen",
+    "monitor-c",
+    "--pid",
+    "59225",
+    "--window-id",
+    "131508"
+  ],
+  "exit_code": 1,
+  "stdout": {
+    "error": "pid 59225 has no on-screen window 131508",
+    "ok": false
+  },
+  "stderr": ""
+}

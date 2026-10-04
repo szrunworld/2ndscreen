@@ -1,0 +1,28 @@
+# 招聘 Monitor 本机客户端（uv 工作区成员 monitor-client）。
+# 任务 C 创建本文件，只写入 Driver 适配器需要的依赖；其他任务按需追加。
+[project]
+name = "monitor-client"
+version = "0.1.0"
+description = "招聘 Monitor 本机客户端"
+requires-python = "==3.12.*"
+dependencies = [
+    "monitor-contracts",
+]
+
+# 客户端已列入工作区 members（协调者合并 C 时加入）。
+[tool.uv.sources]
+monitor-contracts = { workspace = true }
+
+[dependency-groups]
+dev = ["pytest>=8.3"]
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["monitor"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--import-mode=importlib -q"

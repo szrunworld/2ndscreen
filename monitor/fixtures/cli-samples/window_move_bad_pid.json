@@ -1,0 +1,17 @@
+{
+  "note": "移动不存在的 pid",
+  "argv": [
+    "window",
+    "move",
+    "--screen",
+    "monitor-c",
+    "--pid",
+    "999999"
+  ],
+  "exit_code": 1,
+  "stdout": {
+    "error": "pid 999999 has no matching on-screen window",
+    "ok": false
+  },
+  "stderr": ""
+}

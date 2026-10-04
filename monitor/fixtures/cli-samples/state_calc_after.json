@@ -1,0 +1,55 @@
+{
+  "note": "点击 7 后带 --query 的过滤 state；值带 U+200E",
+  "argv": [
+    "state",
+    "--screen",
+    "monitor-c",
+    "--pid",
+    "59225",
+    "--query",
+    "7"
+  ],
+  "exit_code": 0,
+  "stdout": {
+    "app": "Calculator",
+    "elements": [
+      {
+        "frame": {
+          "height": 36,
+          "width": 17.5,
+          "x": 5653.5,
+          "y": 217
+        },
+        "index": 2,
+        "role": "AXStaticText",
+        "value": "‎7"
+      },
+      {
+        "actions": [
+          "AXPress"
+        ],
+        "frame": {
+          "height": 40,
+          "width": 40,
+          "x": 5493,
+          "y": 307
+        },
+        "index": 7,
+        "label": "7",
+        "role": "AXButton"
+      }
+    ],
+    "ok": true,
+    "pid": 59225,
+    "screen": "monitor-c",
+    "tree": "            - [2] AXStaticText = \"‎7\"\n          - [7] AXButton \"7\"",
+    "windowFrame": {
+      "height": 350,
+      "width": 198,
+      "x": 5483,
+      "y": 144
+    },
+    "windowID": 131508
+  },
+  "stderr": ""
+}

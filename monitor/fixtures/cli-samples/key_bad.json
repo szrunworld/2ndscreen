@@ -1,0 +1,18 @@
+{
+  "note": "未知按键",
+  "argv": [
+    "key",
+    "--screen",
+    "monitor-c",
+    "--pid",
+    "52468",
+    "--key",
+    "notakey"
+  ],
+  "exit_code": 1,
+  "stdout": {
+    "error": "unknown key \"notakey\"",
+    "ok": false
+  },
+  "stderr": ""
+}
