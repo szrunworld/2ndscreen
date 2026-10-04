@@ -1,20 +1,23 @@
-"""定位器：在一次快照的元素列表里找唯一目标。纯函数，不调用 CLI。
+"""定位器：在一次快照的元素列表里按契约 ``Locator`` 找唯一目标。纯函数，不调用 CLI。
 
-条件全部满足才算命中（与）：
+条件取交集（契约 Locator 的语义），以下是本实现的具体约定：
 
-- 文本：``exact``（规范化后相等）或 ``contains``（规范化后包含）。元素的候选文本是
-  ``text``、``label``、``value`` 中非空的那些，任一满足即可。
-- 角色：``AXButton`` 同时命中 ``AXButton`` 与 ``AXButton/AXSomeSubrole``；写全
-  ``AXCheckBox/AXSegment`` 则只命中这一子角色。
-- 几何区域：元素中心点落在区域内（全局坐标，左上为原点）。
-- 同一行右侧：先按 ``right_of`` 唯一定位锚点（锚点歧义或未找到照常报错），候选元素
-  的垂直中心落在锚点的上下边之间，且左边缘不在锚点右边缘的左侧（容差 ``row_slack``）。
+- ``text``：规范化后与元素的 ``text``、``label``、``value`` 任一相等即命中。比只比
+  ``Element.text`` 宽一点：弹出菜单 label="typeface"、value="Helvetica" 时两个词都能定位。
+- ``text_contains``：规范化后是上述任一文本的子串。
+- ``role``：相等即命中；``role`` 不含 "/" 时也命中带子角色的元素（``AXButton`` 命中
+  ``AXButton/AXCloseButton``）。写全 ``AXCheckBox/AXSegment`` 则只命中该子角色。
+- ``region``：元素中心点落在矩形内（全局坐标，左上为原点）。
+- ``index``：快照内位置。
+- ``right_of``：先在同一元素列表里唯一定位锚点（锚点歧义或未找到照常抛错）；候选元素的
+  垂直中心落在锚点上下边之间（容差 ``ROW_SLACK``），且左边缘不在锚点右边缘左侧。
 
-结果：恰好一个命中返回它；零个抛"目标未找到"；多个抛"目标歧义"，不替调用方挑选。
-``nearest=True`` 只用于"同一行右侧"：取离锚点最近的一个，最近距离并列时仍是歧义。
+结果：恰好一个命中返回它；零个抛 TargetNotFoundError；多个抛 TargetAmbiguousError，
+不替调用方挑选。``nearest=True``（不在契约 Locator 里，是本模块的附加参数）只作用于
+最外层的 ``right_of``：取离锚点最近的一个，最近距离并列时仍是歧义。
 
 规范化：去掉方向控制符（Calculator 的值带 U+200E）、NFKC、合并空白、去首尾空白；
-``case_sensitive=False`` 时再转小写。
+区分大小写。
 """
 
 from __future__ import annotations
@@ -22,152 +25,92 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
-from typing import Any, Literal
 
-from .errors import TargetAmbiguousError, TargetNotFoundError
+from monitor_contracts import Element, Frame, Locator, TargetAmbiguousError, TargetNotFoundError
+
+ROW_SLACK = 2.0
 
 _BIDI = re.compile("[‎‏‪-‮⁦-⁩﻿]")
 _SPACE = re.compile(r"\s+")
 
 
-@dataclass(frozen=True)
-class Region:
-    """全局坐标的矩形区域（点）。"""
-
-    x: float
-    y: float
-    width: float
-    height: float
-
-    def contains(self, px: float, py: float) -> bool:
-        return self.x <= px <= self.x + self.width and self.y <= py <= self.y + self.height
-
-
-@dataclass(frozen=True)
-class Query:
-    """一次定位条件。所有字段都可空；全空的查询会命中所有带框的元素（通常导致歧义）。"""
-
-    text: str | None = None
-    match: Literal["exact", "contains"] = "exact"
-    role: str | None = None
-    # Region 或契约 Frame：任何带 contains(x, y) 的矩形。
-    region: Any = None
-    right_of: Query | None = None
-    nearest: bool = False
-    case_sensitive: bool = False
-    row_slack: float = 2.0
-
-    def describe(self) -> str:
-        parts = []
-        if self.text is not None:
-            parts.append(f"text {self.match} {self.text!r}")
-        if self.role:
-            parts.append(f"role={self.role}")
-        if self.region:
-            parts.append(f"region={self.region!r}")
-        if self.right_of:
-            parts.append(f"right_of[{self.right_of.describe()}]")
-        return ", ".join(parts) or "<any>"
-
-
-def normalize(text: str, case_sensitive: bool = False) -> str:
+def normalize(text: str) -> str:
     text = unicodedata.normalize("NFKC", _BIDI.sub("", text))
-    text = _SPACE.sub(" ", text).strip()
-    return text if case_sensitive else text.casefold()
+    return _SPACE.sub(" ", text).strip()
 
 
-def element_texts(element: Any) -> list[str]:
-    """元素的候选文本：契约 Element 的 ``text``，以及 CLI 原始元素的 ``label``/``value``。"""
-    out = []
-    for name in ("text", "label", "value"):
-        value = getattr(element, name, None)
-        if isinstance(value, str) and value and value not in out:
+def element_texts(element: Element) -> list[str]:
+    """元素可用于文本匹配的候选：text、label、value 中非空且不重复的。"""
+    out: list[str] = []
+    for value in (element.text, element.label, element.value):
+        if value and value not in out:
             out.append(value)
     return out
-
-
-def _frame(element: Any) -> tuple[float, float, float, float] | None:
-    frame = getattr(element, "frame", None)
-    if frame is None:
-        return None
-    # 契约 Frame 用 w/h，CLI 原始框用 width/height。
-    w = getattr(frame, "w", None)
-    h = getattr(frame, "h", None)
-    if w is None or h is None:
-        w, h = frame.width, frame.height
-    return (float(frame.x), float(frame.y), float(w), float(h))
 
 
 def _role_matches(want: str, role: str) -> bool:
     return role == want or ("/" not in want and role.split("/", 1)[0] == want)
 
 
-def _text_matches(query: Query, element: Any) -> bool:
-    assert query.text is not None
-    needle = normalize(query.text, query.case_sensitive)
-    for candidate in element_texts(element):
-        hay = normalize(candidate, query.case_sensitive)
-        if hay == needle if query.match == "exact" else needle in hay:
-            return True
-    return False
+def _center(frame: Frame) -> tuple[float, float]:
+    return (frame.x + frame.w / 2, frame.y + frame.h / 2)
 
 
-def _basic_matches(query: Query, element: Any) -> bool:
-    if query.role is not None and not _role_matches(query.role, str(getattr(element, "role", ""))):
+def _basic_matches(locator: Locator, element: Element) -> bool:
+    if locator.index is not None and element.index != locator.index:
         return False
-    if query.text is not None and not _text_matches(query, element):
+    if locator.role is not None and not _role_matches(locator.role, element.role):
         return False
-    if query.region is not None:
-        frame = _frame(element)
-        if frame is None:
+    texts = None
+    if locator.text is not None:
+        texts = [normalize(t) for t in element_texts(element)]
+        if normalize(locator.text) not in texts:
             return False
-        x, y, w, h = frame
-        if not query.region.contains(x + w / 2, y + h / 2):
+    if locator.text_contains is not None:
+        texts = texts if texts is not None else [normalize(t) for t in element_texts(element)]
+        needle = normalize(locator.text_contains)
+        if not any(needle in t for t in texts):
             return False
+    if locator.region is not None and not locator.region.contains(*_center(element.frame)):
+        return False
     return True
 
 
-def _same_row_right(anchor: Any, element: Any, slack: float) -> float | None:
-    """元素在锚点同一行右侧时返回水平距离，否则 None。"""
-    a, e = _frame(anchor), _frame(element)
-    if a is None or e is None or element is anchor:
+def _same_row_right(anchor: Element, element: Element) -> float | None:
+    """元素在锚点同一行右侧时返回水平间距，否则 None。"""
+    if element.index == anchor.index:
         return None
-    ax, ay, aw, ah = a
-    ex, ey, ew, eh = e
-    center_y = ey + eh / 2
-    if not (ay - slack <= center_y <= ay + ah + slack):
+    a, e = anchor.frame, element.frame
+    center_y = e.y + e.h / 2
+    if not (a.y - ROW_SLACK <= center_y <= a.y + a.h + ROW_SLACK):
         return None
-    gap = ex - (ax + aw)
-    if gap < -slack:
+    gap = e.x - (a.x + a.w)
+    if gap < -ROW_SLACK:
         return None
     return max(gap, 0.0)
 
 
-def find_all(elements: Iterable[Any], query: Query) -> list[Any]:
-    """返回所有满足条件的元素，保持原顺序；``right_of`` 的锚点必须唯一。"""
+def find_all(elements: Iterable[Element], locator: Locator, *, nearest: bool = False) -> list[Element]:
+    """所有满足条件的元素，保持原顺序。``right_of`` 的锚点必须唯一。"""
     elements = list(elements)
-    matches = [e for e in elements if _basic_matches(query, e)]
-    if query.right_of is None:
+    matches = [e for e in elements if _basic_matches(locator, e)]
+    if locator.right_of is None:
         return matches
-    anchor = find_one(elements, query.right_of)
-    scored = []
-    for e in matches:
-        distance = _same_row_right(anchor, e, query.row_slack)
-        if distance is not None:
-            scored.append((distance, e))
-    if query.nearest and scored:
+    anchor = find_one(elements, locator.right_of)
+    scored = [(d, e) for e in matches if (d := _same_row_right(anchor, e)) is not None]
+    if nearest and scored:
         best = min(d for d, _ in scored)
         return [e for d, e in scored if d == best]
     return [e for _, e in scored]
 
 
-def find_one(elements: Sequence[Any] | Iterable[Any], query: Query) -> Any:
-    """唯一命中返回元素；否则抛 TargetNotFound 或 TargetAmbiguous。"""
-    hits = find_all(elements, query)
+def find_one(
+    elements: Sequence[Element] | Iterable[Element], locator: Locator, *, nearest: bool = False
+) -> Element:
+    """唯一命中返回元素；否则抛 TargetNotFoundError 或 TargetAmbiguousError。"""
+    hits = find_all(elements, locator, nearest=nearest)
     if not hits:
-        raise TargetNotFoundError(f"没有元素满足 {query.describe()}")
+        raise TargetNotFoundError(locator)
     if len(hits) > 1:
-        indexes = [getattr(h, "index", None) for h in hits]
-        raise TargetAmbiguousError(f"{len(hits)} 个元素满足 {query.describe()}：index {indexes}")
+        raise TargetAmbiguousError(locator, len(hits))
     return hits[0]

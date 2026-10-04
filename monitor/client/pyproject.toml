@@ -5,7 +5,14 @@ name = "monitor-client"
 version = "0.1.0"
 description = "招聘 Monitor 本机客户端"
 requires-python = "==3.12.*"
-dependencies = []
+dependencies = [
+    "monitor-contracts",
+]
+
+# 客户端暂未列入工作区 members（根 pyproject 归任务 A），先用路径依赖；
+# 加入工作区后可改为 { workspace = true }。
+[tool.uv.sources]
+monitor-contracts = { path = "../contracts", editable = true }
 
 [dependency-groups]
 dev = ["pytest>=8.3"]
