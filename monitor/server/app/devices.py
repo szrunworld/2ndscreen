@@ -374,7 +374,7 @@ def list_devices(ctx: Ctx, _actor: ConsoleActor):
     operation_id="getDevice",
     summary="设备详情（控制台）",
     response_model=Device,
-    responses=problem_responses(404),
+    responses=problem_responses(401, 404),
 )
 def get_device(ctx: Ctx, _actor: ConsoleActor, device_id: str):
     return ok(ctx.devices.get(device_id))
@@ -385,7 +385,7 @@ def get_device(ctx: Ctx, _actor: ConsoleActor, device_id: str):
     operation_id="revokeDeviceToken",
     summary="吊销设备令牌",
     response_model=Device,
-    responses=problem_responses(404),
+    responses=problem_responses(401, 404),
 )
 def revoke_device(
     request: Request, ctx: Ctx, actor: ConsoleActor, device_id: str, idempotency_key: IdempotencyKeyHeader
@@ -400,7 +400,7 @@ def revoke_device(
     operation_id="confirmAccountBinding",
     summary="控制台确认设备与招聘账户的绑定",
     response_model=AccountBinding,
-    responses=problem_responses(404, 422),
+    responses=problem_responses(401, 404, 422),
 )
 def confirm_binding(
     request: Request,
@@ -449,7 +449,7 @@ router.add_api_route(
     operation_id="pauseDevice",
     summary="暂停设备（停止领取与新的对外动作；已发生的动作仍完成记录与回传）",
     response_model=Device,
-    responses=problem_responses(404),
+    responses=problem_responses(401, 404),
 )
 router.add_api_route(
     "/devices/{device_id}:resume",
@@ -458,7 +458,7 @@ router.add_api_route(
     operation_id="resumeDevice",
     summary="恢复设备",
     response_model=Device,
-    responses=problem_responses(404),
+    responses=problem_responses(401, 404),
 )
 
 

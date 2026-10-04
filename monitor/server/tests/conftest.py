@@ -5,14 +5,21 @@ from __future__ import annotations
 
 import copy
 import json
+import sys
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import monitor_contracts as mc
 import pytest
 import yaml
-from fastapi.testclient import TestClient
+import warnings
+
+with warnings.catch_warnings():
+    # starlette 对 httpx 的弃用提示与本项目无关；在导入处屏蔽，不依赖从哪个目录调用 pytest
+    warnings.filterwarnings("ignore", message="Using `httpx` with `starlette.testclient`")
+    from fastapi.testclient import TestClient
 from jsonschema import Draft202012Validator
 from referencing import Registry, Resource
 from referencing.jsonschema import DRAFT202012
@@ -160,6 +167,7 @@ class Harness:
     def registration(self, code: str, mode: str = "local", **overrides: Any) -> dict[str, Any]:
         body = vector(f"device_registration_{mode}")
         body["enrollment_code"] = code
+        body["contracts_version"] = mc.__version__  # 向量里是旧版本号；注册时服务端会检查兼容性
         body.update(overrides)
         return body
 
@@ -242,11 +250,18 @@ class Harness:
             body["action"] = command["action"]
         body.update(command_id=command["command_id"], executed_at=now, reported_at=now)
         if status == "failed":
-            body.update(status="failed", reason="target_not_found", gui_write_performed=False)
+            body.update(
+                status="failed",
+                reason="target_not_found",
+                navigation_performed=False,
+                outbound_action_performed=False,
+                externally_visible_side_effect=False,
+            )
         elif status == "unknown":
             body.update(status="unknown", reason="crash_recovery")
         elif status == "cancelled":
-            body.update(status="cancelled", reason=None, executed_at=None, gui_write_performed=False)
+            # 导航过但没有对外动作时可以取消（契约 0.2.0：cancelled 只要求 outbound_action_performed=false）
+            body.update(status="cancelled", reason=None, executed_at=None, outbound_action_performed=False)
         body.update(overrides)
         return body
 
@@ -274,3 +289,10 @@ def h() -> Harness:
     yield harness
     harness.client.close()
     harness.store.close()
+
+
+# 测试模块用 `from server_testkit import ...` 取公共助手。pytest 总是先加载 conftest，这里把本模块
+# 以唯一的名字登记到 sys.modules：不依赖 sys.path / import 模式 / rootdir，在 server 目录下和
+# monitor/ 下（`uv run pytest server`、`uv run pytest contracts server`）都一样，也不会和其他
+# 成员将来的 conftest 重名。
+sys.modules.setdefault("server_testkit", sys.modules[__name__])

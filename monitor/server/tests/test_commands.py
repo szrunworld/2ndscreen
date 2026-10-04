@@ -7,7 +7,7 @@ import time
 import uuid
 
 import pytest
-from conftest import ACCOUNT, SERVICE_TOKEN, Harness, assert_problem, assert_shape, iso
+from server_testkit import ACCOUNT, SERVICE_TOKEN, Harness, assert_problem, assert_shape, iso
 
 from app.commands import CommandCreateError, CommandNotifier
 from app.events import CommandResultRecorded
@@ -300,7 +300,7 @@ def test_ack_errors(h: Harness):
     assert_problem(h.ack(cid, a_id, a_token), 409)  # 还没被领取
     claimed_ids(h.claim(a_id, a_token))
     assert_problem(h.ack(cid, b_id, b_token), 409, "command_not_owned")
-    assert_problem(h.ack(cid, b_id, a_token), 409)  # 请求体 device_id 与令牌不符
+    assert_problem(h.ack(cid, b_id, a_token), 403, "device_mismatch")  # 请求体 device_id 与令牌不符
     assert_problem(h.ack(cid, a_id, None), 401)
     assert_problem(h.ack(cid, a_id, a_token, ledger_state="bogus"), 422)
 

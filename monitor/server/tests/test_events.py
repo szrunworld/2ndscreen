@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from conftest import ACCOUNT, Harness, assert_problem, assert_shape, vector
+from server_testkit import ACCOUNT, Harness, assert_problem, assert_shape, vector
 
 from app.events import EventReceived, InProcessEventBus
 from monitor_contracts import compute_event_id
