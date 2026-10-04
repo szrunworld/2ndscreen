@@ -59,7 +59,7 @@ Run：run_7d52e82ce7ed。分支 monitor-v1（a12a931，自 szrunworld/ss-runtime
 5. 候选人同意交换后，是否把**微信号**回传到服务端存储（v1 契约暂不带号码，只报状态）。交换方式已决定（2026-10-04）：只换微信、仅人工触发（A3 0.3.0 实现）。
 6. ~~硬上限~~ 已决定（2026-10-04）：每种对外动作每日 ≤40；间隔问候/求简历/转发 45 秒、换联系方式 60 秒、搜索 30 秒（D2b 实现）。
 7. ~~简历路线~~ 已决定（2026-10-04，二次）：求简历 → 候选人同意 → BOSS 自动发到公司预留邮箱；Monitor 不转发；邮箱按『邮箱即队列 + 消费 + 归档 + 核对』读取（任务 G）；对外版本套用公司模板与 logo（任务 R）。
-10. ~~邮箱~~ 已决定（2026-10-04）：zhaopin@remotedesk.io（别名 bosszhipin@），公司邮件服务 mail（remotedesk-resend）的公共邮箱；Monitor 订阅 mail.ready + integration key 取信；保留 30 天由 mail 留存任务执行，Monitor 不逐封删除。待办：管理员建 zhaopin@ 公共邮箱（retention_days=30）、webhook 订阅与 API key；BOSS 后台把收简历邮箱改为 zhaopin@；是否同意 G0 跨仓修改。
+10. ~~邮箱~~ 已决定（2026-10-04）：zhaopin@remotedesk.io（别名 bosszhipin@），公司邮件服务 mail（remotedesk-resend）的公共邮箱；Monitor 订阅 mail.ready + integration key 取信；保留 30 天由 mail 留存任务执行，Monitor 不逐封删除。进展（2026-10-04）：公共邮箱 CV 已建（zhaopin@ + 别名 bosszhipin@）。部署时待办：retention_days 改为 30（默认 365）；Monitor 服务端部署后把其主机加入 mail 的 MAIL_WEBHOOK_ALLOWED_HOSTS 并为 CV 建 mail.ready 订阅；签发 mail.read API key 存服务端环境变量；BOSS 后台收简历邮箱改为上述地址之一；是否同意 G0 跨仓修改。
 9. 任务 R 需要：公司简历模板（Word/PDF/HTML 样例均可）、logo 文件、字段取舍（是否含联系方式、是否去掉平台字样）。
 8. ~~搜索页问候按钮~~ 已决定（2026-10-04）：v1 去掉，搜索只返回快照。
 
