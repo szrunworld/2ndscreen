@@ -266,6 +266,10 @@ export function createLocalVision(options: {
 
 要求：只读取已有图片，不截图、不发送输入、不调用模型；`roi` 与返回框均为图片像素；`compare` 给出相似度与竖直位移，供滚动进度和底部检查使用；未实现 `findTemplate` 时 template 定位器报 `capability_missing`。
 
+可选 `compose`（A8 追加，经协调者批准）：`compose(framePaths, outputPath, { roi?, minOverlapPx? }, signal)` 把同一滚动区域的多屏截图自上而下拼成一张 PNG，返回 `ComposedImage`（尺寸、sha256、每帧 `first/placed/duplicate/gap` 及其输出行、`hasGap`）。每帧只在与上一帧有已验证的重叠（默认 ≥48 行、有纹理、无歧义，且重叠区逐行一致）时追加新行；只有在有纹理内容上证明未移动且未变化的帧才是 duplicate；其余帧（包括完全相同的空白帧或重复内容帧、重叠区有局部变化的帧）一律整帧追加并标 gap，`hasGap = true`，调用方应记 `CaptureEvidence.stop = 'stitch_gap'`。像素相同本身不证明连续。`outputPath` 必须是绝对 `.png` 路径、父目录存在、文件不存在；输出整张写入或完全不写。单帧加 roi 即裁剪。拼接干净不等于采集完整，完整性仍只由 `captureCompleteness` 判定；连续相同截图只是“无进展”。
+
+Swift 侧：`Sources/SecondScreenCore/LocalVision.swift`（实现与协议）、`Sources/ScreenCLI/LocalVision.swift` 提供 `runLocalVision(args)`，由 A7 在 main.swift 的帮助检查之前注册为 `2ndscreen vision`。协议为 stdin 一行请求、stdout 一行回复，退出码 0 成功、1 失败、2 请求无效。上限：每个输入文件 ≤64 MB、单边 ≤16384 px、≤64M 像素，拼接 ≤64 帧、输出 ≤60M 像素。
+
 ## 单元执行顺序（A6 实现，A3/A4/A5 遵守）
 
 对每个工作单元：
@@ -297,7 +301,7 @@ export function createLocalVision(options: {
 2. Bridge 向 stdout 每行输出一个 `BridgeEvent`，stderr 仅用于日志。每个事件带 `v`、`taskId`、`unitAttemptId`、`at`，与步骤相关的带 `stepId`。
    - `observed`：快照 ID、窗口几何、可选页面类别。
    - `action_started` / `action_finished`：同一 `stepId` 成对出现；动作必须在单元 `allowedEffects` 内，external-submit 一律拒绝。
-   - `model_usage`：每次模型调用一条，含 purpose、reason、token（不可知为 `"unknown"`）。
+   - `model_usage`：每次模型调用一条，含 purpose、reason、token（不可知为 `"unknown"`）。purpose/reason 取自请求的可选字段 `usageContext`（Runtime 发起修复时应填 `repair` 与对应原因）；请求未带时兼容默认为 `ui` / `missing_procedure`。
    - 最后一行必须是 `unit_finished`（含步骤数、可选流程提案）或 `unit_failed`（budget_exhausted、model_unavailable、cancelled、timeout、forbidden_effect、error）。
 3. 退出码：0 finished，1 failed，2 请求无效。
 4. Runtime 用 `parseBridgeEvent(line, { taskId, unitAttemptId })` 解析每行；不合法的行使本次探索失败（`error`），并终止子进程。

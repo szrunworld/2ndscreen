@@ -725,6 +725,45 @@ export interface TemplateMatch {
   score: number;
 }
 
+export interface ComposeOptions {
+  /** Same pixel rect (top-left, image pixels) in every frame, e.g. the resume pane; default the whole image. Frames must share size. */
+  roi?: Rect;
+  /** Fewest overlapping rows that prove two neighbouring frames continue each other; default 48. */
+  minOverlapPx?: number;
+}
+
+export interface ComposedFrame {
+  /** Position in framePaths. */
+  index: number;
+  /**
+   * first: the top frame; placed: appended after a proven overlap; duplicate:
+   * proven unmoved and unchanged on textured content, skipped; gap: no
+   * overlap proven (including blank or repeating screens), appended whole.
+   */
+  placement: 'first' | 'placed' | 'duplicate' | 'gap';
+  /** First output row this frame contributed (output pixels, top-left). */
+  outputY: number;
+  /** Rows contributed; 0 for a duplicate. */
+  rows: number;
+  /** Verified overlap with the previous frame, when placed. */
+  overlapPx?: number;
+}
+
+/** A scrolled region stacked into one PNG from its screens, top to bottom. */
+export interface ComposedImage {
+  /** The PNG written (the requested outputPath). */
+  path: string;
+  widthPx: number;
+  heightPx: number;
+  sha256: string;
+  frames: ComposedFrame[];
+  /**
+   * Any gap frame: the caller records CaptureEvidence.stop = 'stitch_gap'.
+   * A clean compose is never by itself proof the capture is complete.
+   */
+  hasGap: boolean;
+}
+
 /**
  * Reads images the runtime already has. Never takes screenshots, never sends
  * input and never calls a model. Every method accepts a region of interest
@@ -735,6 +774,12 @@ export interface LocalVision {
   compare(beforePath: string, afterPath: string, options?: { roi?: Rect }, signal?: AbortSignal): Promise<ImageComparison>;
   /** Optional: resolve `template` locators. Absent means template locators fail with capability_missing. */
   findTemplate?(imagePath: string, templateId: string, options?: { roi?: Rect; minScore?: number }, signal?: AbortSignal): Promise<TemplateMatch | undefined>;
+  /**
+   * Optional: stack screens of one scrolled region into a new PNG at
+   * `outputPath` (absolute, .png, must not exist, parent must exist), written
+   * whole or not at all. A crop is a compose of one frame with a roi.
+   */
+  compose?(framePaths: readonly string[], outputPath: string, options?: ComposeOptions, signal?: AbortSignal): Promise<ComposedImage>;
   close(): Promise<void>;
 }
 
@@ -1222,6 +1267,11 @@ export interface ExplorationRequest {
   budget: { maxRounds: number; maxTokens?: number; timeoutMs: number };
   /** Always false in the first version; the bridge must refuse external-submit actions. */
   submitAllowed: false;
+  /**
+   * Why the runtime is exploring, copied onto every `model_usage` event.
+   * Without it the bridge reports purpose `ui`, reason `missing_procedure`.
+   */
+  usageContext?: { purpose: ModelPurpose; reason: ModelCallReason };
 }
 
 interface BridgeEventBase {
@@ -1694,6 +1744,9 @@ export function validateExplorationRequest(raw: unknown): Validated<ExplorationR
   if (!isObject(b) || !isInt(b.maxRounds, 1) || !isInt(b.timeoutMs, 1) || (b.maxTokens !== undefined && !isInt(b.maxTokens, 1)))
     errors.push('budget needs maxRounds and timeoutMs >= 1');
   if (raw.submitAllowed !== false) errors.push('submitAllowed must be false');
+  const c = raw.usageContext;
+  if (c !== undefined && (!isObject(c) || !oneOf(c.purpose, ['ui', 'repair', 'analysis']) || !oneOf(c.reason, ['missing_procedure', 'replay_failed', 'postcondition_failed', 'recovery_exhausted', 'analysis'])))
+    errors.push('usageContext needs a model purpose and call reason');
   return ok(raw as unknown as ExplorationRequest, errors);
 }
 
