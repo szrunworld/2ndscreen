@@ -8,7 +8,7 @@
 | A2 | 契约 0.2.0 审查修正（写操作标志拆分、账户不可读、定位器语义） | ctx_6b7c4980f328（已释放） | monitor-A2 | 已合（contracts 191 tests）；合并后 client/core 41 个测试待 D2b 适配 | dadf00b | — |
 | D2b | 管线适配契约 0.2.0 + 硬上限 | 已释放 | monitor-D2b | 已合（9d74827）；全量 703 tests | 0c4f3be | 执行中取消需另一线程调 pipeline.cancel（→ J）；崩溃恢复 unknown 时 outbound 保守取 true |
 | A3 | 契约 0.3.0：邮箱路线与搜索收敛 | 已释放 | monitor-A3 | 已合（fbf6f3a，contracts 266 tests）；A3b 补充中；client/server 适配由 X 处理 | 76e93e8 | — |
-| A3b | 契约 0.3.1（换微信阶段、mail 服务字段） | ctx_8843cb3ab30c / monitor-A3 | monitor-A3 | 进行 | — | — |
+| A3b | 契约 0.3.1（换微信阶段、mail 服务字段） | 已释放 | monitor-A3 | 已合（e57b411，contracts 281）；协调者补测试夹具 mail_retention_days，全量 1152 | b90ccf4 | — |
 | X | client/server 适配 0.3.0 | 已释放 | monitor-X | 已合（813e25a；全量 1137 tests） | 2a9653d | server 一致性测试 NOT_YET_IMPLEMENTED 白名单 26 项，F2/F3/G 实现时逐项移出 |
 | C2 | Driver 修复（CliFailure 冻结、window release 分类、PDF 子树过滤） | ctx_e08c23aa3891 / monitor-C2 | monitor-C2 | 进行 | — | — |
 | D2c | 管线三处小改（入口分发、status()、suspend_gui） | ctx_f53c25d0358d / monitor-D2c | monitor-D2c | 进行 | — | — |
@@ -36,6 +36,7 @@
 
 | 版本 | 日期 | 变更 | 受影响任务 |
 | --- | --- | --- | --- |
+| 0.3.1 | 2026-10-04 | 人工换微信可从除 closed 外各阶段进入 contact_requested（之后邮件到达不回退阶段）；mail_message 改为 mail 服务订阅方（provider=remotedesk-mail、mail_message_id='mail:'+id）；upstream_missing；policy.mail_retention_days（必填，默认 30）；收件邮箱 zhaopin@remotedesk.io | F2、G、I1 |
 | 0.3.0 | 2026-10-04 | 移除 forward_resume；mail_message / mail_verification；resume_document variant；搜索卡片 fields/masked_name/prop_card_texts；只换微信 + POST /cases/{id}:request-wechat；补齐 401/403/422 | client、server（X 适配） |
 | 0.2.0 | 2026-10-04 | command_result 的 gui_write_performed 拆为 navigation_performed / outbound_action_performed / externally_visible_side_effect（线上必填；verify_only 与取消只约束 outbound；outbound⇒externally_visible）；account_id 来自绑定、account_mismatch 只在有证据时使用；Locator.text/text_contains 匹配 text/label/value | D1、D2、H1–H3、F1、I1 |
 | 0.1.1 | 2026-10-04 | Element.enabled 改 bool\|None=None（CLI 不提供）；Element.text 改为 label 优先否则 value | C、E、H、K |
