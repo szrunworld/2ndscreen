@@ -542,7 +542,7 @@ interface Rig {
   cleanup(): Promise<void>;
 }
 
-const FAST = { pollMs: 1, openTimeoutMs: 200, listSettleMs: 30, capture: { settleMs: 0, loadTimeoutMs: 200 } };
+const FAST = { pollMs: 1, openTimeoutMs: 200, capture: { settleMs: 0, loadTimeoutMs: 200 } };
 
 async function rig(opts: Partial<AppOptions> = {}, wf: { compose?: boolean; composeGap?: boolean; vision?: boolean; attachment?: AttachmentRoute; capture?: object; input?: Partial<TaskRecord['input']> } = {}): Promise<Rig> {
   const dir = await mkdtemp(join(tmpdir(), 'boss-resumes-'));
@@ -878,6 +878,31 @@ test('select_source applies a unique job, and stops on an ambiguous one without 
     assert.equal((await none.workflow.runScripted('select_source', none.context())!).reason, 'job_not_found');
   } finally {
     await none.cleanup();
+  }
+});
+
+test('verifying select_source never accepts a title that merely contains the job text', async () => {
+  const r = await rig({ jobs: ['初级工程师', '高级工程师'], filter: '高级工程师' }, { input: { job: '工程师' } });
+  try {
+    // Called before any selection, e.g. by recovery: 高级工程师 contains 工程师 but so does 初级工程师.
+    const o = await r.app.observe();
+    assert.equal((await r.workflow.verifyUnit('select_source', r.context(), o)).ok, false);
+    const tried = await r.workflow.runScripted('select_source', r.context())!;
+    assert.equal(tried.reason, 'job_ambiguous');
+    assert.equal((await r.workflow.verifyUnit('select_source', r.context(), await r.app.observe())).ok, false);
+  } finally {
+    await r.cleanup();
+  }
+  const unique = await rig({ jobs: ['前端工程师', '后端工程师'] }, { input: { job: '前端' } });
+  try {
+    const picked = await unique.workflow.runScripted('select_source', unique.context())!;
+    assert.equal(picked.ok, true, picked.reason);
+    // The verifier accepts the option this task's selection resolved, and only for this task.
+    assert.equal((await unique.workflow.verifyUnit('select_source', unique.context(), picked.observation)).ok, true);
+    const other = { ...unique.context(), task: { ...taskRecord({ job: '前端' }), id: 'task-2' } };
+    assert.equal((await unique.workflow.verifyUnit('select_source', other, picked.observation)).ok, false);
+  } finally {
+    await unique.cleanup();
   }
 });
 
@@ -1229,6 +1254,45 @@ test('return_to_list closes the resume by its close control', async () => {
   }
 });
 
+test('closing the resume never takes the window close button, and an ambiguous close is not guessed', async () => {
+  const r = await rig();
+  try {
+    const { ctx } = await openPerson(r, '陈一');
+    assert.equal((await r.workflow.runScripted('open_resume', ctx)!).ok, true);
+    // The app window's own close button comes first in the tree and is labelled 关闭.
+    const base = r.app.observe.bind(r.app);
+    r.app.observe = async (options, signal) => {
+      const o = await base(options, signal);
+      o.elements!.unshift({ index: 1, role: 'AXButton/AXCloseButton', label: '关闭', frame: { x: WIN.x + 5, y: WIN.y + 10, width: 16, height: 16 } });
+      return o;
+    };
+    const back = await r.workflow.runScripted('return_to_list', ctx)!;
+    assert.equal(back.ok, true, back.reason);
+    assert.deepEqual(r.app.clicks.filter((c) => c === 'close' || c === 'unknown'), ['close']);
+  } finally {
+    await r.cleanup();
+  }
+  const amb = await rig();
+  try {
+    const { ctx } = await openPerson(amb, '陈一');
+    assert.equal((await amb.workflow.runScripted('open_resume', ctx)!).ok, true);
+    const base = amb.app.observe.bind(amb.app);
+    amb.app.observe = async (options, signal) => {
+      const o = await base(options, signal);
+      if (amb.app.overlay === 'resume') o.elements!.push({ index: 2, role: 'AXGroup', label: '', frame: { x: WIN.x + 1200, y: WIN.y + 14, width: 28, height: 28 } });
+      return o;
+    };
+    const back = await amb.workflow.runScripted('return_to_list', ctx)!;
+    assert.equal(back.ok, false, 'two close-like squares: neither is clicked');
+    assert.ok(!amb.app.clicks.includes('close') && !amb.app.clicks.includes('unknown'));
+    assert.ok(amb.app.actions.every((a) => a.action.kind === 'key' || a.action.kind === 'click'));
+    assert.ok(amb.app.actions.some((a) => a.action.kind === 'key' && a.action.key === 'escape'));
+    assertNothingSent(amb.app);
+  } finally {
+    await amb.cleanup();
+  }
+});
+
 const crowd = (n: number): Person[] =>
   Array.from({ length: n }, (_, i) => ({ name: `候选${i}`, position: '前端工程师', time: `${10 + (i % 9)}:0${i % 10}`, unread: 0, preview: `示例${i}`, summary: ['30岁', '5年', '本科'] as [string, string, string], history: [`2020.01-至今 公司${i} · 前端`], bodyLines: 5 }));
 
@@ -1262,10 +1326,22 @@ test('advance_list moves to new rows, and confirms the end only with evidence', 
   }
   const short = await rig({ people: crowd(3) });
   try {
+    // Room under the last row and no movement is not proof: more rows may still load.
     const result = await short.workflow.runScripted('advance_list', short.context())!;
-    assert.deepEqual([result.ok, result.reason], [true, 'end_reached']);
-    assert.ok(short.app.actions.length >= 3, 'a short list is proved unscrollable before it counts as ended');
-    assert.equal((await short.workflow.verifyUnit('advance_list', short.context(), result.observation)).ok, true);
+    assert.deepEqual([result.ok, result.reason], [false, 'list_end_unconfirmed']);
+    assert.equal((await short.workflow.verifyUnit('advance_list', short.context(), result.observation)).ok, false);
+    // With the list's own end notice it is ended, without scrolling.
+    const base = short.app.observe.bind(short.app);
+    short.app.observe = async (options, signal) => {
+      const o = await base(options, signal);
+      o.elements!.push({ index: 9996, role: 'AXStaticText', value: '没有更多了', frame: { x: WIN.x + 260, y: WIN.y + 520, width: 70, height: 15 } });
+      return o;
+    };
+    const before = short.app.actions.length;
+    const ended = await short.workflow.runScripted('advance_list', short.context())!;
+    assert.deepEqual([ended.ok, ended.reason], [true, 'end_reached']);
+    assert.equal(short.app.actions.length, before);
+    assert.equal((await short.workflow.verifyUnit('advance_list', short.context(), ended.observation)).ok, true);
   } finally {
     await short.cleanup();
   }
@@ -1298,7 +1374,6 @@ test('a short list that is still loading or still changing is not ended', async 
       if (++reads === 6) app.persons.push({ ...crowd(4)[3]! });
     };
     const changing = await r.workflow.runScripted('advance_list', r.context())!;
-    assert.equal(changing.ok, true);
     assert.notEqual(changing.reason, 'end_reached');
   } finally {
     await r.cleanup();

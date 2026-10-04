@@ -27,7 +27,7 @@ import {
   type UnitRunResult,
 } from '../../../../packages/task-runtime/src/contracts.ts';
 import { clickElement, delivered, look, pollFor, pressKey, scrollOver, Trace, type Env } from './actions.ts';
-import { findRows, identify, listCandidates, listContinues, listEnded, listLoading, listLooksShort, matchJob, normalize, rowElement } from './candidates.ts';
+import { findRows, identify, listCandidates, listContinues, listEnded, listLoading, matchJob, normalize, rowElement } from './candidates.ts';
 import {
   ATTACHMENT_ROUTE_OFF,
   captureOnlineResume,
@@ -121,9 +121,6 @@ export const BOSS_RESUME_UNITS: Readonly<Record<BossUnitName, UnitDefinition>> =
   },
 };
 
-/** How long a short list must stay unchanged after scrolling before it counts as ended. */
-const LIST_SETTLE_MS = 1_500;
-
 export interface BossResumesOptions {
   vision?: LocalVision;
   telemetry?: TelemetryRecorder;
@@ -134,8 +131,6 @@ export interface BossResumesOptions {
   pollMs?: number;
   /** Timeouts for page changes after a click. */
   openTimeoutMs?: number;
-  /** How long a short, unscrollable list must stay unchanged to count as ended. */
-  listSettleMs?: number;
 }
 
 export function createBossResumesWorkflow(deps: {
@@ -151,11 +146,17 @@ export function createBossResumesWorkflowWith(options: BossResumesOptions): Boss
   const env: Env = { clock: options.clock ?? systemClock, telemetry: options.telemetry, vision: options.vision, pollMs: options.pollMs ?? 250 };
   const route = options.attachment ?? ATTACHMENT_ROUTE_OFF;
   const openTimeoutMs = options.openTimeoutMs ?? 15_000;
-  const listSettleMs = options.listSettleMs ?? LIST_SETTLE_MS;
   const endConfirmed: string[] = [];
   /** Name and job pairs seen on two rows at once, per account; they stay ambiguous for the workflow's life. */
   const collisions = new Set<string>();
-  const memory = { listEndConfirmed: (id: string) => endConfirmed.includes(id), collisions };
+  /** task id + job text → the option selectSource uniquely matched, so the verifier can tell it from a lookalike. */
+  const resolvedJobs = new Map<string, string>();
+  const jobKey = (taskId: string, job: string) => `${taskId}|${normalize(job)}`;
+  const memory = {
+    listEndConfirmed: (id: string) => endConfirmed.includes(id),
+    collisions,
+    resolvedJob: (taskId: string, job: string) => resolvedJobs.get(jobKey(taskId, job)),
+  };
   const rememberEnd = (id: string) => {
     endConfirmed.push(id);
     if (endConfirmed.length > 32) endConfirmed.shift();
@@ -205,6 +206,8 @@ export function createBossResumesWorkflowWith(options: BossResumesOptions): Boss
     const filter = jobFilter(o);
     if (!filter) return result(false, trace, o, 'job_filter_missing');
     const current = text(filter);
+    const key = jobKey(task.id, task.input.job);
+    resolvedJobs.delete(key);
     if (current !== ALL_JOBS && normalize(current) === normalize(task.input.job)) return result(true, trace, o);
 
     // Open the filter and read the options it adds below itself.
@@ -227,6 +230,7 @@ export function createBossResumesWorkflowWith(options: BossResumesOptions): Boss
       return result(false, trace, after, match.kind === 'ambiguous' ? 'job_ambiguous' : options.length ? 'job_not_found' : 'job_options_not_shown');
     }
     const option = options.find((e) => text(e) === match.option)!;
+    resolvedJobs.set(key, normalize(match.option));
     const picked = await clickElement(session, o, option, trace, signal);
     if (!delivered(picked)) return result(false, trace, o, `job_option_click_${picked.status}`);
     const applied = await pollFor(session, env, signal, openTimeoutMs, (x) => {
@@ -330,14 +334,9 @@ export function createBossResumesWorkflowWith(options: BossResumesOptions): Boss
       rememberEnd(back.observation.snapshotId);
       return result(true, trace, back.observation, 'end_reached');
     }
-    // It does not scroll either way. That ends it only for a short list
-    // (room under a whole last row) that stays the same, with nothing
-    // loading, for a settle window after the scrolls.
-    if (!listLooksShort(upper.observation)) return result(false, trace, upper.observation, 'scroll_ineffective');
-    const settled = await pollFor(session, env, signal, listSettleMs, (x) => (listCandidates(x, account, collisions).fingerprint !== before || listLoading(x) ? true : undefined));
-    if (settled.value) return result(false, trace, settled.observation, 'list_still_changing');
-    rememberEnd(settled.observation.snapshotId);
-    return result(true, trace, settled.observation, 'end_reached');
+    // It scrolls neither way and shows no end notice: a short list may still
+    // be loading more, so the end is not proved.
+    return result(false, trace, upper.observation, 'list_end_unconfirmed');
   }
 
   async function acquireResume(context: UnitContext, mode: CaptureMode): Promise<AcquisitionResult> {

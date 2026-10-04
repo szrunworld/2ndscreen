@@ -56,6 +56,8 @@ export interface VerifyMemory {
   listEndConfirmed(snapshotId: string): boolean;
   /** Name and job pairs seen on two rows at once. */
   collisions: ReadonlySet<string>;
+  /** The normalized option select_source uniquely matched for a task's job text, if it did. */
+  resolvedJob(taskId: string, job: string): string | undefined;
 }
 
 export async function verifyUnit(unit: BossUnitName, context: UnitContext, observation: Observation, memory: VerifyMemory): Promise<CheckResult> {
@@ -68,9 +70,12 @@ export async function verifyUnit(unit: BossUnitName, context: UnitContext, obser
       const filter = jobFilter(observation);
       const label = filter ? text(filter) : '';
       if (!label || label === ALL_JOBS) return verdict(false, observation, 'no job is selected in the list filter');
-      return normalize(label).includes(normalize(context.task.input.job))
-        ? verdict(true, observation, 'list filter shows the requested job')
-        : verdict(false, observation, 'list filter shows another job');
+      // Exactly the requested title, or the one option this task's selection resolved it to.
+      // A title that merely contains the text is not enough: other jobs may contain it too.
+      if (normalize(label) === normalize(context.task.input.job)) return verdict(true, observation, 'list filter shows exactly the requested job');
+      return memory.resolvedJob(context.task.id, context.task.input.job) === normalize(label)
+        ? verdict(true, observation, 'list filter shows the job uniquely matched for this task')
+        : verdict(false, observation, 'list filter shows a job not resolved for this task');
     }
     case 'enumerate_candidates': {
       if (!LIST_PAGES.has(page)) return verdict(false, observation, `page is ${page}, not the message list`);

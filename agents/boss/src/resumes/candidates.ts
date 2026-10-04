@@ -154,17 +154,6 @@ export function listEnded(observation: Observation): boolean {
   });
 }
 
-/**
- * A short list: the last row is whole with at least a row's height of room
- * below it. Only a hint that the list may end; advance_list proves it.
- */
-export function listLooksShort(observation: Observation): boolean {
-  const { rows, lastBottom, cut } = listExtent(observation);
-  if (!rows || cut || lastBottom === undefined) return false;
-  const win = observation.window.frame;
-  return win.y + win.height - lastBottom >= 78;
-}
-
 /** Whether a loading notice shows in the list column. */
 export function listLoading(observation: Observation): boolean {
   const pane = listPane(observation);

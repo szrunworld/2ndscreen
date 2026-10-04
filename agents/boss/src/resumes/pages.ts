@@ -7,6 +7,7 @@
 
 import {
   RuntimeError,
+  rectContains,
   type BossPageClass,
   type Observation,
   type Rect,
@@ -73,31 +74,35 @@ export function resumeOverlay(observation: Observation): ResumeOverlay | undefin
     if (web.role !== 'AXWebArea' || !box || area(box) >= area(win) * 0.9) continue;
     const image = elements.find((e) => e.role === 'AXImage' && e.frame && inside(e.frame, box) && area(e.frame) >= area(box) * 0.6);
     if (!image?.frame || !(group || actions)) continue;
-    return { pane: image.frame, image, group, close: closeControl(elements, group?.frame ?? box, win), loading };
+    return { pane: image.frame, image, group, close: closeControl(elements, group?.frame ?? box), loading };
   }
   if (loading) {
     const fallback = group?.frame ?? win;
-    return { pane: fallback, image: { index: -1, role: 'AXImage', frame: fallback }, group, close: closeControl(elements, fallback, win), loading };
+    return { pane: fallback, image: { index: -1, role: 'AXImage', frame: fallback }, group, close: group?.frame ? closeControl(elements, group.frame) : undefined, loading };
   }
   return undefined;
 }
 
+/** The app window's own title-bar buttons; never taken for an overlay's close. */
+const WINDOW_CHROME = /AXCloseButton|AXMinimizeButton|AXFullScreenButton|AXZoomButton/;
+
 /**
- * The overlay's close control: a small square without text just right of
- * the overlay's top edge (P0 clicked it there), or anything labelled 关闭.
+ * The overlay's close control, only if exactly one candidate sits at the
+ * overlay's top right (P0 clicked a ~30 pt square just past its right edge):
+ * one control there labelled 关闭/close, or else one unlabelled square.
+ * Window chrome is never a candidate; several candidates are ambiguous and
+ * give none, so the caller falls back to a bounded Escape instead of guessing.
  */
-function closeControl(elements: UIElement[], overlay: Rect, win: Rect): UIElement | undefined {
-  const named = elements.find((e) => e.frame && /^(关闭|close)$/i.test(text(e)) && e.role !== 'AXStaticText');
-  if (named) return named;
+function closeControl(elements: UIElement[], overlay: Rect): UIElement | undefined {
   const right = overlay.x + overlay.width;
-  return elements
-    .filter((e) => e.frame && (e.role === 'AXGroup' || e.role === 'AXButton') && !text(e))
-    .filter((e) => {
-      const f = e.frame!;
-      return f.width >= 16 && f.width <= 48 && Math.abs(f.width - f.height) <= 8
-        && f.y - win.y < 60 && f.x >= right - 8 && f.x <= right + 60;
-    })
-    .sort((a, b) => a.frame!.y - b.frame!.y || a.frame!.x - b.frame!.x)[0];
+  const zone: Rect = { x: right - 60, y: overlay.y - 4, width: 120, height: 64 };
+  const near = elements.filter((e) => e.frame && !WINDOW_CHROME.test(e.role)
+    && rectContains(zone, { x: e.frame.x + e.frame.width / 2, y: e.frame.y + e.frame.height / 2 }));
+  const named = near.filter((e) => /^(关闭|close)$/i.test(text(e)) && e.role !== 'AXStaticText');
+  if (named.length) return named.length === 1 ? named[0] : undefined;
+  const squares = near.filter((e) => (e.role === 'AXGroup' || e.role === 'AXButton') && !text(e)
+    && e.frame!.width >= 16 && e.frame!.width <= 48 && Math.abs(e.frame!.width - e.frame!.height) <= 8);
+  return squares.length === 1 ? squares[0] : undefined;
 }
 
 export interface RequestDialog {
