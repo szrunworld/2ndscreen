@@ -6,12 +6,15 @@
 | --- | --- | --- | --- | --- | --- | --- |
 | A | 契约、协议与 API 规范 | ctx_0786c7296951→ctx_edd92e2bd40f（已释放） | monitor-A | 已合（928dc10，契约 0.1.1，170 tests） | ffd598b | — |
 | A2 | 契约 0.2.0 审查修正（写操作标志拆分、账户不可读、定位器语义） | ctx_6b7c4980f328（已释放） | monitor-A2 | 已合（contracts 191 tests）；合并后 client/core 41 个测试待 D2b 适配 | dadf00b | — |
+| D2b | 管线适配契约 0.2.0 | ctx_b7ad3e02477a / monitor-D2b | monitor-D2b | 进行 | — | — |
+| A3 | 契约 0.3.0：简历路线 | — | — | 未派（排队，等有名额） | — | — |
+| R | 品牌化简历渲染 | — | — | 未派（待用户模板与 logo、N 邮件格式） | — | — |
 | B | 只读可行性验证与夹具 | ctx_1b25ee64eab9（已释放） | monitor-B | 已合（898edbd） | 201001d | 登录/二维码、新招呼首次打开、电话待同意/已交换/已拒绝、邮件转发内容、搜索输入后结果 → 留给 N/K |
 | C | Driver 适配器 | ctx_3dfbecec466d（已释放） | monitor-C | 已合（ecfe9da；client 入工作区 + relock，contracts+client 351 tests） | ec6aed9 | 定位器 text 同时匹配 label/value（比契约宽），0.2.0 契约里追认；CliDriver 未在 BOSS 上真机跑过 → N |
-| D1 | 本地账本 | ctx_18b2867a5255 / monitor-D1 | monitor-D1 | 进行 | — | — |
+| D1 | 本地账本 | ctx_18b2867a5255→ctx_872a5dbe5563（同一终端）/ monitor-D1 | monitor-D1 | 已合（079107c）；D1b 适配 0.2.0 进行中 | 62b0721 | 已回传数据保留期限待产品决定 |
 | D2 | 指令客户端与执行管线 | ctx_be925b1cfd1f（已释放） | monitor-D2 | 已合（810c993；relock httpx；contracts+client 464 tests） | dc26e24 | 工厂入口：D1 open_ledger(path)、E create_observer()、H create_handlers()；0.2.0 合并后跟进 core/write_flags.py 与 guard.py |
 | E | 观察模块 | — | — | 未派 | — | — |
-| F1 | 服务端基础 | ctx_5b46093fd09a / monitor-F1 | monitor-F1 | 进行 | — | — |
+| F1 | 服务端基础 | ctx_5b46093fd09a→ctx_cc1c5c58beb5（同一终端）/ monitor-F1 | monitor-F1 | 已合（2b1dff2，server 入工作区 0970865）；F1b 适配 0.2.0 进行中 | 823b3ad | openapi 缺 401/422 → A3 |
 | F2 | 服务端业务 | — | — | 未派 | — | — |
 | F3 | 服务端扩展 | — | — | 未派 | — | — |
 | G | 邮件接入 | — | — | 未派 | — | — |
@@ -49,5 +52,6 @@ Run：run_7d52e82ce7ed。分支 monitor-v1（a12a931，自 szrunworld/ss-runtime
 4. Monitor 打开未读会话会产生已读回执（对外可见），新投递检测是否接受这一点（B 已避免打开未读会话）。
 5. 候选人同意交换后，是否把手机号回传到服务端存储（v1 契约暂不带号码，只报状态）。
 6. 对外动作本地硬上限（D2 暂定，策略只能更严）：问候、求简历、搜索每日 100 次，最小间隔 30/30/15 秒；换电话、转发每日 50 次，最小间隔 60 秒。
-7. 简历是否默认走『直接转发在线简历到邮箱』（B 发现附件无转发入口，在线简历有邮件转发）。
+7. ~~简历路线~~ 已决定（2026-10-04）：默认直接转发在线简历到邮箱，求简历路线保留为可选；对外版本套用公司模板与 logo（任务 R）。
+9. 任务 R 需要：公司简历模板（Word/PDF/HTML 样例均可）、logo 文件、字段取舍（是否含联系方式、是否去掉平台字样）。
 8. 搜索页『发起问候』按钮 v1 是否去掉（契约无法表达未建会话的目标）。

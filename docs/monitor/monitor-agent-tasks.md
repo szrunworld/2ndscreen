@@ -78,6 +78,8 @@
 | J | 安装、模式、launchd、bootstrap、状态窗口 | `monitor/client/monitor/{install,bootstrap,statusbar}/**`、`monitor/launchd/**`、对应测试 | A、C、D2 合并 | 3–4 人日 |
 | K | 登录接力 | `monitor/client/monitor/login/**`、对应测试 | A、B、C、D2 合并 | 2–3 人日 |
 | M | 集成、混沌测试、运维手册 | `monitor/integration/**`、`monitor/scripts/**`、`docs/monitor/runbook.md` | C、D1、D2、E、F1–F3、G、H1–H3、J、K | 4 人日 |
+| A3 | 契约 0.3.0：简历路线 | `monitor/contracts/**`、`monitor/fixtures/schema/**`、`docs/monitor/{contracts,api}.md` | A2 合并 | 1 人日 |
+| R | 品牌化简历渲染 | `monitor/branding/**`（服务端工作区成员 monitor-branding） | A3、G；用户提供模板与 logo；N 实测邮件格式 | 3–4 人日 |
 | N | 写操作验证与真机验收（监督者 + 用户授权） | `docs/monitor/capabilities.md` 写操作部分、`docs/monitor/acceptance.md` | B；用户授权 | 3–5 人日 |
 
 合计约 52–58 人日。3 个 worker 并行、含审查与派回，日历时间约 5 周；4 个 worker 约 4 周。关键路径：A → D2 → H1 → M → N。
@@ -269,6 +271,14 @@
 范围：集成测试（FakeDriver 回放夹具 + 真实 F 服务进程 + G 对本地测试邮箱）覆盖 8.1–8.4 与 8.5 夹具版；混沌：回传 500、执行中 kill、重复送达、取消、过期、离线 24 小时、服务端重启；一键脚本；`runbook.md`（安装、选模式、绑定、暂停、恢复、吊销令牌、常见异常与处置）。
 
 验收：集成与混沌一键通过；混沌场景下 FakeDriver 写操作计数与预期完全一致；手册按步骤能在干净账户完成绑定（监督者执行）。
+
+### A3 契约 0.3.0：简历路线
+
+用户 2026-10-04 决定：简历默认"直接转发在线简历到邮箱"，原"求简历 → 等附件"保留为可选路线。变更：`forward_resume.payload.source: online_resume | attachment`（必填；`attachment_hint` 只在 attachment 时允许；不再依赖 `attachment_available`）；policy 增加 `resume_route: forward_online | request_attachment`（默认 forward_online）、`resume_mailbox`、`forward_mail_timeout_minutes`（默认 120）；case 状态机增加 `resume_forwarded`（new_application/greeted → resume_forwarded → resume_linked，另可 → needs_human / closed）；`resume_document` 增加 `variant: original | branded` 与 `derived_from`；openapi 补 F1 报告列出的缺失 401/422。
+
+### R 品牌化简历渲染
+
+目标：把邮件里的原始简历转换成公司样式的 PDF。范围：输入原始文件（PDF 文字层或邮件正文 HTML，按 N 的实测）→ 结构化字段（基本信息、求职意向、工作经历、项目经历、教育经历、技能）→ 套用公司模板（HTML/CSS 模板 + logo，渲染为 PDF）→ 作为 `variant=branded` 写回 `resume_document`，`derived_from` 指向原件。字段取舍可配置（是否包含联系方式、是否剔除平台水印与"BOSS直聘"字样）。解析失败或字段缺失时不输出残缺版本，标记 `branding_failed` 并保留原件。不做：OCR（扫描版不处理）。验收：对 N 实测得到的脱敏邮件样本与合成样本，输出 PDF 字段完整、样式符合模板；原件不被修改。启动条件：用户提供模板与 logo，N 实测邮件格式。
 
 ### N 写操作验证与真机验收（监督者）
 
