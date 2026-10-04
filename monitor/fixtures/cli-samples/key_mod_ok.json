@@ -1,0 +1,30 @@
+{
+  "note": "带修饰键，route=event.key.menu",
+  "argv": [
+    "key",
+    "--screen",
+    "monitor-c",
+    "--pid",
+    "52468",
+    "--key",
+    "a",
+    "--modifiers",
+    "cmd"
+  ],
+  "exit_code": 0,
+  "stdout": {
+    "app": "TextEdit",
+    "ok": true,
+    "pid": 52468,
+    "route": "event.key.menu",
+    "screen": "monitor-c",
+    "windowFrame": {
+      "height": 775,
+      "width": 1280,
+      "x": 4800,
+      "y": 25
+    },
+    "windowID": 131479
+  },
+  "stderr": ""
+}

@@ -1,0 +1,34 @@
+{
+  "note": "建屏成功",
+  "argv": [
+    "screen",
+    "create",
+    "--name",
+    "monitor-c",
+    "--size",
+    "1280x800",
+    "--ttl",
+    "2h"
+  ],
+  "exit_code": 0,
+  "stdout": {
+    "ok": true,
+    "screen": {
+      "displayID": 394,
+      "expiresIn": 7197,
+      "frame": {
+        "height": 800,
+        "width": 1280,
+        "x": 4800,
+        "y": 0
+      },
+      "height": 800,
+      "hiDPI": true,
+      "idleTimeout": 3600,
+      "kind": "agent",
+      "name": "monitor-c",
+      "width": 1280
+    }
+  },
+  "stderr": ""
+}

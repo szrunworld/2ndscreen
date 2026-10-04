@@ -1,0 +1,452 @@
+{
+  "note": "完整 state，带 --screenshot",
+  "argv": [
+    "state",
+    "--screen",
+    "monitor-c",
+    "--pid",
+    "52468",
+    "--screenshot",
+    "<SCRATCH>/state1.png"
+  ],
+  "exit_code": 0,
+  "stdout": {
+    "app": "TextEdit",
+    "elements": [
+      {
+        "actions": [
+          "AXRaise"
+        ],
+        "frame": {
+          "height": 775,
+          "width": 1280,
+          "x": 4800,
+          "y": 25
+        },
+        "index": 0,
+        "label": "Untitled 2",
+        "role": "AXWindow/AXStandardWindow"
+      },
+      {
+        "actions": [
+          "AXShowMenu"
+        ],
+        "frame": {
+          "height": 687,
+          "width": 1280,
+          "x": 4800,
+          "y": 113
+        },
+        "index": 1,
+        "role": "AXTextArea",
+        "value": "HefreshHello from agent screen 你好llo from agent screen 你好"
+      },
+      {
+        "actions": [
+          "AXPress"
+        ],
+        "frame": {
+          "height": 32,
+          "width": 1280,
+          "x": 4800,
+          "y": 81
+        },
+        "index": 2,
+        "role": "AXRuler"
+      },
+      {
+        "actions": [
+          "AXShowMenu",
+          "AXPress"
+        ],
+        "frame": {
+          "height": 20,
+          "width": 34,
+          "x": 4807,
+          "y": 57
+        },
+        "index": 3,
+        "label": "¶",
+        "role": "AXMenuButton"
+      },
+      {
+        "actions": [
+          "AXShowMenu",
+          "AXPress"
+        ],
+        "frame": {
+          "height": 20,
+          "width": 100,
+          "x": 4848,
+          "y": 57
+        },
+        "index": 4,
+        "label": "typeface",
+        "role": "AXPopUpButton",
+        "value": "Helvetica"
+      },
+      {
+        "actions": [
+          "AXShowMenu",
+          "AXPress"
+        ],
+        "frame": {
+          "height": 20,
+          "width": 100,
+          "x": 4953,
+          "y": 57
+        },
+        "index": 5,
+        "label": "style",
+        "role": "AXPopUpButton",
+        "value": "Regular"
+      },
+      {
+        "actions": [
+          "AXShowMenu",
+          "AXConfirm"
+        ],
+        "frame": {
+          "height": 20,
+          "width": 45,
+          "x": 5058,
+          "y": 57
+        },
+        "index": 6,
+        "label": "font size",
+        "role": "AXComboBox",
+        "value": "12"
+      },
+      {
+        "actions": [
+          "AXPress"
+        ],
+        "frame": {
+          "height": 21,
+          "width": 21,
+          "x": 5084,
+          "y": 57
+        },
+        "index": 7,
+        "role": "AXButton"
+      },
+      {
+        "actions": [
+          "AXPress"
+        ],
+        "frame": {
+          "height": 20,
+          "width": 22,
+          "x": 5110,
+          "y": 57
+        },
+        "index": 8,
+        "label": "text color",
+        "role": "AXColorWell",
+        "value": "rgb 1 1 1 1"
+      },
+      {
+        "actions": [
+          "AXPress"
+        ],
+        "frame": {
+          "height": 20,
+          "width": 22,
+          "x": 5110,
+          "y": 57
+        },
+        "index": 9,
+        "role": "AXButton"
+      },
+      {
+        "actions": [
+          "AXPress"
+        ],
+        "frame": {
+          "height": 20,
+          "width": 22,
+          "x": 5137,
+          "y": 57
+        },
+        "index": 10,
+        "label": "text background color",
+        "role": "AXColorWell",
+        "value": "Clear color"
+      },
+      {
+        "actions": [
+          "AXPress"
+        ],
+        "frame": {
+          "height": 20,
+          "width": 22,
+          "x": 5137,
+          "y": 57
+        },
+        "index": 11,
+        "role": "AXButton"
+      },
+      {
+        "frame": {
+          "height": 20,
+          "width": 64,
+          "x": 5166,
+          "y": 57
+        },
+        "index": 12,
+        "label": "text style",
+        "role": "AXGroup"
+      },
+      {
+        "actions": [
+          "AXPress"
+        ],
+        "frame": {
+          "height": 21,
+          "width": 22,
+          "x": 5166,
+          "y": 57
+        },
+        "index": 13,
+        "label": "bold",
+        "role": "AXCheckBox/AXSegment",
+        "value": "0"
+      },
+      {
+        "actions": [
+          "AXPress"
+        ],
+        "frame": {
+          "height": 21,
+          "width": 21,
+          "x": 5188,
+          "y": 57
+        },
+        "index": 14,
+        "label": "italic",
+        "role": "AXCheckBox/AXSegment",
+        "value": "0"
+      },
+      {
+        "actions": [
+          "AXPress"
+        ],
+        "frame": {
+          "height": 21,
+          "width": 21,
+          "x": 5209,
+          "y": 57
+        },
+        "index": 15,
+        "label": "underline",
+        "role": "AXCheckBox/AXSegment",
+        "value": "0"
+      },
+      {
+        "frame": {
+          "height": 20,
+          "width": 85,
+          "x": 5237,
+          "y": 57
+        },
+        "index": 16,
+        "label": "text alignment",
+        "role": "AXRadioGroup"
+      },
+      {
+        "actions": [
+          "AXPress"
+        ],
+        "frame": {
+          "height": 21,
+          "width": 22,
+          "x": 5237,
+          "y": 57
+        },
+        "index": 17,
+        "label": "align left",
+        "role": "AXRadioButton/AXSegment",
+        "value": "1"
+      },
+      {
+        "actions": [
+          "AXPress"
+        ],
+        "frame": {
+          "height": 21,
+          "width": 21,
+          "x": 5259,
+          "y": 57
+        },
+        "index": 18,
+        "label": "align center",
+        "role": "AXRadioButton/AXSegment",
+        "value": "0"
+      },
+      {
+        "actions": [
+          "AXPress"
+        ],
+        "frame": {
+          "height": 21,
+          "width": 21,
+          "x": 5280,
+          "y": 57
+        },
+        "index": 19,
+        "label": "align right",
+        "role": "AXRadioButton/AXSegment",
+        "value": "0"
+      },
+      {
+        "actions": [
+          "AXPress"
+        ],
+        "frame": {
+          "height": 21,
+          "width": 21,
+          "x": 5301,
+          "y": 57
+        },
+        "index": 20,
+        "label": "fully justify",
+        "role": "AXRadioButton/AXSegment",
+        "value": "0"
+      },
+      {
+        "actions": [
+          "AXShowMenu",
+          "AXPress"
+        ],
+        "frame": {
+          "height": 20,
+          "width": 41,
+          "x": 5329,
+          "y": 57
+        },
+        "index": 21,
+        "label": "line spacing",
+        "role": "AXPopUpButton",
+        "value": "1.0"
+      },
+      {
+        "actions": [
+          "AXShowMenu",
+          "AXPress"
+        ],
+        "frame": {
+          "height": 20,
+          "width": 41,
+          "x": 5375,
+          "y": 57
+        },
+        "index": 22,
+        "label": "list style",
+        "role": "AXMenuButton"
+      },
+      {
+        "frame": {
+          "height": 18,
+          "width": 14,
+          "x": 5455,
+          "y": 29
+        },
+        "index": 23,
+        "role": "AXStaticText",
+        "value": "—"
+      },
+      {
+        "actions": [
+          "AXPress"
+        ],
+        "frame": {
+          "height": 16,
+          "width": 16,
+          "x": 4806,
+          "y": 31
+        },
+        "index": 24,
+        "role": "AXButton/AXCloseButton"
+      },
+      {
+        "actions": [
+          "AXPress",
+          "AXZoomWindow",
+          "AXShowMenu"
+        ],
+        "frame": {
+          "height": 16,
+          "width": 16,
+          "x": 4846,
+          "y": 31
+        },
+        "index": 25,
+        "label": "this button also has an action to zoom the window",
+        "role": "AXButton/AXFullScreenButton"
+      },
+      {
+        "actions": [
+          "AXPress"
+        ],
+        "frame": {
+          "height": 16,
+          "width": 16,
+          "x": 4826,
+          "y": 31
+        },
+        "index": 26,
+        "role": "AXButton/AXMinimizeButton"
+      },
+      {
+        "actions": [
+          "AXPress",
+          "AXShowMenu"
+        ],
+        "frame": {
+          "height": 18,
+          "width": 55,
+          "x": 5470,
+          "y": 29
+        },
+        "index": 27,
+        "label": "Edited",
+        "role": "AXMenuButton"
+      },
+      {
+        "frame": {
+          "height": 18,
+          "width": 18,
+          "x": 5367,
+          "y": 29
+        },
+        "index": 28,
+        "label": "Untitled 2",
+        "role": "AXImage"
+      },
+      {
+        "frame": {
+          "height": 16,
+          "width": 68,
+          "x": 5386,
+          "y": 30
+        },
+        "index": 29,
+        "role": "AXStaticText",
+        "value": "Untitled 2"
+      }
+    ],
+    "ok": true,
+    "pid": 52468,
+    "screen": "monitor-c",
+    "screenshot": "<SCRATCH>/state1.png",
+    "tree": "- [0] AXWindow/AXStandardWindow \"Untitled 2\"\n  - AXScrollArea\n    - [1] AXTextArea = \"HefreshHello from agent screen 你好llo from agent screen 你好\"\n    - AXScrollBar = \"0.1851851791143417\"\n    - AXScrollBar = \"0\"\n    - [2] AXRuler\n      - AXRulerMarker = \"0\"\n      - AXRulerMarker = \"44.79717813051146\"\n      - AXRulerMarker = \"0\"\n      - AXRulerMarker = \"1.26984126984127\"\n      - AXRulerMarker = \"2.53968253968254\"\n      - AXRulerMarker = \"3.809523809523809\"\n      - AXRulerMarker = \"5.079365079365079\"\n      - AXRulerMarker = \"6.349206349206349\"\n      - AXRulerMarker = \"7.619047619047619\"\n      - AXRulerMarker = \"8.888888888888889\"\n      - AXRulerMarker = \"10.15873015873016\"\n      - AXRulerMarker = \"11.42857142857143\"\n      - AXRulerMarker = \"12.6984126984127\"\n      - AXRulerMarker = \"13.96825396825397\"\n      - AXRulerMarker = \"15.23809523809524\"\n  - AXToolbar\n    - [3] AXMenuButton \"¶\"\n    - [4] AXPopUpButton \"typeface\" = \"Helvetica\"\n    - [5] AXPopUpButton \"style\" = \"Regular\"\n    - [6] AXComboBox \"font size\" = \"12\"\n      - [7] AXButton\n    - [8] AXColorWell \"text color\" = \"rgb 1 1 1 1\"\n      - [9] AXButton\n    - [10] AXColorWell \"text background color\" = \"Clear color\"\n      - [11] AXButton\n    - [12] AXGroup \"text style\"\n      - [13] AXCheckBox/AXSegment \"bold\" = \"0\"\n      - [14] AXCheckBox/AXSegment \"italic\" = \"0\"\n      - [15] AXCheckBox/AXSegment \"underline\" = \"0\"\n    - [16] AXRadioGroup \"text alignment\"\n      - [17] AXRadioButton/AXSegment \"align left\" = \"1\"\n      - [18] AXRadioButton/AXSegment \"align center\" = \"0\"\n      - [19] AXRadioButton/AXSegment \"align right\" = \"0\"\n      - [20] AXRadioButton/AXSegment \"fully justify\" = \"0\"\n    - [21] AXPopUpButton \"line spacing\" = \"1.0\"\n    - [22] AXMenuButton \"list style\"\n  - [23] AXStaticText = \"—\"\n  - [24] AXButton/AXCloseButton\n  - [25] AXButton/AXFullScreenButton \"this button also has an action to zoom the window\"\n  - [26] AXButton/AXMinimizeButton\n  - [27] AXMenuButton \"Edited\"\n  - [28] AXImage \"Untitled 2\"\n  - [29] AXStaticText = \"Untitled 2\"",
+    "windowFrame": {
+      "height": 775,
+      "width": 1280,
+      "x": 4800,
+      "y": 25
+    },
+    "windowID": 131479
+  },
+  "stderr": ""
+}

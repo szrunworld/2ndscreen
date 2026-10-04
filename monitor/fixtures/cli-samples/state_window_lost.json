@@ -1,0 +1,16 @@
+{
+  "note": "应用退出后 state：窗口丢失",
+  "argv": [
+    "state",
+    "--screen",
+    "monitor-c",
+    "--pid",
+    "59225"
+  ],
+  "exit_code": 1,
+  "stdout": {
+    "error": "pid 59225 has no window on screen \"monitor-c\"; launch or move it there first",
+    "ok": false
+  },
+  "stderr": ""
+}

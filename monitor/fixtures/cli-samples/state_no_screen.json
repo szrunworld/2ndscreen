@@ -1,0 +1,16 @@
+{
+  "note": "不存在的屏幕",
+  "argv": [
+    "state",
+    "--screen",
+    "monitor-c-nope",
+    "--pid",
+    "52468"
+  ],
+  "exit_code": 1,
+  "stdout": {
+    "error": "no screen named \"monitor-c-nope\"",
+    "ok": false
+  },
+  "stderr": ""
+}

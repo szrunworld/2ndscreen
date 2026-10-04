@@ -1,0 +1,47 @@
+{
+  "note": "移动窗口",
+  "argv": [
+    "window",
+    "move",
+    "--screen",
+    "monitor-c",
+    "--pid",
+    "52468",
+    "--fill"
+  ],
+  "exit_code": 0,
+  "stdout": {
+    "ok": true,
+    "screen": {
+      "displayID": 394,
+      "expiresIn": 7128,
+      "frame": {
+        "height": 800,
+        "width": 1280,
+        "x": 4800,
+        "y": 0
+      },
+      "height": 800,
+      "hiDPI": true,
+      "idleTimeout": 3600,
+      "kind": "agent",
+      "name": "monitor-c",
+      "width": 1280
+    },
+    "windows": [
+      {
+        "app": "TextEdit",
+        "frame": {
+          "height": 775,
+          "width": 1280,
+          "x": 4800,
+          "y": 25
+        },
+        "pid": 52468,
+        "title": "Untitled 2",
+        "windowID": 131479
+      }
+    ]
+  },
+  "stderr": ""
+}

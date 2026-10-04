@@ -1,0 +1,16 @@
+{
+  "note": "截图时屏幕不存在",
+  "argv": [
+    "screenshot",
+    "--screen",
+    "monitor-c-nope",
+    "--output",
+    "<SCRATCH>/shot2.png"
+  ],
+  "exit_code": 1,
+  "stdout": {
+    "error": "no screen named \"monitor-c-nope\"",
+    "ok": false
+  },
+  "stderr": ""
+}

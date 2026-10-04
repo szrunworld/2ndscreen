@@ -1,0 +1,47 @@
+{
+  "note": "--window-id 指定窗口",
+  "argv": [
+    "state",
+    "--screen",
+    "monitor-c",
+    "--pid",
+    "52468",
+    "--window-id",
+    "131479",
+    "--query",
+    "italic"
+  ],
+  "exit_code": 0,
+  "stdout": {
+    "app": "TextEdit",
+    "elements": [
+      {
+        "actions": [
+          "AXPress"
+        ],
+        "frame": {
+          "height": 21,
+          "width": 21,
+          "x": 5188,
+          "y": 57
+        },
+        "index": 14,
+        "label": "italic",
+        "role": "AXCheckBox/AXSegment",
+        "value": "0"
+      }
+    ],
+    "ok": true,
+    "pid": 52468,
+    "screen": "monitor-c",
+    "tree": "      - [14] AXCheckBox/AXSegment \"italic\" = \"0\"",
+    "windowFrame": {
+      "height": 775,
+      "width": 1280,
+      "x": 4800,
+      "y": 25
+    },
+    "windowID": 131479
+  },
+  "stderr": ""
+}

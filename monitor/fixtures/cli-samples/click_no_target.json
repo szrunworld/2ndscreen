@@ -1,0 +1,16 @@
+{
+  "note": "未给目标",
+  "argv": [
+    "click",
+    "--screen",
+    "monitor-c",
+    "--pid",
+    "52468"
+  ],
+  "exit_code": 1,
+  "stdout": {
+    "error": "give --index N, --text TEXT, or --x X --y Y",
+    "ok": false
+  },
+  "stderr": ""
+}

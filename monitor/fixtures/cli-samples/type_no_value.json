@@ -1,0 +1,18 @@
+{
+  "note": "type 缺 --value",
+  "argv": [
+    "type",
+    "--screen",
+    "monitor-c",
+    "--pid",
+    "52468",
+    "--index",
+    "1"
+  ],
+  "exit_code": 1,
+  "stdout": {
+    "error": "type needs --value TEXT",
+    "ok": false
+  },
+  "stderr": ""
+}
