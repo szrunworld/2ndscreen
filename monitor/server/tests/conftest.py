@@ -291,6 +291,103 @@ def h() -> Harness:
     harness.store.close()
 
 
+# ---------------------------------------------------------------------------
+# F3 助手：事件、策略、邮件记录、简历文档的请求体（只追加，不改上面已有的行为）
+# ---------------------------------------------------------------------------
+
+
+def make_event(device_id: str, name: str, *, account_id: Any = "keep", bucket: str | None = None, **payload: Any) -> dict[str, Any]:
+    """取 A 的合法事件向量，换成本设备；可改 account_id / bucket / payload 字段，event_id 随之重算。"""
+    event = vector(name)
+    event["device_id"] = device_id
+    if account_id != "keep":
+        event["account_id"] = account_id
+    if bucket is not None:
+        event["bucket"] = bucket
+    event["payload"].update(payload)
+    event["event_id"] = mc.compute_event_id(event["account_id"], event["kind"], event["conversation"], event["bucket"])
+    return event
+
+
+def login_ok_event(device_id: str, bucket: str = "2026-10-04T01:00:00Z/3600") -> dict[str, Any]:
+    """契约向量里没有 login_ok，按 event.json 构造一个。"""
+    event = {
+        "device_id": device_id,
+        "account_id": None,
+        "kind": "login_ok",
+        "conversation": None,
+        "bucket": bucket,
+        "observed_at": "2026-10-04T09:31:05+08:00",
+        "payload": {"mode": "remote", "account_display": None},
+    }
+    event["event_id"] = mc.compute_event_id(None, "login_ok", None, bucket)
+    return event
+
+
+def post_events(h: Harness, device_id: str, token: str, events: list[dict[str, Any]]) -> Any:
+    resp = h.post("/events", {"device_id": device_id, "events": events}, token=token)
+    assert resp.status_code == 200, resp.text
+    return resp
+
+
+def search_policy(account_id: str = ACCOUNT, **overrides: Any) -> dict[str, Any]:
+    """开启搜索的策略（线上 policy 形状）。"""
+    policy = vector("policy_default")
+    policy["account_id"] = account_id
+    policy["allowed_actions"] = ["send_greeting", "request_resume", "search_candidates"]
+    policy.update(overrides)
+    return policy
+
+
+def mail_body(name: str = "mail_message_pending", provider_message_id: str | None = None, **overrides: Any) -> dict[str, Any]:
+    """邮件记录请求体（取契约向量）；换 provider_message_id 时主键随之重算。"""
+    body = vector(name)
+    if provider_message_id is not None:
+        body["provider_message_id"] = provider_message_id
+        body["mail_message_id"] = mc.compute_mail_message_id(provider_message_id)
+    body.update(overrides)
+    return body
+
+
+def put_mail(h: Harness, body: dict[str, Any], *, token: str | None = SERVICE_TOKEN, key: str | None = "auto") -> Any:
+    return h.post(f"/mail-messages/{body['mail_message_id']}", body, token=token, key=key, method="PUT")
+
+
+def resume_body(
+    mail_message_id: str,
+    *,
+    sha: str = "b" * 64,
+    method: str = "none",
+    case_id: str | None = None,
+    command_id: str | None = None,
+    candidates: list[str] | None = None,
+    **overrides: Any,
+) -> dict[str, Any]:
+    """原件 POST /resume-documents 请求体。"""
+    body: dict[str, Any] = {
+        "variant": "original",
+        "mail_message_id": mail_message_id,
+        "mail": {
+            "mailbox": "zhaopin@remotedesk.io",
+            "message_id": "<x@mail.example>",
+            "received_at": "2026-10-04T10:02:00+08:00",
+            "subject": "候选人A 的简历（后端工程师）",
+            "from_address": "noreply@zhipin.example",
+            "raw_storage_uri": "file:///tmp/m.json",
+        },
+        "attachment": {
+            "filename": "resume.pdf",
+            "sha256": sha,
+            "size_bytes": 1024,
+            "content_type": "application/pdf",
+            "storage_uri": f"file:///tmp/{sha[:8]}.pdf",
+        },
+        "link": {"method": method, "case_id": case_id, "command_id": command_id, "candidate_case_ids": candidates or []},
+    }
+    body.update(overrides)
+    return body
+
+
 # 测试模块用 `from server_testkit import ...` 取公共助手。pytest 总是先加载 conftest，这里把本模块
 # 以唯一的名字登记到 sys.modules：不依赖 sys.path / import 模式 / rootdir，在 server 目录下和
 # monitor/ 下（`uv run pytest server`、`uv run pytest contracts server`）都一样，也不会和其他

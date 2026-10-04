@@ -38,6 +38,11 @@ if TYPE_CHECKING:
     from .commands import CommandNotifier, CommandService
     from .devices import DeviceService
     from .events import EventBus, EventService
+    from .login_relay import LoginRelayService
+    from .mail_endpoints import MailService
+    from .notify import NotificationService, Notifier
+    from .resume_documents import ResumeDocumentService
+    from .search import SearchService
 
 API_PREFIX = "/api/v1"
 PROBLEM_MEDIA_TYPE = "application/problem+json"
@@ -386,6 +391,12 @@ class AppContext:
     policy_version: Callable[[str], int | None] = field(default=lambda account_id: None)
     login_qr_active: Callable[[str], bool] = field(default=lambda device_id: False)
     idempotency_locks: _KeyedLocks = field(default_factory=_KeyedLocks)
+    # F3：搜索、登录接力、通知、邮件记录、简历文档（create_app 中装配）
+    search: SearchService = field(init=False)
+    login_relay: LoginRelayService = field(init=False)
+    notifications: NotificationService = field(init=False)
+    mail: MailService = field(init=False)
+    resume_documents: ResumeDocumentService = field(init=False)
 
 
 Ctx = Annotated[AppContext, Depends(get_ctx)]
@@ -401,11 +412,17 @@ def create_app(
     bus: EventBus | None = None,
     policy_version: Callable[[str], int | None] | None = None,
     login_qr_active: Callable[[str], bool] | None = None,
+    policy_lookup: Callable[[str], Any] | None = None,
+    case_exists: Callable[[str], bool] | None = None,
+    notifiers: list[Notifier] | None = None,
 ) -> FastAPI:
     """创建应用。所有依赖可注入；未给出时用默认实现（内存 SQLite、系统时钟、进程内事件总线）。
 
     policy_version(account_id)：心跳响应里的策略版本，F2 注入；默认 None。
-    login_qr_active(device_id)：设备卡片上是否有有效二维码，F3 注入；默认 False。
+    login_qr_active(device_id)：设备卡片上是否有有效二维码；默认由 F3 的登录接力判断。
+    policy_lookup(account_id)：F3 搜索读取账户策略（F2 合并后装配为 ctx.policies.get）；默认没有策略（搜索 409）。
+    case_exists(case_id)：F3 简历关联时检查流程是否存在（F2 合并后接 recruitment_cases）；默认认为存在。
+    notifiers：F3 通知的额外适配器（例如 WebhookNotifier）；控制台待办总是启用。
     """
     from . import commands, devices, events
 
@@ -425,6 +442,16 @@ def create_app(
     ctx.events = events.EventService(ctx)
     ctx.commands = commands.CommandService(ctx)
     ctx.devices = devices.DeviceService(ctx)
+    # F3 装配：邮件记录 → 简历文档 → 搜索 → 登录接力 → 通知（后三者订阅事件总线）
+    from . import login_relay, mail_endpoints, notify, resume_documents, search
+
+    ctx.mail = mail_endpoints.MailService(ctx)
+    ctx.resume_documents = resume_documents.ResumeDocumentService(ctx, case_exists=case_exists)
+    ctx.search = search.SearchService(ctx, policy_lookup=policy_lookup)
+    ctx.login_relay = login_relay.LoginRelayService(ctx)
+    ctx.notifications = notify.NotificationService(ctx, notifiers=notifiers)
+    if login_qr_active is None:
+        ctx.login_qr_active = ctx.login_relay.is_active
 
     app = FastAPI(
         title="招聘 Monitor 服务端 API",
@@ -436,6 +463,10 @@ def create_app(
     app.include_router(devices.router, prefix=API_PREFIX)
     app.include_router(commands.router, prefix=API_PREFIX)
     app.include_router(events.router, prefix=API_PREFIX)
+    app.include_router(search.router, prefix=API_PREFIX)
+    app.include_router(login_relay.router, prefix=API_PREFIX)
+    app.include_router(mail_endpoints.router, prefix=API_PREFIX)
+    app.include_router(resume_documents.router, prefix=API_PREFIX)
     app.openapi = lambda: _cached_openapi(app)  # type: ignore[method-assign]
     return app
 
