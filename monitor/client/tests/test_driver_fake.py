@@ -226,7 +226,8 @@ def test_load_from_path_str(tmp_path):
 @pytest.mark.parametrize("path", B_FIXTURES, ids=lambda p: p.parent.name)
 def test_replays_every_b_fixture(path):
     fixture = load_fixture(path)
-    fake = FakeDriver(fixture, auto_advance=True)
+    # 原样回放（关闭 PDF 预览剔除）时与夹具逐项一致；剔除的行为见 test_driver_pdf_preview.py。
+    fake = FakeDriver(fixture, auto_advance=True, hide_pdf_preview=False)
     for pos, step in enumerate(fixture.steps):
         assert fake.step_index == pos
         snap = fake.state(include_tree=True)

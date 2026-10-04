@@ -8,6 +8,8 @@
 - ``Advance`` 规则把"某个写方法调用后进入某一步"脚本化；``auto_advance=True`` 时
   没有规则命中的写调用也会进入下一步。
 - ``fail_next(method, error)`` 让下一次该方法调用抛指定错误，用来测试调用方的失败路径。
+- 与 CliDriver 一样默认剔除附件 PDF 预览的子树（只留容器 AXWebArea，其余重新编号，见
+  pdf_preview.py）；``hide_pdf_preview=False`` 按夹具原样回放，只供测试。
 
 FakeDriver 只回放夹具，不模拟应用逻辑：夹具通过不等于真机通过。
 """
@@ -44,6 +46,7 @@ from monitor_contracts import (
 )
 
 from .locator import find_all, find_one
+from .pdf_preview import strip_pdf_preview
 
 WRITE_METHODS = ("click", "type_text", "key", "scroll")
 
@@ -111,8 +114,10 @@ class FakeDriver:
         screen_ok: bool = True,
         screenshot_png: bytes | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        hide_pdf_preview: bool = True,
     ):
         self.fixture = load_fixture(fixture)
+        self.hide_pdf_preview = hide_pdf_preview
         self.steps: list[FixtureStep] = list(self.fixture.steps)
         self.advances = list(advances)
         self.auto_advance = auto_advance
@@ -174,9 +179,12 @@ class FakeDriver:
     # ---- 读 ----
 
     def _elements(self, snapshot_id: str | None, include_tree: bool = True) -> tuple[Element, ...]:
-        """当前步骤的夹具元素（FixtureElement）转成契约 Element。"""
+        """当前步骤的夹具元素（FixtureElement）转成契约 Element（按需剔除 PDF 预览子树）。"""
+        source = self.step.elements
+        if self.hide_pdf_preview:
+            source, _ = strip_pdf_preview(source)
         elements = []
-        for e in self.step.elements:
+        for e in source:
             element = e.to_element(snapshot_id)
             if not include_tree:
                 element = element.model_copy(update={"parent_index": None, "depth": None})

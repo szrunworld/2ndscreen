@@ -12,6 +12,9 @@ TextEdit 与 Calculator（`--new-instance` 启动在专用屏幕 `monitor-c` 上
 `stdout` 是 CLI 打印的 JSON（参数解析失败时为 null，原因在 stderr）。本机路径已替换为
 `<SCRATCH>`、`/Users/<USER>`。`monitor/client/tests/test_driver_cli.py` 对每个样例断言解析结果或错误分类。
 
+`window_release_gone.json` 不是实测：采集它要新建一块 agent 屏幕（会改动用户的显示器布局），
+所以按 2ndscreen 源码 `AgentScreens.swift` 的 `releaseWindows` 文案构造，`note` 里有说明。
+
 `recorded/textedit_fixture.json` 是用录制模式（`monitor.driver.record`）从 TextEdit 真机录的
 两步 ax 夹具，FakeDriver 的回放测试用它。
 

@@ -78,8 +78,9 @@ def test_invalid_scene_name_rejected(tmp_path):
 
 def test_cli_driver_record_step_uses_state():
     class StubDriver:
-        def state(self, include_tree=False):
+        def _state(self, include_tree=False, hide_pdf_preview=None):
             self.include_tree = include_tree
+            self.hide_pdf_preview = hide_pdf_preview
             return snapshot()
 
     from monitor.driver.cli_driver import CliDriver
@@ -88,3 +89,5 @@ def test_cli_driver_record_step_uses_state():
     rec = FixtureRecorder("demo_scene", "示例", app="Demo", replacements={"张三": "候选人A"}, clock=lambda: NOW)
     CliDriver.record_step(stub, rec, "第一步", {"page": "other"}, include_tree=True)  # type: ignore[arg-type]
     assert stub.include_tree is True and len(rec.steps) == 1
+    # 录制总是剔除 PDF 预览子树，与构造参数无关。
+    assert stub.hide_pdf_preview is True
