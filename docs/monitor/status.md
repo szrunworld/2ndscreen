@@ -74,3 +74,8 @@ Run：run_7d52e82ce7ed。分支 monitor-v1（a12a931，自 szrunworld/ss-runtime
 - `python -m monitor install|mode` 分发到 `monitor.install.cli:main`（J 请求 1）。
 - `MonitorRuntime.status()` 增加 outbox 计数、last_error.message、当前指令 id 与开始时间（J 请求 2）。
 - 运行时"窗口不归 Monitor"状态：`suspend_gui(reason)` / `resume_gui()`，避免 local 模式时段外的 window_lost 覆盖其他错误（J 请求 3）。
+
+## 与 ATS 的分工（2026-10-04）
+
+- 已确认：Monitor = 本机执行器 + 薄桥接服务（设备、指令队列、事件接收）。业务（候选人、流程、简历存储解析、通知、流程页与总览、品牌化简历）归 ATS。F2 的 cases/policy/overview 冻结；I1/I2 只做设备、登录、执行记录。
+- 待用户决定：(1) 时间路线 A（Monitor 先独立运行，简历经 ATS 现有导入接口推入，ATS 到 P2 再切换指令来源）或 B（等 ATS 定执行器契约再接）；(2) 给 ATS 的契约变更（channel_task 与执行器接口、任务类型含求简历/换微信/搜索、无联系方式的 BOSS 候选人入库、品牌化简历）由谁提出。

@@ -33,6 +33,14 @@
 
 明确不做：自动交换联系方式与交换电话（只人工触发换微信）；截屏 + OCR 读取简历正文；读取附件 PDF 预览的文字层（其中含电话与邮箱，用户 2026-10-04 确认）；自动翻页的全量搜索；撤回已发送的消息；跨账号批量操作。
 
+## 一·五、与 ATS 的分工（用户 2026-10-04 确认）
+
+招聘业务的权威是 ATS（仓库 amplifistudio/remotedesk-recruiting，`docs/recruiting-module-design.md` 等）。两边规划冲突时以 ATS 为准。ATS 已把"2ndscreen 的 BOSS 直聘助手"定为 BOSS 渠道的**执行器**（设计 §P2：ATS 下发渠道任务，执行器拉取、执行、回传，每个执行器单独发 key）。据此：
+
+- **Monitor 负责（保留）**：本机端全部——观察、动作、Driver、本地账本与 outbox、状态窗口、本地硬上限、登录接力；以及一层**薄桥接服务**——设备注册与令牌、指令队列（领取 / 确认 / 回报，指令创建与状态更新同事务）、事件接收。
+- **ATS 负责（Monitor 不再扩展）**：候选人档案与去重、招聘流程（`application` + `application_event`）、简历存储与解析、通知、候选人流程页与总览、品牌化简历。Monitor 已合入的 `recruitment_cases`、策略、总览代码（任务 F2）冻结，不再扩展，对接 ATS 时替换为向 ATS 写 `application_event` 的映射。
+- **待定归属**：邮件收简历（任务 G，已完成）、设备/登录/执行记录管理页、BOSS 站内搜索、人工换微信。建议见状态表"用户待决事项"。
+
 ## 二、与既有工作的关系
 
 ss-runtime-integration 已经交付并验收了一套"截屏 + OCR 采集在线简历"的运行时（runner / session / store / 2ndscreen adapter）。Monitor 不再走这条数据路径，但沿用它的三项结论：
