@@ -28,6 +28,7 @@ import {
   type ArtifactRecord,
   type BossWorkflow,
   type CaptureMode,
+  type ComposedImage,
   type CandidateRef,
   type ImageComparison,
   type LocalVision,
@@ -432,7 +433,7 @@ function fakeVision(app: FakeBoss, options: { compose?: boolean; composeGap?: bo
     for (const [p, s] of app.shots) if ((await readFile(p)).equals(bytes)) return s;
     throw new Error(`unknown image ${path}`);
   };
-  const vision: LocalVision & { compose?: unknown } = {
+  const vision: LocalVision = {
     async ocr(path, _o, signal): Promise<OcrResult> {
       throwIfAborted(signal);
       calls.ocr++;
@@ -455,7 +456,7 @@ function fakeVision(app: FakeBoss, options: { compose?: boolean; composeGap?: bo
     async close() {},
   };
   if (options.compose)
-    vision.compose = async (paths: readonly string[], out: string, opts?: { minOverlapPx?: number }) => {
+    vision.compose = async (paths, out, opts): Promise<ComposedImage> => {
       calls.compose++;
       const shots = await Promise.all(paths.map(shotOf));
       const frames = shots.map((s, i) => {

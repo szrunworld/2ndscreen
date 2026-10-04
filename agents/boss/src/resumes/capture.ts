@@ -25,6 +25,7 @@ import {
   throwIfAborted,
   type AcquisitionResult,
   type CaptureEvidence,
+  type ComposedImage,
   type ImageComparison,
   type LocalVision,
   type Observation,
@@ -80,23 +81,6 @@ export const FOOTER_MARKERS = ['为妥善保护牛人在boss直聘平台提交',
 const FOOTER_LINES = 4;
 /** The logo line drawn at the top of the resume image. */
 export const TOP_MARKER = 'boss直聘';
-
-/**
- * LocalVision's optional stitcher, as approved for A8 (method `compose`).
- * Only the members this module reads; the contract's own type replaces this
- * once A8's additive contract change is merged.
- */
-interface Composer {
-  compose(
-    framePaths: readonly string[],
-    outputPath: string,
-    options?: { roi?: Rect; minOverlapPx?: number },
-    signal?: AbortSignal,
-  ): Promise<{ path: string; widthPx: number; heightPx: number; sha256: string; hasGap: boolean; frames: Array<{ index: number; placement: 'first' | 'placed' | 'duplicate' | 'gap' }> }>;
-}
-
-const composerOf = (vision: LocalVision): Composer | undefined =>
-  typeof (vision as Partial<Composer>).compose === 'function' ? (vision as unknown as Composer) : undefined;
 
 interface Frame {
   observation: Observation;
@@ -353,11 +337,10 @@ export async function captureOnlineResume(input: CaptureInput): Promise<Acquisit
   const artifacts: StagedArtifact[] = kept.map((k) => ({ itemId: input.itemId, kind: 'captured_page', path: k.path, capture: evidence }));
 
   let composed: { sha256: string; hasGap: boolean } | undefined;
-  const composer = composerOf(vision);
-  if (composer) {
+  if (vision.compose) {
     try {
       const out = join(staging.dir, `resume-${randomUUID().slice(0, 8)}.png`);
-      const image = await composer.compose(kept.map((k) => k.path), out, { minOverlapPx: limits.minOverlapPx }, signal);
+      const image: ComposedImage = await vision.compose(kept.map((k) => k.path), out, { minOverlapPx: limits.minOverlapPx }, signal);
       if (image.hasGap || image.frames.some((f) => f.placement === 'gap')) evidence.stop = 'stitch_gap';
       composed = { sha256: image.sha256, hasGap: image.hasGap };
       artifacts.push({ itemId: input.itemId, kind: 'captured_image', path: image.path, capture: evidence });
