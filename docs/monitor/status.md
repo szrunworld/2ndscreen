@@ -19,9 +19,9 @@
 | D2 | 指令客户端与执行管线 | ctx_be925b1cfd1f（已释放） | monitor-D2 | 已合（810c993；relock httpx；contracts+client 464 tests） | dc26e24 | 工厂入口：D1 open_ledger(path)、E create_observer()、H create_handlers()；0.2.0 合并后跟进 core/write_flags.py 与 guard.py |
 | E | 观察模块 | 已释放 | monitor-E | 已合（a139f20；协调者同时改 core：观察用 verify 守卫、attach 注入、首个基线带账户；全量 884 tests） | e002670 | 待 N：点页签后列表刷新、处理过的会话是否移出新招呼、更多时间文案形态 |
 | F1 | 服务端基础 | 已释放 | monitor-F1 | 已合（2b1dff2 + 0.2.0 适配 8abbf54） | c7bbc4b | openapi 缺 401/422/403 → A3 |
-| F2 | 服务端业务 | ctx_6788843f9e4a → F2b（同一终端） | monitor-F2 | 已合（6327ec9；全量 1426）；F2b 修指令创建与 case 更新的原子性 | d6b82a5 | yaml 缺 401/422/404（8 个 F2 端点，登记在 KNOWN_YAML_GAPS） |
+| F2 | 服务端业务 | 已释放 | monitor-F2 | 已合（含 F2b 原子性 60163fd；全量 1442）；业务部分冻结（归 ATS） | 94a473c | 契约请求 ManualCommandCreated.scheduled_for；issued_at 未到不下发写入 contracts.md |
 | F3 | 服务端扩展（搜索、登录接力、通知 + 邮件相关端点） | ctx_f06639cbb37b / monitor-F3 | monitor-F3 | 进行 | — | 与 F2 的衔接：resume_linked 内部事件、policy 只读权限、迁移 v3 |
-| G | 邮件接入（mail 服务订阅方） | 已释放 | monitor-G | 已合（mail 入工作区；全量 1313） | f29f5a9 | 需 server 端点 /mail-messages、/mail-verifications、/resume-documents（→ F3）；serviceToken 读 policy 未定义（→ F3）；清理后再写的幂等键临时用 status-purged 段（下个契约小版本记入）；upstream_missing 待 G0；webhook_delivery_failed 需 mail 管理凭据，暂报 null |
+| G | 邮件接入（mail 服务订阅方） | 已释放 | monitor-G | 已合（mail 入工作区；全量 1313） | f29f5a9 | 交接给服务器端（docs/monitor/handover-mail-ingestion.md），Monitor 内冻结 |
 | H1 | 动作公共层 + 问候 + 求简历 | 已释放 | monitor-H1 | 已合（合并时全量 963 tests） | — | 9 条界面假设待 N（H1.md 第五节）；接口请求：Driver 层过滤 PDF 子树、hints 稳定 |
 | H2 | 搜索动作 | — | — | 未派 | — | — |
 | H3 | 换联系方式 + 转发简历 | — | — | 未派 | — | — |
@@ -79,3 +79,5 @@ Run：run_7d52e82ce7ed。分支 monitor-v1（a12a931，自 szrunworld/ss-runtime
 
 - 已确认：Monitor = 本机执行器 + 薄桥接服务（设备、指令队列、事件接收）。业务（候选人、流程、简历存储解析、通知、流程页与总览、品牌化简历）归 ATS。F2 的 cases/policy/overview 冻结；I1/I2 只做设备、登录、执行记录。
 - 待用户决定：(1) 时间路线 A（Monitor 先独立运行，简历经 ATS 现有导入接口推入，ATS 到 P2 再切换指令来源）或 B（等 ATS 定执行器契约再接）；(2) 给 ATS 的契约变更（channel_task 与执行器接口、任务类型含求简历/换微信/搜索、无联系方式的 BOSS 候选人入库、品牌化简历）由谁提出。
+
+- 邮件收简历（G）：用户决定交给服务器端（定时任务，与设备无关）。交接文档 docs/monitor/handover-mail-ingestion.md；接收方确认后从 Monitor 移除 monitor/mail 与相关端点。
