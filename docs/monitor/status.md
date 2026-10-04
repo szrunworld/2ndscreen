@@ -9,7 +9,7 @@
 | D2b | 管线适配契约 0.2.0 + 硬上限 | 已释放 | monitor-D2b | 已合（9d74827）；全量 703 tests | 0c4f3be | 执行中取消需另一线程调 pipeline.cancel（→ J）；崩溃恢复 unknown 时 outbound 保守取 true |
 | A3 | 契约 0.3.0：邮箱路线与搜索收敛 | 已释放 | monitor-A3 | 已合（fbf6f3a，contracts 266 tests）；A3b 补充中；client/server 适配由 X 处理 | 76e93e8 | — |
 | A3b | 契约 0.3.1（换微信阶段、mail 服务字段） | ctx_8843cb3ab30c / monitor-A3 | monitor-A3 | 进行 | — | — |
-| X | client/server 适配 0.3.0 | ctx_749e43c3477a / monitor-X | monitor-X | 进行 | — | — |
+| X | client/server 适配 0.3.0 | 已释放 | monitor-X | 已合（813e25a；全量 1137 tests） | 2a9653d | server 一致性测试 NOT_YET_IMPLEMENTED 白名单 26 项，F2/F3/G 实现时逐项移出 |
 | C2 | Driver 修复（CliFailure 冻结、window release 分类、PDF 子树过滤） | ctx_e08c23aa3891 / monitor-C2 | monitor-C2 | 进行 | — | — |
 | R | 品牌化简历渲染 | — | — | 未派（待用户模板与 logo、N 邮件格式） | — | — |
 | B | 只读可行性验证与夹具 | ctx_1b25ee64eab9（已释放） | monitor-B | 已合（898edbd） | 201001d | 登录/二维码、新招呼首次打开、电话待同意/已交换/已拒绝、邮件转发内容、搜索输入后结果 → 留给 N/K |
