@@ -26,8 +26,8 @@ build-backend = "hatchling.build"
 packages = ["app"]
 
 [tool.uv.sources]
-# 工作区成员加入前用路径依赖；加入 monitor/pyproject.toml members 后改为 { workspace = true }（见交付报告"接口请求"）。
-monitor-contracts = { path = "../contracts", editable = true }
+# 已列入工作区 members（协调者合并 F1 时加入）。
+monitor-contracts = { workspace = true }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
