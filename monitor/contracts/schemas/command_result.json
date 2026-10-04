@@ -1,0 +1,464 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "command_result",
+  "description": "Monitor → 服务端的指令结果。同一 command_id 只有一个最终结果；重复回报必须与首次一致。",
+  "type": "object",
+  "required": [
+    "command_id",
+    "action",
+    "status",
+    "reason",
+    "observed",
+    "evidence",
+    "executed_at",
+    "reported_at"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "command_id": {
+      "$ref": "common.json#/$defs/uuid"
+    },
+    "action": {
+      "$ref": "common.json#/$defs/action"
+    },
+    "execution_mode": {
+      "type": "string",
+      "enum": [
+        "execute",
+        "verify_only"
+      ],
+      "default": "execute"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "succeeded",
+        "failed",
+        "cancelled",
+        "expired",
+        "skipped_precondition",
+        "unknown"
+      ]
+    },
+    "reason": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/reason"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "status 为 failed / unknown / skipped_precondition 时必填；succeeded 时必须为 null。"
+    },
+    "reason_detail": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 500,
+      "description": "给人看的补充说明（脱敏）。"
+    },
+    "observed": {
+      "$ref": "common.json#/$defs/observed"
+    },
+    "evidence": {
+      "$ref": "common.json#/$defs/evidence"
+    },
+    "gui_write_performed": {
+      "type": "boolean",
+      "default": false,
+      "description": "本次执行是否发生过任何 GUI 写操作（点击、输入、按键）。cancelled / expired / verify_only 时必须为 false。"
+    },
+    "executed_at": {
+      "oneOf": [
+        {
+          "$ref": "common.json#/$defs/timestamp"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "开始执行（读取界面）的时间；cancelled / expired 时必须为 null；succeeded 时必填。"
+    },
+    "reported_at": {
+      "$ref": "common.json#/$defs/timestamp"
+    },
+    "output": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/search_output"
+        },
+        {
+          "$ref": "#/$defs/contact_output"
+        },
+        {
+          "$ref": "#/$defs/forward_output"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "动作特有的输出，形状由 action 决定。"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "succeeded"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "reason": {
+            "type": "null"
+          },
+          "executed_at": {
+            "$ref": "common.json#/$defs/timestamp"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "enum": [
+              "failed",
+              "unknown",
+              "skipped_precondition"
+            ]
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "reason": {
+            "$ref": "#/$defs/reason"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "enum": [
+              "cancelled",
+              "expired"
+            ]
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "executed_at": {
+            "type": "null"
+          },
+          "gui_write_performed": {
+            "const": false
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "execution_mode": {
+            "const": "verify_only"
+          }
+        },
+        "required": [
+          "execution_mode"
+        ]
+      },
+      "then": {
+        "properties": {
+          "gui_write_performed": {
+            "const": false
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "search_candidates"
+          }
+        },
+        "required": [
+          "action"
+        ]
+      },
+      "then": {
+        "properties": {
+          "output": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/search_output"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "search_candidates"
+          },
+          "status": {
+            "const": "succeeded"
+          }
+        },
+        "required": [
+          "action",
+          "status"
+        ]
+      },
+      "then": {
+        "required": [
+          "output"
+        ],
+        "properties": {
+          "output": {
+            "$ref": "#/$defs/search_output",
+            "properties": {
+              "snapshot": {
+                "properties": {
+                  "coverage": {
+                    "enum": [
+                      "partial",
+                      "complete",
+                      "empty_confirmed"
+                    ],
+                    "x-message": "无法读取的快照不能回报为 succeeded；应为 status=failed, reason=unreadable"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "request_contact_exchange"
+          }
+        },
+        "required": [
+          "action"
+        ]
+      },
+      "then": {
+        "properties": {
+          "output": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/contact_output"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "request_contact_exchange"
+          },
+          "status": {
+            "enum": [
+              "succeeded",
+              "skipped_precondition"
+            ]
+          }
+        },
+        "required": [
+          "action",
+          "status"
+        ]
+      },
+      "then": {
+        "required": [
+          "output"
+        ],
+        "properties": {
+          "output": {
+            "$ref": "#/$defs/contact_output"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "forward_resume"
+          }
+        },
+        "required": [
+          "action"
+        ]
+      },
+      "then": {
+        "properties": {
+          "output": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/forward_output"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "forward_resume"
+          },
+          "status": {
+            "const": "succeeded"
+          }
+        },
+        "required": [
+          "action",
+          "status"
+        ]
+      },
+      "then": {
+        "required": [
+          "output"
+        ],
+        "properties": {
+          "output": {
+            "$ref": "#/$defs/forward_output"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "enum": [
+              "send_greeting",
+              "request_resume",
+              "provide_input"
+            ]
+          }
+        },
+        "required": [
+          "action"
+        ]
+      },
+      "then": {
+        "properties": {
+          "output": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "reason": {
+      "type": "string",
+      "enum": [
+        "action_not_allowed",
+        "rate_limited",
+        "target_ambiguous",
+        "target_not_found",
+        "unknown_dialog",
+        "login_required",
+        "captcha",
+        "account_mismatch",
+        "paused",
+        "dependency_not_satisfied",
+        "timeout",
+        "unreadable",
+        "unsupported",
+        "precondition_already_done",
+        "verification_failed",
+        "driver_error",
+        "crash_recovery"
+      ],
+      "description": "结果原因分类，含义见 docs/monitor/contracts.md。"
+    },
+    "search_output": {
+      "type": "object",
+      "required": [
+        "snapshot"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "snapshot": {
+          "$ref": "search_snapshot.json"
+        }
+      }
+    },
+    "contact_output": {
+      "type": "object",
+      "required": [
+        "exchange_type",
+        "exchange_state"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "exchange_type": {
+          "$ref": "common.json#/$defs/exchange_type"
+        },
+        "exchange_state": {
+          "$ref": "common.json#/$defs/exchange_state"
+        }
+      }
+    },
+    "forward_output": {
+      "type": "object",
+      "required": [
+        "destination",
+        "forwarded_at"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "destination": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 254
+        },
+        "forwarded_at": {
+          "$ref": "common.json#/$defs/timestamp"
+        }
+      }
+    }
+  }
+}

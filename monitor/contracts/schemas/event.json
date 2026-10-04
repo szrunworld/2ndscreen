@@ -1,0 +1,629 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "event",
+  "description": "Monitor → 服务端的业务事件，经本地 outbox 补传，服务端按 event_id 去重。payload 形状由 kind 决定。",
+  "type": "object",
+  "required": [
+    "event_id",
+    "device_id",
+    "account_id",
+    "kind",
+    "conversation",
+    "bucket",
+    "observed_at",
+    "payload"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "event_id": {
+      "$ref": "common.json#/$defs/event_id"
+    },
+    "device_id": {
+      "$ref": "common.json#/$defs/device_id"
+    },
+    "account_id": {
+      "oneOf": [
+        {
+          "$ref": "common.json#/$defs/account_id"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "会话类事件必填；登录类与暂停事件在尚未绑定账户时可为 null。"
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "application_observed",
+        "attachment_available",
+        "contact_exchange_updated",
+        "conversation_ambiguous",
+        "login_required",
+        "login_qr",
+        "login_ok",
+        "human_input_required",
+        "blocked_by_dialog",
+        "device_paused"
+      ]
+    },
+    "conversation": {
+      "oneOf": [
+        {
+          "$ref": "common.json#/$defs/conversation"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "bucket": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "description": "观察到的变化时间片标识，参与 event_id 计算（见 contracts.md 幂等键规则）。"
+    },
+    "observed_at": {
+      "$ref": "common.json#/$defs/timestamp"
+    },
+    "payload": {
+      "type": "object"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "enum": [
+              "application_observed",
+              "attachment_available",
+              "contact_exchange_updated",
+              "conversation_ambiguous"
+            ]
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "account_id": {
+            "$ref": "common.json#/$defs/account_id"
+          },
+          "conversation": {
+            "$ref": "common.json#/$defs/conversation"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "enum": [
+              "login_required",
+              "login_qr",
+              "login_ok",
+              "device_paused"
+            ]
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "conversation": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "application_observed"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/application_observed_payload"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "attachment_available"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/attachment_available_payload"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "contact_exchange_updated"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/contact_exchange_updated_payload"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "conversation_ambiguous"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/conversation_ambiguous_payload"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "login_required"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/login_required_payload"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "login_qr"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/login_qr_payload"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "login_ok"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/login_ok_payload"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "human_input_required"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/human_input_required_payload"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "blocked_by_dialog"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/blocked_by_dialog_payload"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "device_paused"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/device_paused_payload"
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "application_observed_payload": {
+      "type": "object",
+      "required": [
+        "evidence"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "marker_text": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 100,
+          "description": "据以判定'新投递'的界面标记文本（规则来自 B 夹具标注）。"
+        },
+        "evidence": {
+          "$ref": "common.json#/$defs/evidence"
+        }
+      }
+    },
+    "attachment_available_payload": {
+      "type": "object",
+      "required": [
+        "evidence"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "attachment_name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 200
+        },
+        "evidence": {
+          "$ref": "common.json#/$defs/evidence"
+        }
+      }
+    },
+    "contact_exchange_updated_payload": {
+      "type": "object",
+      "required": [
+        "exchange_type",
+        "exchange_state",
+        "evidence"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "exchange_type": {
+          "$ref": "common.json#/$defs/exchange_type"
+        },
+        "exchange_state": {
+          "$ref": "common.json#/$defs/exchange_state"
+        },
+        "evidence": {
+          "$ref": "common.json#/$defs/evidence"
+        }
+      }
+    },
+    "conversation_ambiguous_payload": {
+      "type": "object",
+      "description": "同岗位同名会话多处命中。服务端转人工处理，不建立新投递。",
+      "required": [
+        "match_count",
+        "candidates",
+        "evidence"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "match_count": {
+          "type": "integer",
+          "minimum": 2
+        },
+        "candidates": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 20,
+          "description": "各命中项的脱敏摘要（不含姓名原文以外的个人信息）。",
+          "items": {
+            "type": "object",
+            "required": [
+              "position"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "position": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "在当前列表中的序号（0 起）。"
+              },
+              "hints": {
+                "type": "array",
+                "items": {
+                  "$ref": "common.json#/$defs/hint"
+                },
+                "maxItems": 10,
+                "default": []
+              },
+              "summary": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "maxLength": 200
+              }
+            }
+          }
+        },
+        "evidence": {
+          "$ref": "common.json#/$defs/evidence"
+        }
+      }
+    },
+    "login_required_payload": {
+      "type": "object",
+      "required": [
+        "reason",
+        "mode"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "reason": {
+          "type": "string",
+          "enum": [
+            "logged_out",
+            "session_expired",
+            "account_switched",
+            "unknown"
+          ]
+        },
+        "mode": {
+          "$ref": "common.json#/$defs/mode"
+        }
+      }
+    },
+    "login_qr_payload": {
+      "type": "object",
+      "description": "只通知二维码已更新；二维码内容只经 POST /login-qr 上传并在过期后删除，不进事件表。",
+      "required": [
+        "qr_seq",
+        "expires_at"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "qr_seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "expires_at": {
+          "$ref": "common.json#/$defs/timestamp"
+        }
+      }
+    },
+    "login_ok_payload": {
+      "type": "object",
+      "required": [
+        "mode"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "$ref": "common.json#/$defs/mode"
+        },
+        "account_display": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 64,
+          "description": "界面显示的账户名（脱敏后），用于核对绑定。"
+        }
+      }
+    },
+    "human_input_required_payload": {
+      "type": "object",
+      "required": [
+        "input_request_id",
+        "input_kind",
+        "prompt_text",
+        "can_fill"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "input_request_id": {
+          "$ref": "common.json#/$defs/uuid"
+        },
+        "input_kind": {
+          "type": "string",
+          "enum": [
+            "sms_code",
+            "text",
+            "slider",
+            "confirm_on_phone",
+            "unknown"
+          ]
+        },
+        "prompt_text": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "can_fill": {
+          "type": "boolean",
+          "description": "Monitor 能否代填。slider / confirm_on_phone / unknown 必须为 false。"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "input_kind": {
+                "enum": [
+                  "slider",
+                  "confirm_on_phone",
+                  "unknown"
+                ]
+              }
+            },
+            "required": [
+              "input_kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "can_fill": {
+                "const": false
+              }
+            }
+          }
+        }
+      ]
+    },
+    "blocked_by_dialog_payload": {
+      "type": "object",
+      "required": [
+        "dialog_kind",
+        "dialog_text"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "dialog_kind": {
+          "type": "string",
+          "enum": [
+            "captcha",
+            "risk_warning",
+            "quota_limit",
+            "unknown"
+          ]
+        },
+        "dialog_text": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "buttons": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 50
+          },
+          "maxItems": 10,
+          "default": []
+        },
+        "command_id": {
+          "oneOf": [
+            {
+              "$ref": "common.json#/$defs/uuid"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "被阻断的指令（若在执行中）。"
+        }
+      }
+    },
+    "device_paused_payload": {
+      "type": "object",
+      "required": [
+        "reason",
+        "by"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "reason": {
+          "type": "string",
+          "enum": [
+            "user_request",
+            "login_required",
+            "account_switched",
+            "anomaly",
+            "server_request",
+            "rebaseline"
+          ]
+        },
+        "by": {
+          "type": "string",
+          "enum": [
+            "user",
+            "monitor",
+            "server"
+          ]
+        },
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 200
+        }
+      }
+    }
+  }
+}

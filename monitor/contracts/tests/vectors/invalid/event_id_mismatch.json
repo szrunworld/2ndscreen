@@ -1,0 +1,34 @@
+{
+  "contract": "event",
+  "description": "event_id 与计算结果不符（语义）",
+  "data": {
+    "event_id": "51696fd36487432a5cfc3df72b035786de3745414dcfd267c3c5e4a44f2c5704",
+    "device_id": "dev_mac_01",
+    "account_id": "acct_demo",
+    "kind": "application_observed",
+    "conversation": {
+      "candidate_name": "候选人A",
+      "job_title": "后端工程师",
+      "hints": [
+        "本科",
+        "上海"
+      ]
+    },
+    "bucket": "another-bucket",
+    "observed_at": "2026-10-04T09:31:05+08:00",
+    "payload": {
+      "marker_text": "新招呼",
+      "evidence": [
+        {
+          "text": "新招呼",
+          "role": "AXStaticText",
+          "source": "list",
+          "captured_at": "2026-10-04T09:31:05+08:00"
+        }
+      ]
+    }
+  },
+  "expected_error_paths": [
+    "event_id"
+  ]
+}

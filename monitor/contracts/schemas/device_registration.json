@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "device_registration",
+  "description": "POST /devices 请求体：Monitor 首次注册设备。enrollment_code 由控制台生成，一次性。",
+  "type": "object",
+  "required": [
+    "enrollment_code",
+    "device_name",
+    "mode",
+    "platform",
+    "monitor_version",
+    "contracts_version",
+    "capabilities"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "enrollment_code": {
+      "type": "string",
+      "minLength": 6,
+      "maxLength": 64
+    },
+    "device_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "mode": {
+      "$ref": "common.json#/$defs/mode"
+    },
+    "platform": {
+      "type": "object",
+      "required": [
+        "os",
+        "os_version"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "os": {
+          "const": "macos"
+        },
+        "os_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "arch": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "arm64",
+            "x86_64",
+            null
+          ]
+        }
+      }
+    },
+    "monitor_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+([-+][0-9A-Za-z.-]+)?$"
+    },
+    "contracts_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "description": "monitor_contracts.__version__。"
+    },
+    "capabilities": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "enum": [
+          "observe",
+          "send_greeting",
+          "request_resume",
+          "request_contact_exchange",
+          "search_candidates",
+          "forward_resume",
+          "provide_input",
+          "login_relay"
+        ]
+      },
+      "description": "本 Monitor 版本实现了哪些能力（不等于策略允许）。login_relay 仅 remote 模式。"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "mode": {
+            "const": "local"
+          }
+        },
+        "required": [
+          "mode"
+        ]
+      },
+      "then": {
+        "properties": {
+          "capabilities": {
+            "not": {
+              "contains": {
+                "const": "login_relay"
+              }
+            },
+            "x-message": "本机模式不做二维码接力，不得声明 login_relay"
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,182 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "search_snapshot",
+  "description": "search_candidates 读取当前页得到的快照。三种结局必须可区分：确认无结果 empty_confirmed、成功读取 partial|complete、无法读取 unreadable。读取失败不得表示为空列表。",
+  "type": "object",
+  "required": [
+    "search_id",
+    "query",
+    "scope",
+    "coverage",
+    "items",
+    "captured_at"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "search_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,64}$"
+    },
+    "query": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100
+    },
+    "scope": {
+      "const": "current_page",
+      "description": "第一版只读当前页，不翻页。"
+    },
+    "coverage": {
+      "type": "string",
+      "enum": [
+        "partial",
+        "complete",
+        "unreadable",
+        "empty_confirmed"
+      ],
+      "description": "partial 当前页部分可读；complete 当前页全部可读；unreadable 无法读取；empty_confirmed 界面明确显示无结果。"
+    },
+    "unreadable_reason": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 200,
+      "description": "coverage=unreadable 时必填：为什么读不到（如 results_are_image、state_unrecognized）。"
+    },
+    "items": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "object",
+        "required": [
+          "result_ref",
+          "display_name",
+          "summary"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "result_ref": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,64}:item_[1-9][0-9]*$",
+            "description": "本次快照内的位置引用，格式 <search_id>:item_<n>（n 从 1 起）。不是候选人身份。"
+          },
+          "display_name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "summary": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "stable_candidate_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 128,
+            "default": null,
+            "description": "界面能提供稳定身份时填写；第一版通常为 null。"
+          }
+        }
+      }
+    },
+    "captured_at": {
+      "$ref": "common.json#/$defs/timestamp"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "coverage": {
+            "const": "unreadable"
+          }
+        },
+        "required": [
+          "coverage"
+        ]
+      },
+      "then": {
+        "required": [
+          "unreadable_reason"
+        ],
+        "properties": {
+          "items": {
+            "maxItems": 0,
+            "x-message": "coverage 为 unreadable / empty_confirmed 时 items 必须为空"
+          },
+          "unreadable_reason": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "coverage": {
+            "const": "empty_confirmed"
+          }
+        },
+        "required": [
+          "coverage"
+        ]
+      },
+      "then": {
+        "properties": {
+          "items": {
+            "maxItems": 0,
+            "x-message": "coverage 为 unreadable / empty_confirmed 时 items 必须为空"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "coverage": {
+            "enum": [
+              "partial",
+              "complete"
+            ]
+          }
+        },
+        "required": [
+          "coverage"
+        ]
+      },
+      "then": {
+        "properties": {
+          "items": {
+            "minItems": 1,
+            "x-message": "coverage 为 partial / complete 时至少一条；确认无结果应为 empty_confirmed"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "coverage": {
+            "not": {
+              "const": "unreadable"
+            }
+          }
+        },
+        "required": [
+          "coverage"
+        ]
+      },
+      "then": {
+        "properties": {
+          "unreadable_reason": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ]
+}

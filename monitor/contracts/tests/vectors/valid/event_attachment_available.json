@@ -1,0 +1,24 @@
+{
+  "contract": "event",
+  "description": "附件简历可用",
+  "data": {
+    "event_id": "8e9754c128299b1a5382709547914cc094eff5f0ea69f1bf7fb57ff5f5bf5f42",
+    "device_id": "dev_mac_01",
+    "account_id": "acct_demo",
+    "kind": "attachment_available",
+    "conversation": {
+      "candidate_name": "候选人A",
+      "job_title": "后端工程师",
+      "hints": [
+        "本科",
+        "上海"
+      ]
+    },
+    "bucket": "2026-10-04T01:00:00Z/3600",
+    "observed_at": "2026-10-04T09:31:05+08:00",
+    "payload": {
+      "attachment_name": "简历.pdf",
+      "evidence": []
+    }
+  }
+}

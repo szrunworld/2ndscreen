@@ -1,0 +1,44 @@
+{
+  "contract": "policy",
+  "description": "全部关闭（默认）",
+  "data": {
+    "account_id": "acct_demo",
+    "policy_version": 3,
+    "allowed_actions": [],
+    "job_scope": {
+      "mode": "all",
+      "job_titles": []
+    },
+    "greeting": {
+      "enabled": false,
+      "template": ""
+    },
+    "auto_request_resume": true,
+    "after_resume_received": {
+      "action": "request_contact_exchange",
+      "wait_for_parse": false
+    },
+    "work_hours": {
+      "timezone": "Asia/Shanghai",
+      "windows": []
+    },
+    "daily_limits": {
+      "send_greeting": 30,
+      "request_resume": 30,
+      "request_contact_exchange": 10,
+      "forward_resume": 30,
+      "search_candidates": 20
+    },
+    "min_interval_seconds": {
+      "send_greeting": 60,
+      "request_resume": 60,
+      "request_contact_exchange": 60,
+      "forward_resume": 60,
+      "search_candidates": 60
+    },
+    "pause_on_anomaly": true,
+    "paused": false,
+    "updated_at": "2026-10-04T09:30:00+08:00",
+    "updated_by": "recruiter@example.com"
+  }
+}

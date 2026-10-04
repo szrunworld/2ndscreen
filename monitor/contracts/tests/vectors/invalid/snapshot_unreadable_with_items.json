@@ -1,0 +1,29 @@
+{
+  "contract": "search_snapshot",
+  "description": "无法读取时不得有结果",
+  "data": {
+    "search_id": "s_42",
+    "query": "golang 后端",
+    "scope": "current_page",
+    "coverage": "unreadable",
+    "unreadable_reason": "results_are_image",
+    "items": [
+      {
+        "result_ref": "s_42:item_1",
+        "display_name": "候选人C",
+        "summary": "5年 Go 经验",
+        "stable_candidate_id": null
+      },
+      {
+        "result_ref": "s_42:item_2",
+        "display_name": "候选人D",
+        "summary": "3年",
+        "stable_candidate_id": null
+      }
+    ],
+    "captured_at": "2026-10-04T09:31:05+08:00"
+  },
+  "expected_error_paths": [
+    "items"
+  ]
+}

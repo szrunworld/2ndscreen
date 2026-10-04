@@ -1,0 +1,17 @@
+{
+  "contract": "event",
+  "description": "登录失效",
+  "data": {
+    "event_id": "4d4f62be7586540d58ca0dc15daafed0bd8bf51b67844e476f1131d2e72782af",
+    "device_id": "dev_mac_01",
+    "account_id": "acct_demo",
+    "kind": "login_required",
+    "conversation": null,
+    "bucket": "2026-10-04T01:00:00Z/3600",
+    "observed_at": "2026-10-04T09:31:05+08:00",
+    "payload": {
+      "reason": "session_expired",
+      "mode": "local"
+    }
+  }
+}

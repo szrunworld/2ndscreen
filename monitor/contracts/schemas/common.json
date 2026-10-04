@@ -1,0 +1,228 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "common",
+  "description": "各契约共用的基础类型。只被其他 schema 通过 $ref 引用，本身不描述任何消息。",
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "format": "uuid",
+      "description": "RFC 4122 UUID 字符串（小写或大写均可）。"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339 时间戳，必须带时区，例如 2026-10-04T09:30:00+08:00。"
+    },
+    "account_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "招聘账户标识（服务端分配）。"
+    },
+    "device_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "设备标识（POST /devices 返回）。"
+    },
+    "workflow_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "招聘流程 recruitment_case 的 case_id。"
+    },
+    "event_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "事件幂等键：compute_event_id 计算的 sha256 十六进制小写串。"
+    },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "local",
+        "remote"
+      ],
+      "description": "运行模式：local 本机模式；remote 独立设备模式。"
+    },
+    "action": {
+      "type": "string",
+      "enum": [
+        "send_greeting",
+        "request_resume",
+        "request_contact_exchange",
+        "search_candidates",
+        "forward_resume",
+        "provide_input"
+      ],
+      "description": "指令动作。"
+    },
+    "exchange_type": {
+      "type": "string",
+      "enum": [
+        "phone"
+      ],
+      "description": "联系方式类型。第一版只支持电话；微信留作后续（届时契约版本 +1）。"
+    },
+    "exchange_state": {
+      "type": "string",
+      "enum": [
+        "requested",
+        "pending_acceptance",
+        "available",
+        "refused",
+        "unknown"
+      ],
+      "description": "界面上读到的交换状态：requested 请求已发出；pending_acceptance 等待候选人同意；available 联系方式可用；refused 明确拒绝（仅界面可识别时）；unknown 无法判断。"
+    },
+    "hint": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100
+    },
+    "conversation": {
+      "type": "object",
+      "description": "会话身份：姓名 + 岗位 + 提示词全部一致才算命中同一会话。",
+      "required": [
+        "candidate_name",
+        "job_title"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "candidate_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "job_title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "hints": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/hint"
+          },
+          "maxItems": 10,
+          "default": [],
+          "description": "辅助区分同名会话的界面文本（如学历、城市、期望薪资），不含手机号、微信号。"
+        }
+      }
+    },
+    "frame": {
+      "type": "object",
+      "description": "屏幕坐标矩形（点，左上角原点）。",
+      "required": [
+        "x",
+        "y",
+        "w",
+        "h"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "x": {
+          "type": "number"
+        },
+        "y": {
+          "type": "number"
+        },
+        "w": {
+          "type": "number",
+          "minimum": 0
+        },
+        "h": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "evidence_item": {
+      "type": "object",
+      "description": "脱敏后的元素文本摘录。不得包含截图或任何二进制内容。",
+      "required": [
+        "text",
+        "captured_at"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "text": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "role": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 64
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "element",
+            "dialog",
+            "chat",
+            "list",
+            "other"
+          ],
+          "default": "element"
+        },
+        "captured_at": {
+          "$ref": "#/$defs/timestamp"
+        }
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/evidence_item"
+      },
+      "maxItems": 50,
+      "default": []
+    },
+    "fact": {
+      "type": "object",
+      "description": "一条界面事实。code 用 snake_case，如 already_requested、button_missing、dialog_present、message_visible。",
+      "required": [
+        "code"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,63}$"
+        },
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 500
+        }
+      }
+    },
+    "observed": {
+      "type": "object",
+      "description": "执行前后读到的界面事实。",
+      "additionalProperties": false,
+      "properties": {
+        "before": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/fact"
+          },
+          "maxItems": 50,
+          "default": []
+        },
+        "after": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/fact"
+          },
+          "maxItems": 50,
+          "default": []
+        }
+      }
+    }
+  }
+}

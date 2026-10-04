@@ -1,0 +1,17 @@
+{
+  "contract": "command_result",
+  "description": "触发每日上限，不调用 driver",
+  "data": {
+    "command_id": "00000000-0000-4000-8000-000000000011",
+    "action": "request_resume",
+    "status": "failed",
+    "reason": "rate_limited",
+    "observed": {
+      "before": [],
+      "after": []
+    },
+    "evidence": [],
+    "executed_at": null,
+    "reported_at": "2026-10-04T09:31:20+08:00"
+  }
+}
