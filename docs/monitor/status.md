@@ -5,6 +5,7 @@
 | 代号 | 任务 | Worker / 工作区 | 分支 | 状态 | 最近 commit | 未决问询 |
 | --- | --- | --- | --- | --- | --- | --- |
 | A | 契约、协议与 API 规范 | ctx_0786c7296951→ctx_edd92e2bd40f（已释放） | monitor-A | 已合（928dc10，契约 0.1.1，170 tests） | ffd598b | — |
+| A2 | 契约 0.2.0 审查修正（写操作标志拆分、账户不可读、定位器语义） | ctx_6b7c4980f328 / monitor-A2 | monitor-A2 | 进行 | — | forward_resume 来源与搜索页问候待用户决定，下一版处理 |
 | B | 只读可行性验证与夹具 | ctx_1b25ee64eab9（已释放） | monitor-B | 已合（898edbd） | 201001d | 登录/二维码、新招呼首次打开、电话待同意/已交换/已拒绝、邮件转发内容、搜索输入后结果 → 留给 N/K |
 | C | Driver 适配器 | ctx_3dfbecec466d（已释放） | monitor-C | 已合（ecfe9da；client 入工作区 + relock，contracts+client 351 tests） | ec6aed9 | 定位器 text 同时匹配 label/value（比契约宽），0.2.0 契约里追认；CliDriver 未在 BOSS 上真机跑过 → N |
 | D1 | 本地账本 | — | — | 未派 | — | — |
