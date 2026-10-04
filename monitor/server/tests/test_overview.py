@@ -72,3 +72,14 @@ def test_overview_errors(h: Harness):
 def test_overview_unknown_account_uses_default_timezone(h: Harness):
     body = h.get("/overview", params={"account_id": "acct_nobody"}).json()
     assert body["date"] == "2026-10-04" and body["needs_human"] == 0
+
+
+def test_ambiguous_case_counts_as_needs_human_not_new_application(h: Harness):
+    from server_testkit import make_case_event, send_events
+
+    device_id, token = h.ready_device()
+    auto_policy(h, greeting=False, auto_request_resume=False)
+    send_events(h, device_id, token, [make_case_event(h, device_id, "conversation_ambiguous")])
+    observe(h, device_id, token, conversation("另一人"))
+    body = h.get("/overview", params={"account_id": "acct_demo"}).json()
+    assert body["needs_human"] == 1 and body["new_applications"] == 1

@@ -369,3 +369,46 @@ def test_stop_twice_and_errors(h: Harness):
     assert_problem(h.post("/cases/nope:stop", {"note": "a"}), 404)
     assert_problem(h.post(f"/cases/{case_id}:stop", {}), 422)
     assert_problem(h.post(f"/cases/{case_id}:stop", {"note": "a"}, token=None), 401)
+
+
+# ---------------------------------------------------------------------------
+# F2b：工作时段外人工换微信——接受请求，顺延到工作时段内执行
+# ---------------------------------------------------------------------------
+
+
+def test_wechat_outside_work_hours_is_accepted_and_deferred(h: Harness):
+    device_id, token = h.ready_device()
+    window = {"timezone": "Asia/Shanghai", "windows": [{"days": [7], "start": "10:00", "end": "12:00"}]}
+    auto_policy(h, greeting=False, auto_request_resume=False, work_hours=window)
+    observe(h, device_id, token)  # 09:30（上海），时段外
+    case_id = only_case(h)["case_id"]
+
+    resp = wechat(h, case_id, "晚上联系")
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert_shape(body, "ManualCommandCreated")
+    assert body["manual_action"]["actor"] == "alice" and body["manual_action"]["note"] == "晚上联系"
+    command = body["command"]["command"]
+    assert command["issued_at"] == "2026-10-04T02:00:00Z"  # 上海 10:00
+    assert command["expires_at"] > command["issued_at"]
+    assert only_case(h)["stage"] == "contact_requested"
+    timeline = h.ctx.cases.detail(case_id)["timeline"]
+    assert any("将在工作时段内执行（最早 2026-10-04 10:00" in t["summary"] for t in timeline)
+
+    assert claim_all(h, device_id, token) == []  # 时段外不下发
+    h.clock.advance(29 * 60)  # 09:59
+    assert claim_all(h, device_id, token) == []
+    h.clock.advance(60)  # 10:00
+    [claimed] = claim_all(h, device_id, token)
+    assert claimed["command_id"] == command["command_id"]
+    # 已有未完成的换微信指令：再点返回 already_requested
+    assert_problem(wechat(h, case_id), 409, "already_requested")
+
+
+def test_wechat_outside_hours_still_respects_whitelist(h: Harness):
+    device_id, token = h.ready_device()
+    window = {"timezone": "Asia/Shanghai", "windows": [{"days": [7], "start": "10:00", "end": "12:00"}]}
+    auto_policy(h, greeting=False, auto_request_resume=False, work_hours=window, allowed_actions=[])
+    observe(h, device_id, token)
+    body = assert_problem(wechat(h, only_case(h)["case_id"]), 409, "policy_blocked")
+    assert body["errors"][0]["code"] == "not_allowed"

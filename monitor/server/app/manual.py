@@ -28,7 +28,7 @@ from .main import (
     problem_responses,
     run_idempotent,
 )
-from .policy import GATE_REASON_TEXT
+from .policy import GATE_REASON_TEXT, Gate, next_window_start, policy_zone
 
 if TYPE_CHECKING:
     from .main import AppContext
@@ -76,7 +76,7 @@ class ManualService:
 
     def confirm_sent(self, command_id: str, actor: str, note: str) -> dict[str, Any]:
         """人工确认 unknown 指令实际已发送：记录处理，按"已发生"推进流程；原始结果不变。"""
-        with self.ctx.cases.lock:
+        with self.ctx.cases.atomic():
             row = self.ctx.store.get_command(command_id)
             if row is None:
                 raise not_found("指令")
@@ -113,7 +113,7 @@ class ManualService:
 
     def recheck(self, command_id: str, actor: str) -> dict[str, Any]:
         """为同一动作与目标创建一条 verify_only 指令（不是重试，不受白名单与限额约束）。"""
-        with self.ctx.cases.lock:
+        with self.ctx.cases.atomic():
             row = self.ctx.store.get_command(command_id)
             if row is None:
                 raise not_found("指令")
@@ -142,7 +142,7 @@ class ManualService:
 
     def stop(self, case_id: str, actor: str, note: str) -> dict[str, Any]:
         """停止流程：未领取的指令直接取消，已领取的登记取消（以设备回报为准），流程进入 closed。"""
-        with self.ctx.cases.lock:
+        with self.ctx.cases.atomic():
             case = self.ctx.cases.require(case_id)
             now = self._now()
             cancelled = 0
@@ -163,7 +163,7 @@ class ManualService:
 
     def request_wechat(self, case_id: str, actor: str, note: str) -> dict[str, Any]:
         """人工换微信：除 closed 外任何阶段可用；生成 request_contact_exchange(exchange_type=wechat)。"""
-        with self.ctx.cases.lock:
+        with self.ctx.cases.atomic():
             case = self.ctx.cases.require(case_id)
             if case.stage == S.CLOSED.value:
                 raise ApiError(409, "stage_not_allowed", "流程已关闭，不能换微信")
@@ -180,7 +180,13 @@ class ManualService:
                         409, "already_requested", "已有未完成的换微信指令", existing=self.ctx.commands.record(row)
                     )
             policy = self.ctx.policies.require(case.account_id)
-            gate = self.ctx.policies.gate(policy, "request_contact_exchange")
+            # 工作时段外不拒绝（F2b，用户裁决）：指令顺延到下一个工作时段才可领取。本机模式下 Monitor
+            # 时段外不占用用户窗口，所以不能立即执行。白名单、暂停、每日上限仍按原规则拒绝。
+            gate = self.ctx.policies.gate(policy, "request_contact_exchange", check_work_hours=False)
+            now = self.ctx.clock.now()
+            start = next_window_start(policy, now)
+            if gate.allowed and start is None:
+                gate = Gate(False, "outside_work_hours")  # 策略没有任何工作时段
             if not gate.allowed:
                 raise ApiError(
                     409,
@@ -188,10 +194,16 @@ class ManualService:
                     f"策略不允许换微信：{GATE_REASON_TEXT.get(gate.reason or '', gate.reason)}",
                     errors=[{"path": "policy", "message": gate.reason or "", "code": gate.reason or "policy_blocked"}],
                 )
+            assert start is not None
+            deferred = start > now
             manual = self._record("request_wechat", actor, note, "case", case_id)
-            self._note_case(case_id, manual, "人工请求换微信")
+            summary = "人工请求换微信"
+            if deferred:
+                local = start.astimezone(policy_zone(policy))
+                summary += f"；不在工作时段内，将在工作时段内执行（最早 {local:%Y-%m-%d %H:%M} {local.tzname()}）"
+            self._note_case(case_id, manual, summary)
             orch = self.ctx.orchestrator
-            command = orch.build_command(case, "request_contact_exchange", {"exchange_type": "wechat"})
+            command = orch.build_command(case, "request_contact_exchange", {"exchange_type": "wechat"}, issued_at=start)
             record = orch.issue(case, command, "manual")
             if case.stage not in (S.CONTACT_REQUESTED.value, S.CONTACT_AVAILABLE.value):
                 try:

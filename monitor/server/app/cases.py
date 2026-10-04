@@ -18,7 +18,8 @@ import sqlite3
 import threading
 import unicodedata
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
@@ -28,7 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from pydantic.json_schema import SkipJsonSchema
 
 from .commands import CommandRecord, DateTimeStr, ManualAction, manual_action_record
-from .db import canonical_json, to_db_time, wire_time
+from .db import CommandRow, EventRow, canonical_json, to_db_time, wire_time
 from .main import (
     ConsoleActor,
     ConsoleOrService,
@@ -317,6 +318,42 @@ class CaseStore:
         r = self._s._one("SELECT command_id FROM commands WHERE case_id = ? ORDER BY seq DESC LIMIT 1", (case_id,))
         return None if r is None else r["command_id"]
 
+    # -- 处理标记与恢复（F2b） ----------------------------------------------------
+
+    def result_applied(self, case_id: str, command_id: str) -> bool:
+        """该指令结果是否已处理：处理时在同一事务里写了 command_result 时间线。"""
+        return (
+            self._s._one(
+                "SELECT 1 FROM case_timeline WHERE case_id = ? AND type = 'command_result' AND ref_id = ? LIMIT 1",
+                (case_id, command_id),
+            )
+            is not None
+        )
+
+    def unprocessed_events(self, limit: int = 200) -> list[EventRow]:
+        """已落库但还没建立或关联 case 的新投递 / 会话歧义事件（处理后一定会关联 case）。"""
+        rows = self._s._all(
+            """SELECT event_id FROM events
+               WHERE case_id IS NULL AND account_id IS NOT NULL
+                 AND kind IN ('application_observed', 'conversation_ambiguous')
+               ORDER BY seq LIMIT ?""",
+            (limit,),
+        )
+        return [e for e in (self._s.get_event(r["event_id"]) for r in rows) if e is not None]
+
+    def unapplied_results(self, limit: int = 200) -> list[CommandRow]:
+        """已记录结果、所属 case 存在、但还没有对应 command_result 时间线的指令。"""
+        rows = self._s._all(
+            """SELECT c.command_id FROM commands c
+               WHERE c.result_json IS NOT NULL AND c.case_id IS NOT NULL
+                 AND EXISTS (SELECT 1 FROM recruitment_cases r WHERE r.case_id = c.case_id)
+                 AND NOT EXISTS (SELECT 1 FROM case_timeline t
+                                 WHERE t.case_id = c.case_id AND t.type = 'command_result' AND t.ref_id = c.command_id)
+               ORDER BY c.result_recorded_at, c.seq LIMIT ?""",
+            (limit,),
+        )
+        return [c for c in (self._s.get_command(r["command_id"]) for r in rows) if c is not None]
+
     # -- 简历关联 -------------------------------------------------------------
 
     def link_resume(self, doc_id: str, case_id: str, now: str) -> bool:
@@ -359,13 +396,20 @@ class StageNotAllowed(Exception):
 class CaseService:
     ctx: AppContext
     repo: CaseStore = field(init=False)
-    # 所有改 case 的操作串行执行（事件订阅、结果订阅、人工处理、定时推进共用）
+    # 额外保护：所有改 case 的操作在 atomic() 里串行执行（原子性由存储事务保证）
     lock: threading.RLock = field(default_factory=threading.RLock)
     # 简历文件来源（任务 G 注入）：case_id → openapi ResumeDocument 列表
     resume_documents_provider: Callable[[str], list[dict[str, Any]]] = field(default=lambda case_id: [])
 
     def __post_init__(self) -> None:
         self.repo = CaseStore(self.ctx.store)  # type: ignore[arg-type]
+
+    @contextmanager
+    def atomic(self) -> Iterator[None]:
+        """一个原子的流程操作：存储事务在外（与 F1/F3 的加锁顺序一致：先存储、后流程锁），
+        块内创建指令、写人工记录、改 case、写时间线一起提交或一起回滚。进程内锁只是额外保护。"""
+        with self.ctx.store.transaction(), self.lock:
+            yield
 
     def _now(self) -> str:
         return to_db_time(self.ctx.clock.now())
@@ -386,7 +430,7 @@ class CaseService:
 
     def open_case(self, account_id: str, conversation: dict[str, Any], event_id: str) -> tuple[CaseRow, bool]:
         """按（账户, 姓名, 岗位）找到或建立 case，返回 (case, 是否新建)。"""
-        with self.lock:
+        with self.atomic():
             existing = self.find(account_id, conversation)
             if existing is not None:
                 return existing, False
@@ -413,7 +457,7 @@ class CaseService:
 
     def transition(self, case_id: str, to: str, *, ref_id: str, summary: str, reason: str | None = None) -> CaseRow:
         """按契约迁移表迁移阶段，写 stage_change 时间线。不合法抛 StageNotAllowed。"""
-        with self.lock:
+        with self.atomic():
             row = self.require(case_id)
             try:
                 require_transition("case", row.stage, to)
@@ -446,7 +490,7 @@ class CaseService:
 
     def to_needs_human(self, case_id: str, reason: str, *, ref_id: str, summary: str) -> bool:
         """转人工；已在 needs_human 时只更新原因并记时间线；closed / contact_available 不能转人工。"""
-        with self.lock:
+        with self.atomic():
             row = self.require(case_id)
             if row.stage == CaseStage.NEEDS_HUMAN.value:
                 self.repo.update(case_id, self._now(), needs_human_reason=reason)
@@ -460,7 +504,7 @@ class CaseService:
         self.repo.add_timeline(TimelineRow(case_id, self._now(), type_, ref_id, summary))
 
     def update(self, case_id: str, **fields: Any) -> None:
-        with self.lock:
+        with self.atomic():
             self.repo.update(case_id, self._now(), **fields)
 
     # -- 简历（任务 G 调用） -----------------------------------------------------
@@ -472,7 +516,7 @@ class CaseService:
         needs_human（例如超时转人工后邮件才到、或人工关联）→ resume_linked；
         其他阶段（contact_requested 等）阶段不回退，只记 resume_linked 时间线。
         """
-        with self.lock:
+        with self.atomic():
             row = self.require(case_id)
             if not self.repo.link_resume(doc_id, case_id, self._now()):
                 return False
@@ -492,7 +536,7 @@ class CaseService:
 
     def mark_resume_parsed(self, doc_id: str) -> bool:
         """简历解析完成（用于总览"解析完成"计数）。未关联的文档返回 False。"""
-        with self.lock:
+        with self.atomic():
             link = self.repo.resume_link(doc_id)
             if link is None:
                 return False

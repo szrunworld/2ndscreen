@@ -147,6 +147,23 @@ def in_work_hours(policy: Mapping[str, Any], at: datetime) -> bool:
     return any(weekday in w["days"] and w["start"] <= hhmm < w["end"] for w in policy["work_hours"]["windows"])
 
 
+def next_window_start(policy: Mapping[str, Any], at: datetime) -> datetime | None:
+    """at 之后最近一个工作时段的开始时间（UTC）；at 已在时段内时返回 at；没有任何时段返回 None。"""
+    if in_work_hours(policy, at):
+        return at
+    tz = policy_zone(policy)
+    local = at.astimezone(tz)
+    for offset in range(8):
+        day = local.date() + timedelta(days=offset)
+        starts = sorted(w["start"] for w in policy["work_hours"]["windows"] if day.isoweekday() in w["days"])
+        for hhmm in starts:
+            hour, minute = (int(x) for x in hhmm.split(":"))
+            candidate = datetime.combine(day, time(hour, minute), tzinfo=tz)
+            if candidate > local:
+                return candidate.astimezone(UTC)
+    return None
+
+
 def job_in_scope(policy: Mapping[str, Any], job_title: str) -> bool:
     scope = policy["job_scope"]
     if scope["mode"] == "all":
@@ -337,8 +354,12 @@ class PolicyService:
         start, end = local_day_bounds(policy, local_today(policy, now))
         return self.repo.count_outbound(policy["account_id"], action, to_db_time(start), to_db_time(end))
 
-    def gate(self, policy: Mapping[str, Any], action: str, now: datetime | None = None) -> Gate:
-        """能否现在为该账户生成一条 execute 模式的对外指令。"""
+    def gate(
+        self, policy: Mapping[str, Any], action: str, now: datetime | None = None, *, check_work_hours: bool = True
+    ) -> Gate:
+        """能否现在为该账户生成一条 execute 模式的对外指令。
+
+        check_work_hours=False 用于人工换微信：时段外不拒绝，由调用方顺延到下一个工作时段。"""
         now = now or self._now()
         if action not in HARD_DAILY_CAPS:
             raise ValueError(f"{action} 不是对外动作")
@@ -348,7 +369,7 @@ class PolicyService:
             return Gate(False, "paused")
         if self.devices_all_paused(policy["account_id"]):
             return Gate(False, "devices_paused")
-        if not in_work_hours(policy, now):
+        if check_work_hours and not in_work_hours(policy, now):
             return Gate(False, "outside_work_hours")
         if self.sent_today(policy, action, now) >= effective_daily_limit(policy, action):
             return Gate(False, "daily_limit_reached")
@@ -459,6 +480,7 @@ __all__ = [
     "job_in_scope",
     "local_day_bounds",
     "local_today",
+    "next_window_start",
     "policy_errors",
     "render_greeting",
     "router",
