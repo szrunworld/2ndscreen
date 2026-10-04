@@ -37,13 +37,21 @@ IMPLEMENTED = {
     "cancelCommand",
     "postEvents",
     "listEvents",
+    # F2：招聘流程、人工处理、策略、总览
+    "listCases",
+    "getCase",
+    "stopCase",
+    "requestWechatExchange",
+    "confirmCommandSent",
+    "recheckCommand",
+    "getPolicy",
+    "putPolicy",
+    "getOverview",
 }
 
 # yaml 中已定义、server 尚未实现的操作（由 F2/F3/G 等后续任务实现）。实现一个就把它从这里移到
 # IMPLEMENTED；契约新增操作时也要登记到这里，否则 test_unimplemented_operations_are_listed 失败。
 NOT_YET_IMPLEMENTED = {
-    "confirmCommandSent",
-    "recheckCommand",
     "createResumeDocument",
     "listResumeDocuments",
     "getResumeDocument",
@@ -56,24 +64,29 @@ NOT_YET_IMPLEMENTED = {
     "createSearchRun",
     "listSearchRuns",
     "getSearchRun",
-    "listCases",
-    "getCase",
-    "stopCase",
-    "requestWechatExchange",
     "postLoginQr",
     "getLoginQr",
     "withdrawLoginQr",
     "listLoginQrViews",
     "respondInputRequest",
-    "getPolicy",
-    "putPolicy",
-    "getOverview",
 }
 
 # 已知的 yaml 缺口：代码如实声明、运行时会返回，但 contracts/openapi.yaml 0.2.0 还没列出的响应码。
 # 由下一版契约任务统一补（清单见 agent-reports/F1.md「0.2.0 适配」）；补上后从这里删除对应条目，
 # 测试会因白名单条目已不再是差异而失败（KNOWN_YAML_GAPS 必须与实际差异完全一致）。
-KNOWN_YAML_GAPS: dict[str, set[str]] = {}  # 契约 0.3.0 已补齐 401/403/422
+KNOWN_YAML_GAPS: dict[str, set[str]] = {
+    # 契约 0.3.0 已补齐 F1 的 401/403/422。以下是 F2 端点的缺口（见 agent-reports/F2.md「接口请求」）：
+    # 控制台未认证返回 401；路径参数、查询参数、请求体或 Idempotency-Key 不合法返回 422；
+    # putPolicy 对未知账户返回 404。
+    "confirmCommandSent": {"401", "422"},
+    "recheckCommand": {"401", "422"},
+    "getCase": {"401", "422"},
+    "stopCase": {"401", "422"},
+    "listCases": {"422"},
+    "getPolicy": {"401", "422"},
+    "putPolicy": {"401", "404"},
+    "getOverview": {"401", "422"},
+}
 
 _KEEP = (
     "format",
