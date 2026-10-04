@@ -31,7 +31,7 @@ from .driver import (
 )
 from .errors import ContractValidationError, FieldError, IllegalTransition
 from .event_id import EVENT_ID_SCHEME, compute_event_id, conversation_identity, observation_bucket
-from .fixtures import AxFixture, FixtureStep, StepAnnotations
+from .fixtures import AxFixture, FixtureElement, FixtureStep, StepAnnotations
 from .idempotency import (
     IDEMPOTENCY_KEY_PATTERN,
     claim_key,
