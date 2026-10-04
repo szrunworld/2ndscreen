@@ -24,8 +24,8 @@ build-backend = "hatchling.build"
 packages = ["monitor_mail"]
 
 [tool.uv.sources]
-# 加入工作区 members 后改为 { workspace = true }。
-monitor-contracts = { path = "../contracts", editable = true }
+# 已列入工作区 members（协调者合并 G 时加入）。
+monitor-contracts = { workspace = true }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
