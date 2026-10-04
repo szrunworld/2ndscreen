@@ -181,6 +181,8 @@ class ResumeDocument(BaseModel):
     parse_status: ParseStatus
     created_at: DateTimeStr
     duplicate: bool
+    # 0.3.2：人工关联队列的候选流程（只是提示；已关联或非 needs_manual 的文档为空列表）
+    candidate_case_ids: list[str] = []
 
 
 class ResumeDocumentList(BaseModel):
@@ -386,6 +388,13 @@ class ResumeDocumentStore:
 # ---------------------------------------------------------------------------
 
 
+def candidate_case_ids(row: DocRow) -> list[str]:
+    """人工关联候选列表：取邮件接入给出的关联判定里的候选（去重保序），只在待人工关联时返回。"""
+    if row.link_status != "needs_manual" or not row.link:
+        return []
+    return list(dict.fromkeys(row.link.get("candidate_case_ids") or []))
+
+
 def document_record(row: DocRow, duplicate: bool = False) -> dict[str, Any]:
     """组装 openapi ResumeDocument。"""
     record: dict[str, Any] = {
@@ -402,6 +411,7 @@ def document_record(row: DocRow, duplicate: bool = False) -> dict[str, Any]:
         "parse_status": row.parse_status,
         "created_at": wire_time(row.created_at),
         "duplicate": duplicate,
+        "candidate_case_ids": candidate_case_ids(row),
     }
     if row.message_id is not None:
         record["message_id"] = row.message_id

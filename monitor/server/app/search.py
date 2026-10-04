@@ -1,8 +1,11 @@
 """搜索任务：控制台提交关键词 → 生成 search_candidates 指令 → Monitor 回报快照 → 控制台查看。
 
 - ``POST /search-runs``：检查策略白名单（allowed_actions 含 search_candidates）、暂停（策略 paused、
-  账户下设备全部暂停）、每日上限与最小间隔，然后创建 search_candidates 指令（有效期默认 600 秒）。
+  账户下设备全部暂停）、工作时段、每日上限与最小间隔，然后创建 search_candidates 指令（有效期默认 600 秒）。
   不满足时 409 ``policy_blocked``，errors[].code 给出具体原因。
+  契约 0.3.2：搜索算对外动作。工作时段外直接 409（outside_work_hours），不像人工换微信那样顺延；
+  每日上限与问候、求简历一样按指令表统计（``PolicyStore.count_outbound``：execute 模式，已取消或过期且
+  没有结果的不计）。
 - ``GET /search-runs``、``GET /search-runs/{search_id}``：搜索任务与快照。
 
 快照随指令结果到达（``CommandResultRecorded``），按契约 0.3.1 卡片形状（fields、masked_name、
@@ -46,6 +49,7 @@ from .main import (
     run_idempotent,
     validation_failed,
 )
+from .policy import in_work_hours
 
 if TYPE_CHECKING:
     from .main import AppContext
@@ -153,13 +157,6 @@ class SearchStore:
             )
             return cur.rowcount == 1
 
-    def count_between(self, account_id: str, start: str, end: str) -> int:
-        r = self._s._one(
-            "SELECT count(*) AS n FROM search_runs WHERE account_id = ? AND created_at >= ? AND created_at < ?",
-            (account_id, start, end),
-        )
-        return int(r["n"]) if r else 0
-
     def last_created_at(self, account_id: str) -> str | None:
         r = self._s._one("SELECT max(created_at) AS t FROM search_runs WHERE account_id = ?", (account_id,))
         return None if r is None else r["t"]
@@ -206,9 +203,11 @@ class SearchService:
             reasons.append(_err("policy.paused", "账户策略已暂停", "paused"))
         if self._devices_all_paused(account_id):
             reasons.append(_err("devices", "账户下的设备都已暂停", "device_paused"))
+        if not in_work_hours(policy, now):
+            reasons.append(_err("policy.work_hours", "不在工作时段内（搜索算对外动作，不顺延）", "outside_work_hours"))
         limit = min(int(policy.get("daily_limits", {}).get(ACTION, 0)), HARD_DAILY_CAP)
         start, end = _local_day(policy, now)
-        if self.store.count_between(account_id, to_db_time(start), to_db_time(end)) >= limit:
+        if self.ctx.policies.repo.count_outbound(account_id, ACTION, to_db_time(start), to_db_time(end)) >= limit:
             reasons.append(_err("policy.daily_limits.search_candidates", f"已达每日上限 {limit}", "daily_limit_reached"))
         interval = max(int(policy.get("min_interval_seconds", {}).get(ACTION, 0)), MIN_INTERVAL_FLOOR_SECONDS)
         last = self.store.last_created_at(account_id)

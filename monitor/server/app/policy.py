@@ -21,22 +21,18 @@ from typing import TYPE_CHECKING, Annotated, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import monitor_contracts as mc
-from fastapi import APIRouter, Body, Depends, Header, Request, Security
-from fastapi.security import HTTPAuthorizationCredentials
+from fastapi import APIRouter, Body, Depends, Header, Request
 from monitor_contracts import check
 
 from .db import canonical_json, to_db_time, wire_time
+from .mail_endpoints import require_policy_reader
 from .main import (
     AccountIdStr,
     ApiError,
     ConsoleActor,
     Ctx,
     IdempotencyKeyHeader,
-    console_bearer,
     contract_ref,
-    device_bearer,
-    get_ctx,
-    hash_token,
     not_found,
     ok,
     problem_responses,
@@ -389,35 +385,13 @@ GATE_REASON_TEXT = {
 # 路由
 # ---------------------------------------------------------------------------
 
-BearerCred = HTTPAuthorizationCredentials | None
-
-
-def require_console_or_device(
-    request: Request,
-    console: Annotated[BearerCred, Security(console_bearer)],
-    device: Annotated[BearerCred, Security(device_bearer)],
-) -> str:
-    """控制台会话或设备令牌任一有效即可（GET 策略：控制台读写、Monitor 读）。"""
-    ctx = get_ctx(request)
-    cred = console or device
-    if cred is None:
-        raise ApiError(401, "unauthorized", "未认证或令牌已吊销")
-    actor = ctx.console_auth.authenticate(cred.credentials)
-    if actor is not None:
-        return f"console:{actor}"
-    row = ctx.store.get_device_by_token_hash(hash_token(cred.credentials))
-    if row is not None and not row.revoked:
-        return f"device:{row.device_id}"
-    raise ApiError(401, "unauthorized", "未认证或令牌已吊销")
-
-
 router = APIRouter(tags=["policy"])
 
 
 @router.get(
     "/accounts/{account_id}/policy",
     operation_id="getPolicy",
-    summary="读取策略（控制台与设备均可）",
+    summary="读取策略（控制台读写；设备与服务令牌只读）",
     response_model=PolicyJson,
     responses={
         200: {"headers": {"ETag": {"description": "等于 policy_version", "schema": {"type": "string"}}}},
@@ -426,7 +400,7 @@ router = APIRouter(tags=["policy"])
 )
 def get_policy(
     ctx: Ctx,
-    principal: Annotated[str, Depends(require_console_or_device)],
+    principal: Annotated[str, Depends(require_policy_reader)],
     account_id: Annotated[str, AccountIdStr],
 ):
     if principal.startswith("device:"):

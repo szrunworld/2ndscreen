@@ -335,6 +335,8 @@ def search_policy(account_id: str = ACCOUNT, **overrides: Any) -> dict[str, Any]
     policy = vector("policy_default")
     policy["account_id"] = account_id
     policy["allowed_actions"] = ["send_greeting", "request_resume", "search_candidates"]
+    # 搜索受工作时段约束（0.3.2）；默认每天 09:00–18:00（上海），可控时钟起点正好在时段内
+    policy["work_hours"] = copy.deepcopy(ALL_DAYS)
     policy.update(overrides)
     return policy
 

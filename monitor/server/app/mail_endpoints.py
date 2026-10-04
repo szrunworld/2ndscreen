@@ -10,7 +10,7 @@
 
 另外登记"谁能读策略"的权限规则 ``require_policy_reader``：G 需要读 ``mail_retention_days`` 与
 ``resume_mail_timeout_days``，所以 serviceToken 对 ``GET /accounts/{account_id}/policy`` 只读。
-策略路由由 F2 实现（policy.py），合并时把它的认证依赖换成本函数（见 F3 报告"与 F2 的衔接"）。
+策略路由由 F2 实现（policy.py），getPolicy 直接以本函数为认证依赖（契约 0.3.2 起 yaml 也列出 serviceToken）。
 
 状态变化在提交后经 ``ctx.bus`` 发布 ``MailMessageStatusChanged``（notify 据此对 failed 发通知），
 核对结果首次记录时发布 ``MailVerificationRecorded``。

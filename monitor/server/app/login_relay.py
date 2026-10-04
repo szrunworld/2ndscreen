@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, Annotated, Any
 from fastapi import APIRouter, Body, Depends, Request, Response, Security
 from pydantic import BaseModel, Field
 
-from monitor_contracts import check
+from monitor_contracts import INPUT_REQUEST_TTL_SECONDS, check
 
 from .commands import CommandCreateError, CommandRecord
 from .db import SqliteStore, canonical_json, parse_time, to_db_time, wire_time
@@ -64,7 +64,8 @@ DateTimeStr = Annotated[str, Field(json_schema_extra={"format": "date-time"})]
 DeviceIdPath = Annotated[str, contract_ref("./schemas/common.json#/$defs/device_id")]
 REDACTED = "******"
 _IDEMPOTENCY_SECRET = secrets.token_bytes(32)  # 进程重启后同键重放会得到 422，可接受（控制台每次点击生成新键）
-INPUT_REQUEST_TTL = timedelta(minutes=10)  # 人工输入请求的有效期（短信验证码通常 5–10 分钟失效）
+# 人工输入请求的默认有效期（契约 0.3.2 INPUT_REQUEST_TTL_SECONDS，短信验证码通常 5–10 分钟失效）
+INPUT_REQUEST_TTL = timedelta(seconds=INPUT_REQUEST_TTL_SECONDS)
 
 
 # ---------------------------------------------------------------------------
@@ -383,8 +384,15 @@ class LoginRelayService:
             self.store.scrub_command_value(message.command_id)
 
     def _register_input_request(self, message: EventReceived) -> None:
-        payload = message.record["event"]["payload"]
+        """登记人工输入请求。有效期（0.3.2）取事件 payload.expires_at；为空时取 observed_at + 默认有效期。
+        设备离线补报的旧请求可能登记时就已过期，此时提交返回 409 input_request_expired。"""
+        event = message.record["event"]
+        payload = event["payload"]
         now = self.ctx.clock.now()
+        if payload.get("expires_at"):
+            expires = parse_time(payload["expires_at"])
+        else:
+            expires = parse_time(event["observed_at"]) + self.input_request_ttl
         self.store.insert_input_request(
             {
                 "input_request_id": str(uuid.UUID(payload["input_request_id"])),
@@ -395,7 +403,7 @@ class LoginRelayService:
                 "prompt_text": payload["prompt_text"],
                 "can_fill": bool(payload["can_fill"]),
                 "created_at": to_db_time(now),
-                "expires_at": to_db_time(now + self.input_request_ttl),
+                "expires_at": to_db_time(expires),
             }
         )
 

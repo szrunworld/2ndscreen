@@ -667,6 +667,7 @@ class ResumeDocument(BaseModel):
     parse_status: Literal["pending", "parsed", "suspected_scanned", "failed"]
     created_at: DateTimeStr
     duplicate: bool
+    candidate_case_ids: list[str] = []
 
 
 _DETAIL_FIELDS = ("timeline", "resume_documents", "commands", "manual_actions")
