@@ -72,13 +72,13 @@
 | G | 邮件接入 | `monitor/mail/**` | A | 4 人日 |
 | H1 | 动作公共层 + 问候 + 求简历 | `monitor/client/monitor/actions/{common,greeting,request_resume}.py`、对应测试 | A、B | 3 人日 |
 | H2 | 搜索动作 | `monitor/client/monitor/actions/search.py`、对应测试 | A、B | 2 人日 |
-| H3 | 换联系方式 + 转发简历 | `monitor/client/monitor/actions/{contact_exchange,forward_resume}.py`、对应测试 | A、B、H1 合并、N 的写操作结论 | 2 人日 |
+| H3 | 换联系方式 | `monitor/client/monitor/actions/contact_exchange.py`、对应测试 | A、B、H1 合并、N 的写操作结论 | 1.5 人日 |
 | I1 | 控制台骨架、mock、总览、连接与策略 | `monitor/console/**`（除 I2 页面目录） | A（openapi.yaml） | 3 人日 |
 | I2 | 控制台候选人流程、执行记录、搜索页 | `monitor/console/src/pages/{cases,log,search}/**` | A、I1 合并 | 3 人日 |
 | J | 安装、模式、launchd、bootstrap、状态窗口 | `monitor/client/monitor/{install,bootstrap,statusbar}/**`、`monitor/launchd/**`、对应测试 | A、C、D2 合并 | 3–4 人日 |
 | K | 登录接力 | `monitor/client/monitor/login/**`、对应测试 | A、B、C、D2 合并 | 2–3 人日 |
 | M | 集成、混沌测试、运维手册 | `monitor/integration/**`、`monitor/scripts/**`、`docs/monitor/runbook.md` | C、D1、D2、E、F1–F3、G、H1–H3、J、K | 4 人日 |
-| A3 | 契约 0.3.0：简历路线 | `monitor/contracts/**`、`monitor/fixtures/schema/**`、`docs/monitor/{contracts,api}.md` | A2 合并 | 1 人日 |
+| A3 | 契约 0.3.0：邮箱路线与搜索收敛 | `monitor/contracts/**`、`monitor/fixtures/schema/**`、`docs/monitor/{contracts,api}.md` | A2 合并 | 1 人日 |
 | R | 品牌化简历渲染 | `monitor/branding/**`（服务端工作区成员 monitor-branding） | A3、G；用户提供模板与 logo；N 实测邮件格式 | 3–4 人日 |
 | N | 写操作验证与真机验收（监督者 + 用户授权） | `docs/monitor/capabilities.md` 写操作部分、`docs/monitor/acceptance.md` | B；用户授权 | 3–5 人日 |
 
@@ -198,15 +198,9 @@
 
 验收：过期二维码接口返回 410；查看记录可查询；搜索快照 `unreadable` 与 `empty_confirmed` 分别可查。
 
-### G 邮件接入
+### G 邮件接入（邮箱即队列 + 消费 + 归档 + 核对）
 
-目标：邮箱到 `resume_documents`，调用 A 规定的服务端接口。
-
-范围：IMAP 增量（UID 游标持久化）与邮箱 API 适配器接口；去重（Message-ID + 附件 sha256）；原始 .eml 与附件存本地目录（接口可换对象存储）；pypdf 文本提取与"疑似扫描版"判定；关联策略（邮件可靠标识 → 转发记录 → 账户+岗位+姓名 → 人工队列）；写入服务端；重放安全。测试用本地合成邮箱（如 `aiosmtpd`/本地 IMAP 测试服务器或 .eml 夹具目录）。
-
-不做：OCR；服务端表结构。
-
-验收：合成邮件夹具（重复、两份附件、无法关联、扫描版）全部按预期；重放不重复入库；歧义进入人工队列。
+目标：方案 8.2 第 1–7 条。范围：IMAP 适配器（UIDVALIDITY + UID 游标、MOVE 扩展，不支持 MOVE 时 COPY + 标记删除 + EXPUNGE 仅限本消息）与企业邮箱 API 适配器接口；BOSS 发件人白名单；先写原件与 `mail_messages` 记录再入队；任务队列接口（默认实现为数据库任务表，可替换为现有 MQ）；消费者（解析、去重、关联、写服务端、事务提交后再移动邮件）；失败重试与 `Failed` 文件夹；`NeedsReview` 人工队列；保留期清理任务；核对任务（方案 8.2 第 5 条全部检查项）。测试用本地 IMAP 测试服务器或 .eml 夹具目录模拟邮箱文件夹，覆盖：重复投递、提交后移动前崩溃、两份附件、非 BOSS 邮件、无法关联、扫描版 PDF、核对发现 INBOX 积压与原件缺失。不做：OCR；删除邮件（只移动）。依赖：A3、F1（服务端接口）；N 提供真实邮件样本（脱敏）后补关联规则。
 
 ### H1 动作公共层 + 问候 + 求简历
 
@@ -224,13 +218,9 @@
 
 验收：三种 coverage 各有夹具测试；`unreadable` 时 items 为空且 status 不是 succeeded-with-empty。
 
-### H3 换联系方式 + 转发简历
+### H3 换联系方式
 
-目标：`request_contact_exchange`（第一版只电话）与 `forward_resume`。
-
-范围：读取当前交换状态并按方案 8.3 分支；点击、验证请求已发出；`forward_resume` 按 N 的结论实现到指定邮箱或返回 `unsupported`。
-
-验收：三种初始状态各有测试；`unsupported` 路径不调用写方法。
+目标：`request_contact_exchange`（第一版只电话）。范围：读取当前交换状态并按方案 8.3 分支；点击、验证请求已发出。转发简历不在 v1（用户 2026-10-04 决定简历由 BOSS 自动发到公司邮箱）。验收：三种初始状态各有测试。
 
 ### I1 控制台骨架、mock、总览、连接与策略
 
@@ -272,9 +262,15 @@
 
 验收：集成与混沌一键通过；混沌场景下 FakeDriver 写操作计数与预期完全一致；手册按步骤能在干净账户完成绑定（监督者执行）。
 
-### A3 契约 0.3.0：简历路线
+### A3 契约 0.3.0：邮箱路线与搜索收敛
 
-用户 2026-10-04 决定：简历默认"直接转发在线简历到邮箱"，原"求简历 → 等附件"保留为可选路线。变更：`forward_resume.payload.source: online_resume | attachment`（必填；`attachment_hint` 只在 attachment 时允许；不再依赖 `attachment_available`）；policy 增加 `resume_route: forward_online | request_attachment`（默认 forward_online）、`resume_mailbox`、`forward_mail_timeout_minutes`（默认 120）；case 状态机增加 `resume_forwarded`（new_application/greeted → resume_forwarded → resume_linked，另可 → needs_human / closed）；`resume_document` 增加 `variant: original | branded` 与 `derived_from`；openapi 补 F1 报告列出的缺失 401/422。
+用户 2026-10-04 二次决定：简历走"求简历 → 候选人同意 → BOSS 自动发到公司邮箱"，Monitor 不转发；搜索页不能发起问候。变更：
+1. `forward_resume` 从 v1 的 action 枚举中移除（及其 payload、output、硬上限、策略项），在 contracts.md 记为"v1 不支持，保留名字以后再用"。
+2. policy 增加 `company_mailbox`（只读展示用，邮箱地址）与 `resume_mail_timeout_days`（默认 3，求简历成功后超过该天数未收到邮件进入提醒）。不加 resume_route。
+3. case 状态机：`resume_requested → resume_linked`（邮件到达并唯一关联）为主路径；保留 `resume_received`（界面看到附件）为可选观察；`resume_requested → needs_human`（超时或关联歧义）。不加 resume_forwarded。
+4. `resume_document` 增加 `variant: original | branded`、`derived_from`、`mail_message_id`；新增 `mail_messages` 的 API 形状（状态 pending / processed / needs_review / failed / ignored，供核对与控制台展示）与 `POST /mail-verifications`（核对结果）。
+5. 确认 send_greeting 的目标只能是会话（v1 无搜索结果目标），在文档写明。
+6. openapi 补 F1 报告列出的缺失 401/422。
 
 ### R 品牌化简历渲染
 
