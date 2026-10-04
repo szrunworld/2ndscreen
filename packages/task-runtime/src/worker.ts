@@ -8,19 +8,25 @@
 
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ensureDaemon } from './daemon.ts';
+import { DAEMON_DEFAULTS, ensureDaemon } from './daemon.ts';
 import { openTaskStore } from './store.ts';
 import { resolveConfig, startWorker, workerCommand } from './bootstrap.ts';
 
 const IDLE_MS = Number(process.env.SECONDSCREEN_WORKER_IDLE_MS) > 0 ? Number(process.env.SECONDSCREEN_WORKER_IDLE_MS) : 10 * 60_000;
-/** A worker that cannot own the ledger this long is a duplicate. */
-const STANDBY_MS = 30_000;
+/**
+ * A worker that cannot own the ledger this long is a duplicate. Longer than
+ * the daemon lease, so a standby started after a crash outlasts the dead
+ * owner's lease and takes over.
+ */
+const STANDBY_MS = 2 * DAEMON_DEFAULTS.leaseTtlMs + 5_000;
 const CHECK_MS = Math.min(5_000, IDLE_MS);
 
 const log = (line: string) => process.stderr.write(`${new Date().toISOString()} worker ${process.pid}: ${line}\n`);
 const config = resolveConfig(dirname(fileURLToPath(import.meta.url)));
 const worker = await startWorker(config);
 log(`started; ledger ${config.paths.dbPath}`);
+if (worker.registry.current.pgid !== process.pid)
+  log(`not leading its own process group (${worker.registry.current.pgid}): if it dies mid-task, that task stays blocked until resolved by hand`);
 
 let leaving = false;
 async function leave(why: string, code = 0): Promise<void> {

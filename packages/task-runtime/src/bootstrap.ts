@@ -25,12 +25,12 @@ import {
   type TaskStore,
   type WindowProfile,
 } from './contracts.ts';
-import { ActorRegistry, pruneClosedRecords, verifyWorkerStopped } from './actors.ts';
+import { ActorRegistry, liveWorkers, pruneClosedRecords, verifyWorkerStopped } from './actors.ts';
 import { createAgentBridge, createLineProcessSpawner } from './adapters/agent-bridge.ts';
 import { createLocalVision, type LocalVisionClient } from './adapters/local-vision.ts';
 import { createCommandRunner, createSecondScreenAdapter } from './adapters/second-screen.ts';
 import { createArtifactStore } from './artifacts.ts';
-import { DAEMON_DEFAULTS, createTaskDaemon, ensureDaemon, type TaskDaemon } from './daemon.ts';
+import { createTaskDaemon, daemonOwnerPid, ensureDaemon, spawnDetachedWorker, type TaskDaemon } from './daemon.ts';
 import { createLearner } from './learning.ts';
 import { createProcedureEngine } from './procedures.ts';
 import { createRecovery } from './recovery.ts';
@@ -227,8 +227,14 @@ export const SPAWN_LOCK_SCOPE = '2ndscreen.task-spawn:*';
 
 /**
  * Makes sure a worker owns the ledger, starting one when none does. Command
- * lines that race take turns through a short lease: the first starts the
- * worker and waits until it holds the daemon lease; the next then finds it.
+ * lines that race take turns through a short lease, so they start one worker
+ * between them: the first starts it and waits until it holds the daemon
+ * lease; the next finds it.
+ *
+ * After a crash the daemon lease names a worker that is gone, and nobody can
+ * take it over until it runs out. Then a standby worker is started without
+ * waiting: it takes the lease once it expires, and unless some worker is
+ * already alive (a live, unclosed actor record), in which case that one will.
  */
 async function ensureWorker(store: TaskStore, config: RuntimeConfig): Promise<{ started: boolean; pid?: number }> {
   const readyTimeoutMs = 10_000;
@@ -243,8 +249,20 @@ async function ensureWorker(store: TaskStore, config: RuntimeConfig): Promise<{ 
       continue;
     }
     try {
-      const result = await ensureDaemon(store, workerCommand(config), { readyTimeoutMs });
-      return result.started ? { started: true, pid: result.pid } : { started: false };
+      const live = liveWorkers(config.paths.actorsDir);
+      const owner = await daemonOwnerPid(store);
+      if (owner !== undefined && live.some((w) => w.pid === owner)) return { started: false };
+      if (live.length > 0) return { started: false }; // starting, or waiting to take over: it will own the ledger
+      if (owner === undefined) {
+        const result = await ensureDaemon(store, workerCommand(config), { readyTimeoutMs });
+        return result.started ? { started: true, pid: result.pid } : { started: false };
+      }
+      // The lease names a worker that is not running: start the one that takes over once it expires.
+      const pid = await spawnDetachedWorker(workerCommand(config));
+      // Hold the turn until its record shows, so the next command line sees it.
+      for (const until = Date.now() + 5_000; Date.now() < until && !liveWorkers(config.paths.actorsDir).some((w) => w.pid === pid); )
+        await new Promise((r) => setTimeout(r, 50));
+      return { started: true, pid };
     } finally {
       await store.releaseLease(lock.leaseId).catch(() => undefined);
     }
@@ -291,13 +309,15 @@ export async function startWorker(config: RuntimeConfig, options: WorkerOptions 
   // Recorded before the daemon can start a task: every actor of this worker is on file.
   const registry = ActorRegistry.create(config.paths.actorsDir);
   const spawn = registry.wrap(options.spawn ?? createLineProcessSpawner());
+  const stopHeartbeat = registry.startHeartbeat();
 
   const vision: LocalVisionClient = createLocalVision({ helper: config.cli, spawn });
   const adapter = createSecondScreenAdapter({
     cli: config.cli,
     socket: config.socket,
     ...(config.app ? { app: config.app } : {}),
-    run: createCommandRunner(),
+    // Every 2ndscreen command leads its own group: announced in the actor record while it runs.
+    run: registry.wrapRunner(createCommandRunner()),
     screenshotDir,
   });
   const hub = createTelemetryHub();
@@ -360,6 +380,7 @@ export async function startWorker(config: RuntimeConfig, options: WorkerOptions 
       closing ??= (async () => {
         await daemon.shutdown();
         await vision.close();
+        stopHeartbeat();
         registry.close();
         await store.close();
         rmSync(screenshotDir, { recursive: true, force: true });

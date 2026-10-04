@@ -11,6 +11,13 @@
 // the announcement, so a worker killed at any point leaves either the group
 // or an unfinished spawn on record — never a child nobody knows about.
 //
+// The 2ndscreen commands of A1's CommandRunner also lead groups of their
+// own (detached). Each is announced in the record while it runs. Their
+// pids are not known here, so they are never signalled: after a crash the
+// verifier only waits until no orphaned group leader of that program,
+// started within the worker's lifetime (from the announcement to the
+// record's last heartbeat), is left running.
+//
 // verifyWorkerStopped() answers whether every actor of a dead worker is gone.
 // It is conservative: a group counts as gone only when no process is in it,
 // or when its id now leads a process started after the recorded group had to
@@ -21,10 +28,10 @@
 // the answer is "not stopped". Anything it cannot read is "not stopped" too.
 
 import { execFileSync } from 'node:child_process';
-import { closeSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeSync } from 'node:fs';
+import { closeSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
-import type { LineProcessSpawner } from './contracts.ts';
-import { processStartTime, type ActorExitVerdict, type WorkerRecord } from './daemon.ts';
+import type { CommandRunner, LineProcessSpawner } from './contracts.ts';
+import { processIdentity, processStartTime, type ActorExitVerdict, type WorkerRecord } from './daemon.ts';
 
 export const ACTOR_RECORD_VERSION = 1;
 
@@ -39,6 +46,16 @@ export interface ActorGroup {
   file: string;
 }
 
+export interface ActorCommand {
+  id: number;
+  file: string;
+  /** Clock reading just before the command was started. */
+  startedAfterMs: number;
+}
+
+/** The record's mtime is refreshed this often while the worker lives. */
+export const HEARTBEAT_MS = 2_000;
+
 export interface ActorRecord {
   v: typeof ACTOR_RECORD_VERSION;
   /** The worker. */
@@ -50,6 +67,8 @@ export interface ActorRecord {
   /** Spawns announced whose outcome is not written yet. Non-zero after a crash means: cannot prove. */
   pendingSpawns: number;
   groups: ActorGroup[];
+  /** Commands under way (CommandRunner), by when they were announced; their pids are unknown. */
+  commands: ActorCommand[];
   /** Written at a clean exit, once every spawned group was confirmed gone. */
   closedAt?: string;
 }
@@ -63,6 +82,12 @@ export interface ProcessProbe {
   /** The process group of `pid`; undefined when it cannot be read. */
   groupOf(pid: number): number | undefined;
   killGroup(pgid: number, signal: 'SIGTERM' | 'SIGKILL'): void;
+  /**
+   * Running processes of program `file` (as started: argv[0]) that lead
+   * their own group and were left to launchd (ppid 1), started in
+   * [fromMs, toMs]; undefined when the process list cannot be read.
+   */
+  orphanLeaders(file: string, fromMs: number, toMs: number): number[] | undefined;
   sleep(ms: number): Promise<void>;
 }
 
@@ -113,6 +138,27 @@ export const systemProbe: ProcessProbe = {
       // Gone already; the caller looks again.
     }
   },
+  orphanLeaders(file, fromMs, toMs) {
+    let out: string;
+    try {
+      // Numbers, start times and argv[0] only: no arguments, no environment.
+      out = execFileSync('/bin/ps', ['-axo', 'pid=,ppid=,pgid=,lstart=,comm='], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' }, timeout: 5_000, stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 16 << 20 });
+    } catch {
+      return undefined;
+    }
+    const found: number[] = [];
+    for (const line of out.split('\n')) {
+      if (line.trim() === '') continue;
+      const m = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\w{3}\s+\w{3}\s+\d+\s+[\d:]+\s+\d{4})\s(.*)$/.exec(line);
+      if (!m) return undefined;
+      const [pid, ppid, pgid] = [Number(m[1]), Number(m[2]), Number(m[3])];
+      const start = Date.parse(m[4]!);
+      if (Number.isNaN(start)) return undefined;
+      // ps truncates to seconds: the true start is in [start, start + 1000).
+      if (m[5]!.trim() === file && ppid === 1 && pgid === pid && start + 1000 > fromMs && start <= toMs) found.push(pid);
+    }
+    return found;
+  },
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 };
 
@@ -145,7 +191,9 @@ function readRecord(path: string): ActorRecord {
     Number.isSafeInteger(raw.pendingSpawns) &&
     raw.pendingSpawns >= 0 &&
     Array.isArray(raw.groups) &&
-    raw.groups.every((g) => pidLike(g?.pgid) && Number.isSafeInteger(g.spawnedAfterMs) && Number.isSafeInteger(g.spawnedBeforeMs) && g.spawnedAfterMs <= g.spawnedBeforeMs);
+    raw.groups.every((g) => pidLike(g?.pgid) && Number.isSafeInteger(g.spawnedAfterMs) && Number.isSafeInteger(g.spawnedBeforeMs) && g.spawnedAfterMs <= g.spawnedBeforeMs) &&
+    Array.isArray(raw.commands) &&
+    raw.commands.every((c) => Number.isSafeInteger(c?.id) && Number.isSafeInteger(c.startedAfterMs) && typeof c.file === 'string');
   if (!ok) throw new Error(`actor record ${path} is malformed`);
   return raw;
 }
@@ -156,6 +204,7 @@ export class ActorRegistry {
   private record: ActorRecord;
   /** Set once the record could not be kept current: from then on nothing is spawned. */
   private broken: Error | undefined;
+  private commandIds = 0;
 
   private constructor(path: string, record: ActorRecord) {
     this.path = path;
@@ -171,7 +220,7 @@ export class ActorRegistry {
     const pgid = probe.groupOf(pid);
     if (pgid === undefined) throw new Error(`cannot read this process's group (pid ${pid})`);
     mkdirSync(dir, { recursive: true, mode: 0o700 });
-    const record: ActorRecord = { v: ACTOR_RECORD_VERSION, pid, pgid, startedAt, pendingSpawns: 0, groups: [] };
+    const record: ActorRecord = { v: ACTOR_RECORD_VERSION, pid, pgid, startedAt, pendingSpawns: 0, groups: [], commands: [] };
     const path = join(dir, recordName(pid, startedAt));
     writeRecord(path, record);
     return new ActorRegistry(path, record);
@@ -220,9 +269,41 @@ export class ActorRegistry {
     };
   }
 
+  /**
+   * A command runner that keeps each command announced in the record while
+   * it runs. The runner settles only once its child has exited, so a
+   * command still announced after a crash may still be running.
+   */
+  wrapRunner(run: CommandRunner, now: () => number = Date.now): CommandRunner {
+    return async (file, args, options) => {
+      if (this.broken) throw new Error(`not running ${file}: the actor record cannot be kept (${this.broken.message})`);
+      const command: ActorCommand = { id: ++this.commandIds, file, startedAfterMs: now() };
+      this.update((r) => ({ ...r, commands: [...r.commands, command] }));
+      try {
+        return await run(file, args, options);
+      } finally {
+        this.tryUpdate((r) => ({ ...r, commands: r.commands.filter((c) => c.id !== command.id) }));
+      }
+    };
+  }
+
+  /** Refreshes the record's mtime while the worker lives, bounding when it can have started anything. */
+  startHeartbeat(): () => void {
+    const timer = setInterval(() => {
+      try {
+        const at = new Date();
+        utimesSync(this.path, at, at);
+      } catch (error) {
+        this.broken ??= error instanceof Error ? error : new Error(String(error));
+      }
+    }, HEARTBEAT_MS);
+    timer.unref();
+    return () => clearInterval(timer);
+  }
+
   /** At a clean exit, after every child was reaped: nothing spawned by this worker acts any more. */
   close(): void {
-    if (this.record.groups.length > 0 || this.record.pendingSpawns > 0 || this.broken) return;
+    if (this.record.groups.length > 0 || this.record.commands.length > 0 || this.record.pendingSpawns > 0 || this.broken) return;
     this.tryUpdate((r) => ({ ...r, closedAt: new Date().toISOString() }));
   }
 
@@ -303,6 +384,25 @@ export async function verifyWorkerStopped(
   if (own !== 'gone') return { stopped: false, reason: `worker group ${record.pgid} is ${own === 'alive' ? 'not empty' : 'unreadable'}; waiting for its commands to end` };
   evidence.push(`worker group ${record.pgid} empty`);
 
+  // Commands that were under way: never signalled, only waited out.
+  if (record.commands.length > 0) {
+    let lastAliveMs: number;
+    try {
+      lastAliveMs = statSync(found.path).mtimeMs + 2 * HEARTBEAT_MS;
+    } catch (error) {
+      return { stopped: false, reason: `cannot read the actor record's heartbeat: ${(error as Error).message}` };
+    }
+    const left: number[] = [];
+    for (const file of new Set(record.commands.map((c) => c.file))) {
+      const fromMs = Math.min(...record.commands.filter((c) => c.file === file).map((c) => c.startedAfterMs));
+      const found = probe.orphanLeaders(file, fromMs, lastAliveMs);
+      if (found === undefined) return { stopped: false, reason: 'cannot list processes to look for its commands' };
+      left.push(...found);
+    }
+    if (left.length > 0) return { stopped: false, reason: `${record.commands.length} command(s) were under way; orphaned processes from that time still run (pid ${left.join(', ')})` };
+    evidence.push(`no orphaned process from its ${record.commands.length} unfinished command(s) runs`);
+  }
+
   for (const group of record.groups) {
     if (options.signal?.aborted) return { stopped: false, reason: 'verification was cancelled' };
     const verdict = await stopGroup(group, probe, killGraceMs);
@@ -362,4 +462,25 @@ export function pruneClosedRecords(dir: string, olderThanMs: number, now: number
       // Unreadable records stay: they may be all that proves an actor exists.
     }
   }
+}
+
+/** Workers with a record that are running now (same pid and start) and have not closed. */
+export function liveWorkers(dir: string): ActorRecord[] {
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return [];
+  }
+  const live: ActorRecord[] = [];
+  for (const name of names) {
+    if (!/^\d+-\d+\.json$/.test(name)) continue;
+    try {
+      const record = readRecord(join(dir, name));
+      if (!record.closedAt && processIdentity(record.pid, record.startedAt) === 'alive') live.push(record);
+    } catch {
+      // Not a live worker we can identify.
+    }
+  }
+  return live;
 }

@@ -24,8 +24,9 @@ const iso = (ms: number) => new Date(ms).toISOString();
 const WORKER_START = iso(Date.parse('2026-10-04T10:00:00Z'));
 
 /** A probe over a made-up process table: pid -> start, and groups with members. */
-function fakeProbe(starts: Map<number, string>, groups: Map<number, 'alive' | 'gone' | 'unknown'>, killed: number[] = []): ProcessProbe {
+function fakeProbe(starts: Map<number, string>, groups: Map<number, 'alive' | 'gone' | 'unknown'>, killed: number[] = [], orphans: number[] | undefined = []): ProcessProbe {
   return {
+    orphanLeaders: () => orphans,
     startedAt: (pid) => starts.get(pid),
     group: (pgid) => groups.get(pgid) ?? 'gone',
     groupOf: (pid) => pid,
@@ -41,7 +42,7 @@ function fakeProbe(starts: Map<number, string>, groups: Map<number, 'alive' | 'g
 function writeRecord(d: string, record: ActorRecord): void {
   writeFileSync(join(d, `${record.pid}-${Date.parse(record.startedAt)}.json`), JSON.stringify(record));
 }
-const base = (over: Partial<ActorRecord> = {}): ActorRecord => ({ v: 1, pid: 500, pgid: 500, startedAt: WORKER_START, pendingSpawns: 0, groups: [], ...over });
+const base = (over: Partial<ActorRecord> = {}): ActorRecord => ({ v: 1, pid: 500, pgid: 500, startedAt: WORKER_START, pendingSpawns: 0, groups: [], commands: [], ...over });
 const worker = { ownerPid: 500, processStartedAt: WORKER_START };
 const helper = (pgid: number, at: number) => ({ pgid, spawnedAfterMs: at, spawnedBeforeMs: at + 30, file: '2ndscreen' });
 const reason = (v: { stopped: boolean }) => (v as unknown as { reason: string }).reason;
@@ -172,6 +173,33 @@ test('a group that cannot be tied to the record is left alone', async () => {
     assert.match(stopped ? (verdict as { evidence: string }).evidence : reason(verdict), text);
     assert.deepEqual(killed, [], 'nothing unidentified is signalled');
   }
+});
+
+test('commands under way at a crash are waited out, never signalled', async () => {
+  const d = dir();
+  writeRecord(d, base({ commands: [{ id: 1, file: '2ndscreen', startedAfterMs: Date.parse('2026-10-04T10:06:00Z') }] }));
+  const killed: number[] = [];
+  assert.match(reason(await verifyWorkerStopped(d, worker, { probe: fakeProbe(new Map(), new Map(), killed, [912]) })), /still run \(pid 912\)/);
+  assert.match(reason(await verifyWorkerStopped(d, worker, { probe: { ...fakeProbe(new Map(), new Map(), killed), orphanLeaders: () => undefined } })), /cannot list processes/);
+  assert.deepEqual(killed, []);
+  const ok = await verifyWorkerStopped(d, worker, { probe: fakeProbe(new Map(), new Map(), killed, []) });
+  assert.equal(ok.stopped, true);
+  assert.match((ok as { evidence: string }).evidence, /no orphaned process from its 1 unfinished command/);
+});
+
+test('the runner wrapper announces a command while it runs, through success and failure', async () => {
+  const registry = ActorRegistry.create(dir());
+  const seen: number[] = [];
+  const run = registry.wrapRunner(async (file) => {
+    seen.push(registry.current.commands.length);
+    if (file === 'bad') throw new Error('failed');
+    return { code: 0, stdout: '', stderr: '' };
+  });
+  await run('good', [], { timeoutMs: 1000 });
+  await assert.rejects(run('bad', [], { timeoutMs: 1000 }));
+  assert.deepEqual(seen, [1, 1]);
+  assert.deepEqual(registry.current.commands, []);
+  assert.deepEqual((JSON.parse(readFileSync(registry.path, 'utf8')) as ActorRecord).commands, []);
 });
 
 test('closed records are pruned after a while; findRecord matches pid and exact start', () => {
