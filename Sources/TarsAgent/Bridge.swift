@@ -248,11 +248,18 @@ public final class ExplorationBridge {
         options.foreground = false
         // Procedures belong to the runtime; the bridge only proposes one.
         options.procedures = nil
+        // The agent's own guard holds clicks on these too, before the bridge's.
+        options.submitLabels = Self.submitControls
         options.isCancelled = { [unowned self] in self.shouldStop() }
         let agent = TarsAgent(screen: RecordingScreen(self, screen), model: BudgetedModel(self, model),
-                              options: options) { [log] event in log(TarsAgent.describe(event)) }
+                              options: options) { [unowned self] event in
+            if case .thought(let thought, _) = event { self.lastThought = thought }
+            self.log(TarsAgent.describe(event))
+        }
         let result = agent.run(request.instruction)
 
+        // A finish that comes after the deadline is a timeout, not a success.
+        _ = shouldStop()
         if let (failure, message) = locked({ stop }) { return end(failure, message) }
         if let held = result.held {
             return end(.forbiddenEffect, "stopped before \(TarsAgent.describe(held)): \(result.reason)")
@@ -350,6 +357,11 @@ public final class ExplorationBridge {
     func shouldStop() -> Bool {
         lock.lock()
         defer { lock.unlock() }
+        return stoppingLocked()
+    }
+
+    /// `shouldStop` for a caller holding the lock.
+    private func stoppingLocked() -> Bool {
         if stop == nil, now() >= deadline {
             stop = (.timeout, "the unit ran past its \(request.timeoutMs) ms")
         }
@@ -407,12 +419,67 @@ public final class ExplorationBridge {
         }
     }
 
+    /// Labels of controls that send something to the other side on BOSS直聘
+    /// and chat apps: a greeting, a resume request, an exchange, or the
+    /// confirmation of one. Matched anywhere in a label, so it errs on refusing.
+    static let submitControls = try! NSRegularExpression(
+        pattern: #"发送|發送|打招呼|索取|请求简历|求简历|交换|立即沟通|继续沟通|提交|确认|确定|同意|\bsend\b|\bsubmit\b|\bconfirm\b"#,
+        options: .caseInsensitive)
+    /// What the model's next-action sentence says when a click would send.
+    static let submitIntent = try! NSRegularExpression(
+        pattern: #"发送|發送|打招呼|索取|请求简历|求简历|交换|立即沟通|提交|\bsend\b|\bsubmit\b"#,
+        options: .caseInsensitive)
+    /// Text that marks a dialog about sending a request, where any yes sends it.
+    static let requestDialog = try! NSRegularExpression(
+        pattern: #"索取|请求简历|求简历|交换(微信|电话|简历)|打招呼"#, options: .caseInsensitive)
+    static let yes = try! NSRegularExpression(pattern: #"^\s*(确认|确定|同意|是|好的?|ok|yes)\s*$"#,
+                                              options: .caseInsensitive)
+
+    /// The model's last thought, whose closing sentence names the action it takes.
+    private var lastThought = ""
+
+    /// Why a click would send something, judged from the app's elements as
+    /// the agent last read them and from what the model said it is doing;
+    /// nil when nothing suggests it.
+    func submitReason(_ click: InputAction, element: AXElementInfo?) -> String? {
+        func text(_ element: AXElementInfo) -> [String] {
+            [element.label, element.value].compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        }
+        func isField(_ element: AXElementInfo) -> Bool { AXActions.isText(element) }
+        let point = click.point ?? element?.center
+        // The element named, and every element under the point: a button's
+        // label may sit on its group or its text rather than on itself.
+        var hit = element.map { [$0] } ?? []
+        if let point {
+            hit += elements.filter { TarsAgent.contains($0.frame, point) && !isField($0) }
+        }
+        if let control = hit.first(where: { text($0).contains { TarsAgent.matches(Self.submitControls, $0) } }) {
+            return "a click on \"\(text(control).first ?? control.role)\", which sends or confirms"
+        }
+        if hit.contains(where: { text($0).contains { TarsAgent.matches(Self.yes, $0) } }),
+           elements.contains(where: { text($0).contains { TarsAgent.matches(Self.requestDialog, $0) } }) {
+            return "a yes in a dialog about sending a request"
+        }
+        let intoField = element.map(isField) ?? false
+            || (point.map { p in elements.contains { isField($0) && TarsAgent.contains($0.frame, p) } } ?? false)
+        if !intoField, TarsAgent.matches(Self.submitIntent, TarsAgent.nextActionSentence(lastThought)) {
+            return "a click the model describes as sending"
+        }
+        return nil
+    }
+
     /// Send one action, once, and record it. Refused actions never reach the app.
     func perform(_ action: InputAction, on inner: AgentScreen) throws -> ControlResponse {
         guard let effect = Self.effect(of: action), effect != "external-submit" else {
             let what = TarsAgent.describe(action)
             halt(.forbiddenEffect, "the agent tried \(what), which would submit or needs the real pointer")
             return .failure("refused: \(what)")
+        }
+        let element = action.index.flatMap { index in elements.first { $0.index == index } }
+        if action.kind == .click, let why = submitReason(action, element: element) {
+            halt(.forbiddenEffect, "refused \(why)")
+            return .failure("refused: \(why)")
         }
         guard request.allowedEffects.contains(effect) else {
             halt(.forbiddenEffect, "\(TarsAgent.describe(action)) is a \(effect) action; unit \(request.unitName) allows \(request.allowedEffects.joined(separator: ", "))")
@@ -422,7 +489,6 @@ public final class ExplorationBridge {
             halt(.error, "the bound window is gone")
             return .failure("the bound window is gone")
         }
-        let element = action.index.flatMap { index in elements.first { $0.index == index } }
         guard let shape = Self.shape(action, effect: effect, element: element, in: window.frame) else {
             // A point off the bound window would land on something else.
             log("refused \(TarsAgent.describe(action)): outside window \(window.windowId)")
@@ -430,7 +496,8 @@ public final class ExplorationBridge {
         }
 
         lock.lock()
-        if stop != nil {
+        // Checked last, with the deadline, so no input goes out after either.
+        if stoppingLocked() {
             lock.unlock()
             return .failure("refused: the run is stopping")
         }

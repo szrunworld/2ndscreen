@@ -197,6 +197,60 @@ private final class Harness {
         #expect(harness.last["reason"] as? String == "forbidden_effect")
     }
 
+    @Test func bossControlsThatSendAreRefusedByElementPointOrDialog() {
+        let greet = AXElementInfo(index: 5, role: "AXButton", label: "打招呼", frame: CGRect(x: 4000, y: 700, width: 120, height: 40))
+        let askFor = AXElementInfo(index: 6, role: "AXGroup", label: "索取简历", frame: CGRect(x: 3500, y: 300, width: 160, height: 40))
+        let question = AXElementInfo(index: 7, role: "AXStaticText", value: "确定向牛人索取简历吗？", frame: CGRect(x: 3500, y: 380, width: 300, height: 20))
+        let okay = AXElementInfo(index: 8, role: "AXButton", label: "好的", frame: CGRect(x: 3700, y: 420, width: 80, height: 30))
+        let cases: [(elements: [AXElementInfo], reply: String)] = [
+            // By the element the model named.
+            ([greet], "Thought: 打开候选人\nAction: click(element='5')"),
+            // By a bare point that lands on a request control.
+            ([askFor], "Thought: 查看\nAction: click(start_box='[421, 359, 421, 359]')"),
+            // The yes of a request dialog, though "好的" alone sends nothing.
+            ([question, okay], "Thought: 关闭弹窗\nAction: click(element='8')"),
+            // An app that lists nothing: the model's own words.
+            ([], "Thought: 页面已打开。点击打招呼按钮。\nAction: click(start_box='[500, 500, 500, 500]')"),
+        ]
+        for (elements, reply) in cases {
+            let harness = Harness(request(), model: Script([reply]))
+            harness.screen.elementList = elements
+            #expect(harness.bridge.run() == 1, "\(reply)")
+            #expect(harness.screen.performed.isEmpty, "\(reply)")
+            #expect(harness.of("action_started").isEmpty)
+            #expect(harness.last["reason"] as? String == "forbidden_effect", "\(reply)")
+        }
+    }
+
+    @Test func aPlainClickNextToARequestControlStillGoes() {
+        let askFor = AXElementInfo(index: 6, role: "AXButton", label: "索取简历", frame: CGRect(x: 3500, y: 300, width: 160, height: 40))
+        let harness = Harness(request(), model: Script([
+            "Thought: 打开在线简历\nAction: click(start_box='[700, 700, 700, 700]')",
+            "Thought: 好了\nAction: finished(content='ok')",
+        ]))
+        harness.screen.elementList = [askFor]
+        #expect(harness.bridge.run() == 0)
+        #expect(harness.screen.performed.count == 1)
+    }
+
+    @Test func noInputAfterTheDeadline() {
+        let model = Script(["Thought: 点\nAction: click(start_box='[500, 500, 500, 500]')"])
+        let harness = Harness(request(budget: ["timeoutMs": 1000]), model: model)
+        // The reply arrives after the deadline: its click must not go out.
+        model.before = { [unowned harness] in harness.clock.addTimeInterval(2) }
+        #expect(harness.bridge.run() == 1)
+        #expect(harness.screen.performed.isEmpty)
+        #expect(harness.last["reason"] as? String == "timeout")
+    }
+
+    @Test func aFinishAfterTheDeadlineIsATimeout() {
+        let model = Script(["Thought: 好了\nAction: finished(content='done')"])
+        let harness = Harness(request(budget: ["timeoutMs": 1000]), model: model)
+        model.before = { [unowned harness] in harness.clock.addTimeInterval(2) }
+        #expect(harness.bridge.run() == 1)
+        #expect(harness.of("unit_finished").isEmpty && harness.last["reason"] as? String == "timeout")
+    }
+
     @Test func aPointOffTheWindowIsNotSent() {
         // x 50/1000 of the screen is left of the window, which starts at 3000.
         let shape = ExplorationBridge.shape(InputAction(.click).at(2990, 400), effect: "navigation", element: nil, in: bridgeFrame)
