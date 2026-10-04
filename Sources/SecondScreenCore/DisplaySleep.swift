@@ -142,16 +142,23 @@ public final class DisplayWork {
     private let assertions: DisplaySleepAssertions
     private let sleepState: () -> DisplaySleep.State
     private let pollNanoseconds: UInt64
+    /// The clock and the pause between polls of the wait; tests drive both.
+    private let now: () -> Date
+    private let pause: (UInt64) async -> Void
 
     public init(configurator: DisplayConfigurator = .shared, waitLimit: TimeInterval = 2,
                 assertions: DisplaySleepAssertions = PowerManagementAssertions(),
                 sleepState: @escaping () -> DisplaySleep.State = DisplaySleep.stateNow,
-                pollNanoseconds: UInt64 = 50_000_000) {
+                pollNanoseconds: UInt64 = 50_000_000,
+                now: @escaping () -> Date = Date.init,
+                pause: @escaping (UInt64) async -> Void = { try? await Task.sleep(nanoseconds: $0) }) {
         self.configurator = configurator
         self.waitLimit = waitLimit
         self.assertions = assertions
         self.sleepState = sleepState
         self.pollNanoseconds = pollNanoseconds
+        self.now = now
+        self.pause = pause
     }
 
     private func sleepRefusal() -> Refusal? {
@@ -164,10 +171,10 @@ public final class DisplayWork {
 
     /// The outstanding configuration, once `waitLimit` has passed without it returning.
     private func stillPending() async -> DisplayConfigurator.Pending? {
-        let deadline = Date().addingTimeInterval(waitLimit)
+        let deadline = now().addingTimeInterval(waitLimit)
         while let pending = configurator.pending {
-            if Date() >= deadline { return pending }
-            try? await Task.sleep(nanoseconds: pollNanoseconds)
+            if now() >= deadline { return pending }
+            await pause(pollNanoseconds)
         }
         return nil
     }
