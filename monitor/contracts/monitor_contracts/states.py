@@ -1,4 +1,5 @@
-"""三层状态机：业务流程（服务端 case）、指令执行（Monitor command）、结果回传（delivery）。
+"""状态机：业务流程（服务端 case）、指令执行（Monitor command）、结果回传（delivery），
+以及公司邮箱邮件记录（mail，0.3.0，邮件接入 G 与服务端共用）。
 
 迁移表是唯一依据：D1 账本、F2 服务端状态机都必须调用这里的函数判断迁移，
 不得各自维护副本。自迁移（src == dst）一律不允许；重复操作的幂等由调用方处理。
@@ -13,7 +14,12 @@ from .errors import IllegalTransition
 
 
 class CaseStage(StrEnum):
-    """业务流程状态（方案第六节）。greeted 可选：问候关闭时直接 new_application → resume_requested。"""
+    """业务流程状态（方案第六节）。greeted 可选：问候关闭时直接 new_application → resume_requested。
+
+    简历主路径（0.3.0）：resume_requested → resume_linked（简历邮件到达公司邮箱并唯一关联）。
+    resume_received 只是可选观察（界面上看到附件），不是必经阶段。超时未收到邮件或关联歧义时
+    resume_requested → needs_human。
+    """
 
     NEW_APPLICATION = "new_application"
     GREETED = "greeted"
@@ -46,6 +52,16 @@ class DeliveryState(StrEnum):
     DELIVERED = "delivered"
 
 
+class MailState(StrEnum):
+    """公司邮箱邮件记录 mail_message.status（方案 8.2）。"""
+
+    PENDING = "pending"
+    PROCESSED = "processed"
+    NEEDS_REVIEW = "needs_review"
+    FAILED = "failed"
+    IGNORED = "ignored"
+
+
 _C = CaseStage
 # 中途任何阶段都可以转人工或关闭；needs_human 经人工处理后回到对应阶段。
 CASE_TRANSITIONS: Mapping[CaseStage, frozenset[CaseStage]] = {
@@ -53,7 +69,9 @@ CASE_TRANSITIONS: Mapping[CaseStage, frozenset[CaseStage]] = {
         {_C.GREETED, _C.RESUME_REQUESTED, _C.RESUME_RECEIVED, _C.CLOSED, _C.NEEDS_HUMAN}
     ),
     _C.GREETED: frozenset({_C.RESUME_REQUESTED, _C.RESUME_RECEIVED, _C.CLOSED, _C.NEEDS_HUMAN}),
-    _C.RESUME_REQUESTED: frozenset({_C.RESUME_RECEIVED, _C.RESUME_LINKED, _C.CLOSED, _C.NEEDS_HUMAN}),
+    # 主路径：邮件到达并唯一关联 → resume_linked；resume_received（界面看到附件）只是可选观察；
+    # 超过 policy.resume_mail_timeout_days 未收到邮件，或关联歧义 → needs_human。
+    _C.RESUME_REQUESTED: frozenset({_C.RESUME_LINKED, _C.RESUME_RECEIVED, _C.CLOSED, _C.NEEDS_HUMAN}),
     _C.RESUME_RECEIVED: frozenset({_C.RESUME_LINKED, _C.CLOSED, _C.NEEDS_HUMAN}),
     _C.RESUME_LINKED: frozenset({_C.CONTACT_REQUESTED, _C.CLOSED, _C.NEEDS_HUMAN}),
     _C.CONTACT_REQUESTED: frozenset({_C.CONTACT_AVAILABLE, _C.CLOSED, _C.NEEDS_HUMAN}),
@@ -98,9 +116,23 @@ DELIVERY_TRANSITIONS: Mapping[DeliveryState, frozenset[DeliveryState]] = {
     _D.DELIVERED: frozenset(),
 }
 
+_M = MailState
+MAIL_TRANSITIONS: Mapping[MailState, frozenset[MailState]] = {
+    # 消费结果：提交成功 processed；关联歧义或找不到流程 needs_review；
+    # 连续失败达到上限 failed；非 BOSS 发件人 ignored。未达上限的失败仍为 pending（attempts +1，不算迁移）。
+    _M.PENDING: frozenset({_M.PROCESSED, _M.NEEDS_REVIEW, _M.FAILED, _M.IGNORED}),
+    # 人工关联后
+    _M.NEEDS_REVIEW: frozenset({_M.PROCESSED}),
+    # 人工重试：重新入队
+    _M.FAILED: frozenset({_M.PENDING}),
+    _M.PROCESSED: frozenset(),
+    _M.IGNORED: frozenset(),
+}
+
 TERMINAL_CASE_STAGES = frozenset(s for s, nxt in CASE_TRANSITIONS.items() if not nxt)
 TERMINAL_COMMAND_STATES = frozenset(s for s, nxt in COMMAND_TRANSITIONS.items() if not nxt)
 TERMINAL_DELIVERY_STATES = frozenset(s for s, nxt in DELIVERY_TRANSITIONS.items() if not nxt)
+TERMINAL_MAIL_STATES = frozenset(s for s, nxt in MAIL_TRANSITIONS.items() if not nxt)
 
 # 有最终结果、需要回传的指令状态（与 command_result.status 枚举一致）
 RESULT_COMMAND_STATES = TERMINAL_COMMAND_STATES
@@ -131,15 +163,22 @@ def can_transition_delivery(src: str | DeliveryState, dst: str | DeliveryState) 
     return d in DELIVERY_TRANSITIONS[s]
 
 
+def can_transition_mail(src: str | MailState, dst: str | MailState) -> bool:
+    """邮件记录状态迁移是否合法。未知状态名抛 ValueError。同状态更新（如 attempts +1）不是迁移，由调用方处理。"""
+    s, d = _lookup(MailState, src, "mail"), _lookup(MailState, dst, "mail")
+    return d in MAIL_TRANSITIONS[s]
+
+
 _CHECKS = {
     "case": can_transition_case,
     "command": can_transition_command,
     "delivery": can_transition_delivery,
+    "mail": can_transition_mail,
 }
 
 
 def require_transition(layer: str, src: str, dst: str) -> None:
-    """不合法时抛 IllegalTransition；layer 为 case / command / delivery。"""
+    """不合法时抛 IllegalTransition；layer 为 case / command / delivery / mail。"""
     if layer not in _CHECKS:
         raise ValueError(f"未知的状态层: {layer!r}")
     if not _CHECKS[layer](src, dst):

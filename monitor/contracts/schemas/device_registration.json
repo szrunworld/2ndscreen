@@ -76,7 +76,6 @@
           "request_resume",
           "request_contact_exchange",
           "search_candidates",
-          "forward_resume",
           "provide_input",
           "login_relay"
         ]

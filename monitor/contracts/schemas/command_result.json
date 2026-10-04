@@ -103,9 +103,6 @@
           "$ref": "#/$defs/contact_output"
         },
         {
-          "$ref": "#/$defs/forward_output"
-        },
-        {
           "type": "null"
         }
       ],
@@ -372,58 +369,6 @@
       "if": {
         "properties": {
           "action": {
-            "const": "forward_resume"
-          }
-        },
-        "required": [
-          "action"
-        ]
-      },
-      "then": {
-        "properties": {
-          "output": {
-            "oneOf": [
-              {
-                "$ref": "#/$defs/forward_output"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "action": {
-            "const": "forward_resume"
-          },
-          "status": {
-            "const": "succeeded"
-          }
-        },
-        "required": [
-          "action",
-          "status"
-        ]
-      },
-      "then": {
-        "required": [
-          "output"
-        ],
-        "properties": {
-          "output": {
-            "$ref": "#/$defs/forward_output"
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "action": {
             "enum": [
               "send_greeting",
               "request_resume",
@@ -493,24 +438,6 @@
         },
         "exchange_state": {
           "$ref": "common.json#/$defs/exchange_state"
-        }
-      }
-    },
-    "forward_output": {
-      "type": "object",
-      "required": [
-        "destination",
-        "forwarded_at"
-      ],
-      "additionalProperties": false,
-      "properties": {
-        "destination": {
-          "type": "string",
-          "format": "email",
-          "maxLength": 254
-        },
-        "forwarded_at": {
-          "$ref": "common.json#/$defs/timestamp"
         }
       }
     }

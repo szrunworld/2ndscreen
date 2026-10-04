@@ -1,0 +1,49 @@
+{
+  "contract": "search_snapshot",
+  "description": "0.2.0 的 display_name / summary / stable_candidate_id 已删除",
+  "data": {
+    "search_id": "s_42",
+    "query": "golang 后端",
+    "scope": "current_page",
+    "coverage": "partial",
+    "items": [
+      {
+        "result_ref": "s_42:item_1",
+        "display_name": "候选人C",
+        "summary": "5年 Go 经验",
+        "stable_candidate_id": null
+      },
+      {
+        "result_ref": "s_42:item_2",
+        "position": 2,
+        "masked_name": "李**",
+        "fields": [
+          {
+            "label": null,
+            "text": "李**"
+          },
+          {
+            "label": null,
+            "text": "3年"
+          },
+          {
+            "label": null,
+            "text": "硕士"
+          },
+          {
+            "label": null,
+            "text": "3日内活跃"
+          }
+        ],
+        "prop_card_texts": []
+      }
+    ],
+    "captured_at": "2026-10-04T09:31:05+08:00"
+  },
+  "expected_error_paths": [
+    "items[0].display_name",
+    "items[0].summary",
+    "items[0].stable_candidate_id",
+    "items[0].fields"
+  ]
+}

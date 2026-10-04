@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 from .driver import (
     DRIVER_ERROR_CODES,
@@ -41,13 +41,18 @@ from .idempotency import (
     heartbeat_key,
     is_valid_idempotency_key,
     login_qr_key,
+    mail_message_key,
+    mail_verification_key,
     resume_document_key,
 )
+from .mail_id import MAIL_MESSAGE_ID_PATTERN, compute_mail_message_id, normalize_mailbox, normalize_message_id
 from .models import (
     ACTIONS,
     CONVERSATION_ACTIONS,
     CONVERSATION_EVENT_KINDS,
     EVENT_KINDS,
+    MAIL_CHECK_CODES,
+    MAIL_STATUSES,
     OUTWARD_ACTIONS,
     REASONS,
     RESULT_STATUSES,
@@ -56,6 +61,7 @@ from .models import (
     Command,
     CommandModel,
     CommandResult,
+    CardField,
     ContactOutput,
     Conversation,
     ConversationTarget,
@@ -66,10 +72,14 @@ from .models import (
     EventModel,
     EvidenceItem,
     Fact,
-    ForwardOutput,
     Frame,
     LoginQr,
+    MailCheck,
+    MailMessage,
+    MailStatus,
+    MailVerification,
     Observed,
+    OverdueResumeRequest,
     Policy,
     Reason,
     ResultStatus,
@@ -93,15 +103,19 @@ from .states import (
     CASE_TRANSITIONS,
     COMMAND_TRANSITIONS,
     DELIVERY_TRANSITIONS,
+    MAIL_TRANSITIONS,
     TERMINAL_CASE_STAGES,
     TERMINAL_COMMAND_STATES,
     TERMINAL_DELIVERY_STATES,
+    TERMINAL_MAIL_STATES,
     CaseStage,
     CommandState,
     DeliveryState,
+    MailState,
     can_transition_case,
     can_transition_command,
     can_transition_delivery,
+    can_transition_mail,
     require_transition,
 )
 from .validate import (
@@ -116,6 +130,8 @@ from .validate import (
     validate_device_registration,
     validate_event,
     validate_login_qr,
+    validate_mail_message,
+    validate_mail_verification,
     validate_policy,
     validate_search_snapshot,
 )

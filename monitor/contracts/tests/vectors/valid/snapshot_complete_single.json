@@ -1,12 +1,11 @@
 {
   "contract": "search_snapshot",
-  "description": "无法读取时不得有结果",
+  "description": "当前页仅一张卡片，带道具卡文案",
   "data": {
     "search_id": "s_42",
     "query": "golang 后端",
     "scope": "current_page",
-    "coverage": "unreadable",
-    "unreadable_reason": "results_are_image",
+    "coverage": "complete",
     "items": [
       {
         "result_ref": "s_42:item_1",
@@ -49,35 +48,8 @@
         "prop_card_texts": [
           "使用道具查看"
         ]
-      },
-      {
-        "result_ref": "s_42:item_2",
-        "position": 2,
-        "masked_name": "李**",
-        "fields": [
-          {
-            "label": null,
-            "text": "李**"
-          },
-          {
-            "label": null,
-            "text": "3年"
-          },
-          {
-            "label": null,
-            "text": "硕士"
-          },
-          {
-            "label": null,
-            "text": "3日内活跃"
-          }
-        ],
-        "prop_card_texts": []
       }
     ],
     "captured_at": "2026-10-04T09:31:05+08:00"
-  },
-  "expected_error_paths": [
-    "items"
-  ]
+  }
 }

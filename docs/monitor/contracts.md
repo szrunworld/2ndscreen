@@ -1,6 +1,6 @@
 # 招聘 Monitor 契约说明
 
-契约版本：`monitor_contracts.__version__ = "0.2.0"`（2026-10-04）。本文说明 `monitor/contracts/` 的产物，是[方案](monitor-spec.md)第六、七节的落地版本。HTTP 接口见 [api.md](api.md)。
+契约版本：`monitor_contracts.__version__ = "0.3.0"`（2026-10-04）。本文说明 `monitor/contracts/` 的产物，是[方案](monitor-spec.md)第六、七节的落地版本。HTTP 接口见 [api.md](api.md)。
 
 本文中"已验证"只表示 `uv run pytest contracts` 通过的契约层行为，不代表 BOSS 客户端上的任何能力。
 
@@ -12,7 +12,7 @@
 | `monitor_contracts` 包 | `monitor/contracts/monitor_contracts/` | pydantic v2 模型、`validate_*`、状态机、`compute_event_id`、Protocol |
 | 夹具格式 | `monitor/fixtures/schema/ax-fixture.schema.json` | B 录制、C 回放、E/H 测试的脱敏元素树格式 |
 | OpenAPI | `monitor/contracts/openapi.yaml` | 服务端 HTTP 接口；消息体直接 `$ref` 上面的 schema |
-| 测试向量 | `monitor/contracts/tests/vectors/{valid,invalid}/` | 合法 37 个、非法 41 个，其他任务可直接拿来做 fake 数据 |
+| 测试向量 | `monitor/contracts/tests/vectors/{valid,invalid}/` | 合法 42 个、非法 58 个，其他任务可直接拿来做 fake 数据 |
 
 ```sh
 cd monitor && uv sync && uv run pytest contracts
@@ -24,7 +24,7 @@ cd monitor && uv sync && uv run pytest contracts
 
 `validate_<name>(data)` 先跑 JSON Schema（结构、枚举、按 action/kind 的形状），有错就停；结构通过后再跑 pydantic（跨字段语义：时间先后、`result_ref` 前缀、`event_id` 是否等于计算值等）。两层的错误都转成 `FieldError(path, message, code, layer)`，路径形如 `payload.text`、`items[0].result_ref`，任何失败都抛 `ContractValidationError`（`.errors`、`.paths`）。只要错误列表、不想抛异常时用 `check(name, data)`。
 
-可校验的契约名：`command`、`command_result`、`event`、`search_snapshot`、`policy`、`device_registration`、`device_heartbeat`、`login_qr`、`ax_fixture`。
+可校验的契约名：`command`、`command_result`、`event`、`search_snapshot`、`policy`、`device_registration`、`device_heartbeat`、`login_qr`、`mail_message`、`mail_verification`、`ax_fixture`。
 
 模型序列化成线上 JSON 用 `model.to_wire()`（即 `model_dump(mode="json")`）。可选字段在线上允许为 `null`。
 
@@ -47,18 +47,20 @@ cd monitor && uv sync && uv run pytest contracts
 | `send_greeting` | 会话目标 | `{text}` 1–500 字 | 无 |
 | `request_resume` | 会话目标 | `{}`（不接受参数） | 无 |
 | `request_contact_exchange` | 会话目标 | `{exchange_type: "phone"}` | `{exchange_type, exchange_state}` |
-| `forward_resume` | 会话目标 | `{destination: 邮箱, attachment_hint?}` | `{destination, forwarded_at}` |
 | `search_candidates` | `{scope: "current_page"}` | `{search_id, query, max_results 1–100}` | `{snapshot}` |
 | `provide_input` | `{input_request_id}` | `{value}` 1–64 字 | 无 |
 
-会话目标 = `{conversation, candidate_ref?, result_ref?}`。`candidate_ref` 是服务端的候选人引用，Monitor 只回显、不用来定位。`result_ref` 表示目标来自某次搜索快照，只说明来源，不能代替身份核对。
+会话目标 = `{conversation, candidate_ref?}`。`candidate_ref` 是服务端的候选人引用，Monitor 只回显、不用来定位。
+
+**v1 只能以会话为目标**（用户 2026-10-04 决定）：`send_greeting` 等会话类动作的目标只能是会话列表里的会话，不能是搜索结果。0.3.0 删除了会话目标里的 `result_ref`，带上它会被校验器拒绝。以后若要从搜索结果发起问候，需要契约新增"搜索结果"目标，并在执行时重新定位、核对身份。
+
+**`forward_resume` v1 不支持**（用户 2026-10-04 决定）：简历由 BOSS 在候选人同意后自动发到公司预留邮箱，Monitor 不转发。0.3.0 把它从 action 枚举、payload/output、结果规则、策略白名单与上限、设备能力中全部移除。名字保留，以后需要时再加回（契约版本 +1）。
 
 各动作说明：
 
 - **send_greeting**：问候。服务端已按策略模板渲染好 `text`，Monitor 不再拼接。执行前要核对目标会话，执行后要读到聊天区出现该文本才算 succeeded。结果为 `unknown` 时，服务端不自动推进求简历（方案 8.1 第 5 条）。
-- **request_resume**：请求简历。界面已有"已请求"标记时返回 `skipped_precondition`（`reason=precondition_already_done`）。执行后要读到请求消息出现才算成功。只允许点击 N 阶段记录的那一个确认按钮。
+- **request_resume**：请求简历。界面已有"已请求"标记时返回 `skipped_precondition`（`reason=precondition_already_done`）。执行后要读到请求消息出现才算成功。只允许点击 N 阶段记录的那一个确认按钮。成功结果的 `executed_at` 是邮件关联的时间窗起点：候选人同意后，BOSS 会把附件简历自动发到公司邮箱（第七节"公司邮箱"）。
 - **request_contact_exchange**：交换联系方式，第一版只支持电话（以后加微信时契约版本 +1）。界面已是 `available` 或 `pending_acceptance` 时返回 `skipped_precondition` 并在 output 中给出当前状态。点击并确认请求已发出时返回 succeeded，`exchange_state=requested`。succeeded 和 skipped_precondition 都必须带 output。"请求已发送"是指令结果，"联系方式可用"是业务事件 `contact_exchange_updated`，两者不要混用。v1 契约不传号码原文。
-- **forward_resume**：把附件简历转发到策略指定的邮箱。成功时必须给出 `forwarded_at`，邮件接入（G）按这个时间窗关联邮件。能否实现取决于 N 的结论；做不到时返回 `failed` + `reason=unsupported`，并且不调用写方法。
 - **search_candidates**：在当前页搜索，不翻页，`workflow_id` 为 null。见第五节。
 - **provide_input**：把控制台人工输入的值（如短信验证码）代填到 `human_input_required` 所指的输入框。值不得写入日志或 evidence。
 
@@ -79,7 +81,6 @@ cd monitor && uv sync && uv run pytest contracts
 | `outbound_action_performed=true` | `externally_visible_side_effect=true` |
 | `search_candidates` + succeeded | 必须带 `output.snapshot`，且 coverage 不能是 unreadable |
 | `request_contact_exchange` + succeeded/skipped_precondition | 必须带 `output.exchange_state` |
-| `forward_resume` + succeeded | 必须带 output |
 | greeting / resume / provide_input | output 必须为 null |
 
 `reason` 枚举：
@@ -98,7 +99,7 @@ cd monitor && uv sync && uv run pytest contracts
 | `dependency_not_satisfied` | `depends_on` 的指令没有 succeeded（包括 unknown） |
 | `timeout` | 在上限时间内等不到可识别的结果状态 |
 | `unreadable` | 界面读不出（例如搜索结果是图片） |
-| `unsupported` | 当前版本不支持（例如 forward_resume 没有可行路径） |
+| `unsupported` | 当前版本不支持（例如 Monitor 收到了自己没有处理器的动作） |
 | `precondition_already_done` | 动作已经发生过（skipped_precondition 时使用） |
 | `verification_failed` | verify_only 确认动作没有发生，或执行后验证不通过 |
 | `driver_error` | Driver 抛出窗口丢失、屏幕丢失、CLI 失败等错误 |
@@ -120,7 +121,19 @@ cd monitor && uv sync && uv run pytest contracts
 
 ## 五、搜索快照 search_snapshot
 
-`{search_id, query, scope: "current_page", coverage, unreadable_reason?, items[], captured_at}`，`items[i] = {result_ref, display_name, summary, stable_candidate_id?}`。
+`{search_id, query, scope: "current_page", coverage, unreadable_reason?, items[], captured_at}`。
+
+搜索结果**不需要识别身份**（用户 2026-10-04 说明）：Monitor 只回答"有 / 没有"，并把每张结果卡片上界面已有的可读文本原样返回。身份确认、使用道具卡找人由公司自己的流程完成，Monitor 不做。0.3.0 起每张卡片是：
+
+| 字段 | 必填 | 说明 |
+| --- | --- | --- |
+| `result_ref` | 是 | `<search_id>:item_<position>`，本次快照里的位置 |
+| `position` | 是 | 卡片在当前页的顺序，从 1 起，自上而下；必须等于 `result_ref` 末尾的序号 |
+| `fields[]` | 是，≥1 条 | `{label?, text}`：卡片上界面已有的全部可读文本，按出现顺序原样给出（打码姓名、学历、院校、经验、年龄、标签、期望、活跃状态等）。`label` 只在界面上确有可见标签时填写，没有就是 null，不要自行命名或归类 |
+| `masked_name` | 否 | 平台打码后的姓名原文（如「王**」），读不到为 null。不是身份 |
+| `prop_card_texts[]` | 是，可为空 | 卡片上与道具卡相关的元素文案，原样给出。Monitor 不点击、不使用道具卡 |
+
+0.2.0 的 `display_name`、`summary`、`stable_candidate_id` 已删除。所有卡片文本都不得含中国大陆手机号样式的 11 位数字（schema 与模型两层都检查）；这只是兜底，Monitor 本来就不读联系方式。
 
 | coverage | items | 结局 `snapshot.outcome` | 指令 status |
 | --- | --- | --- | --- |
@@ -130,7 +143,7 @@ cd monitor && uv sync && uv run pytest contracts
 
 `unreadable` 和 `empty_confirmed` 的 items 都是空的，区分只靠 coverage。消费方必须按 `outcome` 分三支处理，不能用"items 是否为空"判断有没有结果。读取失败不得回报为空列表，校验器会拒绝 `unreadable` + succeeded 的组合。
 
-`result_ref` 的格式是 `<search_id>:item_<n>`（n 从 1 开始），前缀必须等于 `search_id`，同一快照内不能重复。它只是本次快照里的位置，不是候选人身份。
+`result_ref` 的格式是 `<search_id>:item_<n>`（n 从 1 开始，等于 `position`），前缀必须等于 `search_id`，同一快照内不能重复。它只是本次快照里的位置，不是候选人身份，**也不能作为任何指令的目标**（见第三节）。coverage 与三种结局的规则 0.3.0 未改。
 
 ## 六、事件 event（Monitor → 服务端，经 outbox 补传）
 
@@ -139,7 +152,7 @@ cd monitor && uv sync && uv run pytest contracts
 | kind | conversation | payload | 说明 |
 | --- | --- | --- | --- |
 | `application_observed` | 必填 | `{marker_text?, evidence}` | 只对能明确识别为"新投递"的会话产生，普通未读不算。首次启动和 needs_baseline 时只建基线，不产生事件。识别规则来自 B 的夹具标注 |
-| `attachment_available` | 必填 | `{attachment_name?, evidence}` | 会话中出现可用的附件简历。服务端据此决定是否下发 forward_resume |
+| `attachment_available` | 必填 | `{attachment_name?, evidence}` | 会话中出现可用的附件简历。只是可选观察：服务端可据此把流程记为 `resume_received`，但简历文件只从公司邮箱读取，不据此下发任何指令 |
 | `contact_exchange_updated` | 必填 | `{exchange_type, exchange_state, evidence}` | observe 看到交换状态变化（例如候选人同意）。v1 不带号码原文 |
 | `conversation_ambiguous` | 必填 | `{match_count ≥ 2, candidates[≥2]{position, hints, summary?}, evidence}` | 同一岗位下出现同名会话。服务端转人工处理，不建立新投递。candidates 只放脱敏摘要 |
 | `login_required` | null | `{reason, mode}` | 登录失效或回到登录页。Monitor 暂停对外动作。local 模式只通知用户在本机登录 |
@@ -153,10 +166,49 @@ cd monitor && uv sync && uv run pytest contracts
 
 ## 七、其他消息
 
-- **policy**：账户级策略。字段包括 `policy_version`（PUT 用 If-Match 做乐观锁）、`allowed_actions`（对外动作白名单，默认空即全部关闭；provide_input 和 verify_only 不受它控制）、`job_scope`、`greeting{enabled, template}`、`auto_request_resume`、`after_resume_received{action, wait_for_parse}`、`work_hours`（IANA 时区 + 窗口，空窗口表示任何时段都不生成对外指令）、`daily_limits` 与 `min_interval_seconds`（五个对外动作各一项）、`pause_on_anomaly`（只能为 true）、`paused`。Monitor 本地另有写死的硬上限和最小间隔下限，策略只能收紧、不能放宽。这些常量由 D2 定义，不在契约里。
+- **policy**：账户级策略。字段包括 `policy_version`（PUT 用 If-Match 做乐观锁）、`allowed_actions`（对外动作白名单，默认空即全部关闭；provide_input 和 verify_only 不受它控制）、`job_scope`、`greeting{enabled, template}`、`auto_request_resume`、`after_resume_received{action, wait_for_parse}`、`resume_mail_timeout_days`、`company_mailbox`、`work_hours`（IANA 时区 + 窗口，空窗口表示任何时段都不生成对外指令）、`daily_limits` 与 `min_interval_seconds`（四个对外动作各一项：send_greeting、request_resume、request_contact_exchange、search_candidates）、`pause_on_anomaly`（只能为 true）、`paused`。Monitor 本地另有写死的硬上限和最小间隔下限，策略只能收紧、不能放宽。这些常量由 D2 定义，不在契约里。
+  - `after_resume_received.action` 默认 `none`（0.3.0）：收到并关联简历后**不**自动交换联系方式；`wait_for_parse` 默认 true。线上仍必须写全，默认值只用于模型构造和控制台初始值。交换联系方式的类型（`exchange_type`）本版未改，等用户确认后在 0.3.1 处理。
+  - `resume_mail_timeout_days`（默认 3，范围 1–30）：求简历成功后超过该天数仍未收到并关联简历邮件，服务端把流程转 `needs_human`（`needs_human_reason=resume_mail_timeout`），核对任务也会把它列为提醒。
+  - `company_mailbox`：BOSS 账户设置里预留的公司邮箱，只读展示，以服务端配置为准；PUT 时服务端忽略请求里的值。未配置时为 null。不加 `resume_route`：v1 只有这一条简历路线。
 - **device_registration**：`POST /devices` 的请求体。字段包括 `enrollment_code`、`device_name`、`mode`、`platform`、`monitor_version`、`contracts_version`、`capabilities`。local 模式不能声明 `login_relay`。
 - **device_heartbeat**：默认 30 秒一次。字段包括 `mode`、`account_id`（绑定账户，见下文"账户来源"）、`client_state`、`paused` + `pause_reason`（paused 时必填）、`needs_baseline`、`current_action`、`queue{queued_commands, undelivered_results, outbox_events}`、`last_error`、`monitor_version`。
 - **login_qr**：`POST /login-qr` 的请求体。字段包括 `device_id`、`account_id?`、`qr_payload`（本地解码出的文本，不是图片）、`qr_seq`（内容每变一次 +1）、`captured_at`、`expires_at`（必须晚于 captured_at）、`decoder`。
+
+### 公司邮箱 mail_message / mail_verification（0.3.0）
+
+简历路线（用户 2026-10-04 二次决定）：新投递 →（可选）问候 → 求简历 → 候选人同意 → BOSS 按账户设置把附件简历自动发到公司预留邮箱 → 邮件接入（G）读取、关联、解析。Monitor 不参与这一段。
+
+**mail_message**：公司邮箱里的一封邮件，邮件接入先把原始 .eml 落盘，再以 `pending` 写入（`PUT /mail-messages/{mail_message_id}`），处理后更新状态。
+
+| 字段 | 说明 |
+| --- | --- |
+| `mail_message_id` | 记录主键，`mail:` + 32 位十六进制，由 `compute_mail_message_id` 确定性生成（见下）。不是邮件头 Message-ID |
+| `mailbox` | 收件邮箱 |
+| `message_id` | 邮件头 Message-ID 原文，缺失时为 null |
+| `uidvalidity`、`uid` | IMAP 游标；同时给出或同时为 null。`message_id` 为 null 时必须给出 |
+| `received_at`、`sha256`（原始 .eml）、`raw_storage_uri?`、`from_address?`、`subject?` | 原件信息。sha256 只用于去重与核对，不是候选人身份 |
+| `status` | `pending` 已落盘待消费；`processed` 已提交并移到 `Monitor/Processed`；`needs_review` 关联歧义或找不到流程，移到 `Monitor/NeedsReview`；`failed` 连续失败达到上限，移到 `Monitor/Failed`；`ignored` 非 BOSS 发件人，移到 `Monitor/Ignored` |
+| `attempts` | 消费失败次数。未达上限的失败仍为 `pending`，attempts +1 |
+| `error` | `failed` 必填；`needs_review` / `ignored` 可写原因；`pending` / `processed` 必须为 null |
+| `updated_at` | 不早于 `received_at` |
+
+`mail_message_id` 的两种来源（协调者 2026-10-04 裁决）：
+
+```
+有 Message-ID： "mail:" + sha256_hex(邮箱 + "\n" + 规范化 Message-ID)[:32]
+没有 Message-ID："mail:" + sha256_hex(邮箱 + "\n\n" + UIDVALIDITY + ":" + UID)[:32]
+邮箱 = 去首尾空白后转小写；规范化 Message-ID = NFC、去首尾空白、去外层尖括号（空串视为缺失）
+```
+
+有 Message-ID 时只用它，即使同时有 UID，这样换文件夹（UID 改变）后主键不变。校验器会重新计算并比对。
+
+**mail_verification**：核对任务（方案 8.2 第 5 条）一次的结果，`POST /mail-verifications` 提交。
+
+- `outcome`：`ok` 全部检查项 count=0；`issues_found` 至少一项 count>0；`failed` 核对本身没跑完，必须给出 `error`，`checks` 可以为空。只有 failed 能带 error。
+- `checks[]`：`{code, count, refs[≤20]}`，outcome 为 ok / issues_found 时 7 个检查项必须各出现一次：`inbox_backlog`（INBOX 中超过 30 分钟未处理）、`processed_without_record`（Processed 中的邮件在数据库无记录）、`original_missing`（原件不存在）、`hash_mismatch`（原件哈希不一致）、`document_without_original`（resume_document 找不到原件）、`needs_review_mismatch`、`failed_mismatch`（文件夹数量与人工队列不一致）。`refs` 放抽样的 mail_message_id 或 doc_id。
+- `overdue_resume_requests[]`：`{case_id, command_id, requested_at, days_waiting}`，求简历成功但超过 `resume_mail_timeout_days` 仍未收到邮件的流程。只是提醒，不影响 outcome；流程是否转 needs_human 由服务端判定。
+
+**resume_document**（只在 openapi 中定义，0.3.0 新增字段）：`variant`（`original` 邮件原件 | `branded` 套用公司模板的派生版本）、`derived_from`（branded 时为原件 doc_id，original 时为 null）、`mail_message_id`（来源邮件记录，branded 继承原件）。原件始终保留，品牌化只新增派生版本。关联方式 `link_method` 的 `forward_record` 改为 `resume_request`：在该账户 request_resume 已成功的流程里，按执行时间窗结合账户 + 岗位 + 姓名唯一命中；不能唯一命中进入人工关联队列。
 
 ### 账户来源（0.2.0）
 
@@ -169,7 +221,7 @@ P0 与任务 B 都确认：BOSS 客户端窗口里读不到当前登录的是哪
 
 ## 八、状态机
 
-迁移表在 `monitor_contracts.states`，只能用 `can_transition_case / can_transition_command / can_transition_delivery`（或 `require_transition` 抛 `IllegalTransition`）判断，不要另写一份。所有层都不允许自迁移，未知状态名抛 `ValueError`。
+迁移表在 `monitor_contracts.states`，只能用 `can_transition_case / can_transition_command / can_transition_delivery / can_transition_mail`（或 `require_transition` 抛 `IllegalTransition`）判断，不要另写一份。所有层都不允许自迁移，未知状态名抛 `ValueError`。
 
 ### 8.1 业务流程（服务端 recruitment_case）
 
@@ -181,15 +233,15 @@ stateDiagram-v2
     new_application --> resume_received: 候选人主动发简历
     greeted --> resume_requested
     greeted --> resume_received
-    resume_requested --> resume_received: 看到附件
-    resume_requested --> resume_linked: 邮件先到并关联
+    resume_requested --> resume_linked: 邮件到达并唯一关联（主路径）
+    resume_requested --> resume_received: 看到附件（可选观察）
     resume_received --> resume_linked
     resume_linked --> contact_requested
     contact_requested --> contact_available
     contact_available --> closed
     new_application --> needs_human
     greeted --> needs_human
-    resume_requested --> needs_human
+    resume_requested --> needs_human: 邮件超时 / 关联歧义
     resume_received --> needs_human
     resume_linked --> needs_human
     contact_requested --> needs_human
@@ -203,7 +255,9 @@ stateDiagram-v2
     closed --> [*]
 ```
 
-除 `contact_available` 外，每个非终态都可以直接进入 `closed`（停止流程、明确拒绝），图中省略这些边。`resume_received` 指界面上看到了附件简历，`resume_linked` 指邮件里的文件已经关联到本流程。邮件比界面观察先到时，可以从 `resume_requested` 直接进入 `resume_linked`。
+除 `contact_available` 外，每个非终态都可以直接进入 `closed`（停止流程、明确拒绝），图中省略这些边。
+
+简历的**主路径**是 `resume_requested → resume_linked`：邮件到达公司邮箱并唯一关联到本流程（0.3.0）。`resume_received` 指界面上看到了附件简历，只是可选观察，不是必经阶段。求简历成功后超过 `policy.resume_mail_timeout_days` 未收到邮件，或邮件关联歧义时，`resume_requested → needs_human`；人工关联后 `needs_human → resume_linked`。`resume_linked` 之后是否请求联系方式由 `after_resume_received.action` 决定，默认不请求。迁移表本身 0.3.0 没有增删边。
 
 ### 8.2 指令执行（Monitor command_ledger）
 
@@ -238,6 +292,23 @@ stateDiagram-v2
     delivered --> [*]
 ```
 
+### 8.4 公司邮箱邮件记录（mail_message.status，0.3.0）
+
+```mermaid
+stateDiagram-v2
+    [*] --> pending: 原件落盘后写入
+    pending --> processed: 提交成功，移到 Processed
+    pending --> needs_review: 关联歧义 / 找不到流程
+    pending --> failed: 连续失败达到上限
+    pending --> ignored: 非 BOSS 发件人
+    needs_review --> processed: 人工关联后
+    failed --> pending: 人工重试
+    processed --> [*]
+    ignored --> [*]
+```
+
+迁移表是 `monitor_contracts.states.MAIL_TRANSITIONS`，用 `can_transition_mail` 或 `require_transition("mail", …)` 判断。同状态写入（例如未达上限的失败仍为 pending、attempts +1）是更新，不是迁移，由调用方处理。
+
 ## 九、幂等键规则
 
 ### 9.1 event_id
@@ -263,7 +334,9 @@ event_id = sha256_hex( JSON( ["monitor-event-v1", account_id or "", kind, 会话
 | `POST /devices/{id}/heartbeat` | `heartbeat_key(device_id, sent_at)` | |
 | `POST /events` | `events_batch_key(event_ids)` | 与顺序无关，相同集合得到相同键 |
 | `POST /login-qr` | `login_qr_key(device_id, qr_seq)` | |
-| `POST /resume-documents` | `resume_document_key(message_id, sha256)` | |
+| `POST /resume-documents` | `resume_document_key(source_id, sha256)` | 原件 source_id = mail_message_id；品牌化版本 = `"branded:" + derived_from` |
+| `PUT /mail-messages/{id}` | `mail_message_key(mail_message_id, status, attempts)` | 同状态的多次失败靠 attempts 区分 |
+| `POST /mail-verifications` | `mail_verification_key(verification_id)` | |
 | 控制台写接口 | 每次用户点击生成一个 UUID | 双击、刷新重放不会重复执行 |
 
 部分内容含不安全字符或超长时，自动退化为 `前缀:哈希`。服务端在 24 小时内对同一个键返回首次的响应；同一个键配不同请求体时返回 422 `idempotency_key_reused`。
@@ -315,6 +388,10 @@ Locator 的文本匹配（0.2.0 追认任务 C 的实现）：`text` 在规范�
 | 写操作标志太粗（导航与对外动作混在一起，verify_only 无法导航） | 0.2.0 拆成三个标志，见第四节"执行标志" |
 | 账户读不到 | 0.2.0：account_id 来自安装时绑定，不从界面读取；`account_mismatch` 只在有证据时使用，见第七节"账户来源" |
 | Locator 文本匹配面 | 0.2.0 追认 C 的实现：text / text_contains 匹配 text、label、value 任一（规范化后），仍要求唯一命中 |
+| 简历路线 | 0.3.0（用户 2026-10-04）：求简历 → 候选人同意 → BOSS 自动发到公司邮箱；Monitor 不转发，`forward_resume` 移除，名字保留 |
+| mail_messages 由谁写 | 0.3.0（协调者裁决）：邮件接入用 `PUT /mail-messages/{mail_message_id}` 幂等 upsert；主键确定性生成，Message-ID 缺失时用 (邮箱, UIDVALIDITY, UID) 兜底；状态迁移表进 `states.py` |
+| 搜索结果是否识别身份 | 0.3.0（用户 2026-10-04）：不识别。卡片只原样返回可读文本与道具卡文案；搜索结果不能作为指令目标（删除会话目标的 `result_ref`） |
+| 邮件关联依据 | 0.3.0：`link_method` 的 `forward_record` 改为 `resume_request`（按 request_resume 执行时间窗），`command_id` 指向 request_resume 指令 |
 
 ### 变更记录
 
@@ -323,3 +400,4 @@ Locator 的文本匹配（0.2.0 追认任务 C 的实现）：`text` 在规范�
 | 0.1.0 | 2026-10-04 | 首版 | 全部 |
 | 0.1.1 | 2026-10-04 | Driver 协议两处修正：`Element.enabled` 改为 `bool \| None = None`（None 表示来源不提供；FixtureElement 与 ax-fixture schema 同步允许 null 或省略）；`Element.text` 改为 label 非空取 label，否则取 value，不再拼接。8.1 中推断的三条迁移经审查全部接受，未改 | C、E、H1–H3、B（夹具） |
 | 0.2.0 | 2026-10-04 | ① command_result / ActionResult 的 `gui_write_performed` 拆成 `navigation_performed`、`outbound_action_performed`、`externally_visible_side_effect`（线上必填）：verify_only 只禁对外动作、允许导航；cancelled 禁对外动作；expired 三个全 false；对外动作 ⇒ 对方可见；`running → cancelled` 仅限无对外动作；`ActionHandler.verify_only` 文档同步。② 账户来源：account_id 来自安装时绑定，heartbeat.account_id 是绑定账户而非观察到的账户；`account_mismatch` 保留但 v1 只在有证据时使用，列入 N 待验证。③ Locator 的 text / text_contains 匹配 Element.text、label、value 任一（规范化后），追认 C 的实现。forward_resume 与搜索字段未改 | D1、D2、E、H1–H3、F1（结果入库）、I1（展示）、C（文档追认，无代码变更） |
+| 0.3.0 | 2026-10-04 | ① 移除 `forward_resume`：action 枚举、payload / output、结果规则、策略白名单与 daily_limits / min_interval_seconds、设备能力；`attachment_available` 只作可选观察。② policy 增加 `company_mailbox`（只读）与 `resume_mail_timeout_days`（默认 3）；`after_resume_received` 默认 `{action: none, wait_for_parse: true}`。③ case 主路径 `resume_requested → resume_linked`，`resume_received` 为可选观察，`resume_requested → needs_human` 用于超时或关联歧义（迁移表未增删边，只改说明）。④ 新增 `mail_message`、`mail_verification` 两个契约与 `MAIL_TRANSITIONS`、`compute_mail_message_id`、`mail_message_key`、`mail_verification_key`；`resume_document_key` 的第一个参数改为来源标识。⑤ 搜索快照卡片改为 `{result_ref, position, fields[], masked_name?, prop_card_texts[]}`，删除 `display_name / summary / stable_candidate_id`；会话目标删除 `result_ref`，v1 搜索结果不能作为指令目标。⑥ openapi：新增 `/mail-messages`、`/mail-verifications`；resume_document 增加 `variant / derived_from / mail_message_id`，`link_method` 的 `forward_record` 改为 `resume_request`；补齐 F1 报告列出的 401 / 403 / 422。交换联系方式（`exchange_type`）未改，留给 0.3.1 | D2（限额常量、testing 夹具）、D1（testing 夹具）、F1（一致性白名单清空）、F2（策略默认值、超时转人工、关联方式）、F3（搜索快照存储）、G（mail_messages、核对、关联方式）、H2（卡片形状）、I1/I2（策略页邮箱与超时、搜索页、邮件队列）、R（branded 版本写入） |

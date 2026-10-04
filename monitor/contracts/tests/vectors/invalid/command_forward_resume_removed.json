@@ -1,11 +1,11 @@
 {
   "contract": "command",
-  "description": "会话类动作必须有 workflow_id",
+  "description": "forward_resume 自 0.3.0 移除",
   "data": {
     "command_id": "00000000-0000-4000-8000-000000000001",
-    "workflow_id": null,
+    "workflow_id": "case_001",
     "account_id": "acct_demo",
-    "action": "send_greeting",
+    "action": "forward_resume",
     "target": {
       "conversation": {
         "candidate_name": "候选人A",
@@ -18,13 +18,13 @@
       "candidate_ref": "cand_9"
     },
     "payload": {
-      "text": "你好，方便聊聊吗？"
+      "destination": "hr@example.com"
     },
     "issued_at": "2026-10-04T09:30:00+08:00",
     "expires_at": "2026-10-04T09:40:00+08:00",
     "depends_on": null
   },
   "expected_error_paths": [
-    "workflow_id"
+    "action"
   ]
 }

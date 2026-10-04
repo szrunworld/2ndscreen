@@ -1,6 +1,6 @@
 {
   "contract": "policy",
-  "description": "开启问候与求简历；收到简历后不自动交换联系方式（0.3.0 默认）",
+  "description": "forward_resume 已从上限中移除",
   "data": {
     "account_id": "acct_demo",
     "policy_version": 3,
@@ -45,7 +45,8 @@
       "send_greeting": 30,
       "request_resume": 30,
       "request_contact_exchange": 10,
-      "search_candidates": 20
+      "search_candidates": 20,
+      "forward_resume": 30
     },
     "min_interval_seconds": {
       "send_greeting": 60,
@@ -57,5 +58,8 @@
     "paused": false,
     "updated_at": "2026-10-04T09:30:00+08:00",
     "updated_by": "recruiter@example.com"
-  }
+  },
+  "expected_error_paths": [
+    "daily_limits.forward_resume"
+  ]
 }

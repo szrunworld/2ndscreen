@@ -23,6 +23,8 @@
       "action": "request_contact_exchange",
       "wait_for_parse": false
     },
+    "resume_mail_timeout_days": 3,
+    "company_mailbox": "hr@example.com",
     "work_hours": {
       "timezone": "Asia/Shanghai",
       "windows": [
@@ -43,14 +45,12 @@
       "send_greeting": 30,
       "request_resume": 30,
       "request_contact_exchange": 10,
-      "forward_resume": 30,
       "search_candidates": 20
     },
     "min_interval_seconds": {
       "send_greeting": -5,
       "request_resume": 60,
       "request_contact_exchange": 60,
-      "forward_resume": 60,
       "search_candidates": 60
     },
     "pause_on_anomaly": true,

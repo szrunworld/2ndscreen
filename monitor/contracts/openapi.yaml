@@ -1,10 +1,10 @@
 openapi: 3.1.0
 info:
   title: 招聘 Monitor 服务端 API
-  version: 0.2.0
+  version: 0.3.0
   summary: Monitor 设备、指令、事件、简历文档、搜索、人工处理、登录接力与策略接口
   description: |
-    与 monitor_contracts 0.2.0 对应（info.version 与契约版本同步）。说明见 docs/monitor/api.md。
+    与 monitor_contracts 0.3.0 对应（info.version 与契约版本同步）。说明见 docs/monitor/api.md。
 
     - 传输：只暴露 HTTPS。第一版用轮询，领取指令为长轮询（最长 30 秒），不使用 WebSocket。
     - 认证：设备接口用设备令牌（deviceToken）；控制台接口用控制台会话（consoleSession）；
@@ -12,7 +12,10 @@ info:
     - 幂等：所有写接口（POST / PUT）必须带 Idempotency-Key。同键重放返回首次响应；
       同键不同请求体返回 422（code=idempotency_key_reused）。
     - 消息体：command / command_result / event / search_snapshot / policy /
-      device_registration / device_heartbeat / login_qr 直接引用 schemas/*.json。
+      device_registration / device_heartbeat / login_qr / mail_message / mail_verification
+      直接引用 schemas/*.json。
+    - 0.3.0：简历由 BOSS 在候选人同意后自动发到公司邮箱，Monitor 不转发（forward_resume 移除）；
+      新增公司邮箱邮件记录与核对结果接口（/mail-messages、/mail-verifications）。
     - 错误：统一为 Problem，validation 错误带字段级 errors[]。
 servers:
   - url: https://monitor.example.invalid/api/v1
@@ -26,6 +29,8 @@ tags:
     description: 事件批量上报与查询
   - name: resume-documents
     description: 邮件接入写入简历文档
+  - name: mail
+    description: 公司邮箱邮件记录与核对结果（邮件接入写入，控制台展示）
   - name: search
     description: 搜索任务
   - name: cases
@@ -145,8 +150,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Device'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
 
   /devices/{device_id}:revoke:
     parameters:
@@ -165,8 +174,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Device'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
 
   /devices/{device_id}/account-binding:
     parameters:
@@ -199,6 +212,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AccountBinding'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
         '422':
@@ -226,8 +241,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Device'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
 
   /devices/{device_id}:resume:
     parameters:
@@ -251,8 +270,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Device'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
 
   /devices/{device_id}/heartbeat:
     parameters:
@@ -326,7 +349,7 @@ paths:
     get:
       tags: [commands]
       operationId: listCommands
-      summary: 指令列表（控制台执行记录；邮件接入查询转发记录）
+      summary: 指令列表（控制台执行记录；邮件接入查询求简历记录，用于按执行时间窗关联邮件）
       security:
         - consoleSession: []
         - serviceToken: []
@@ -341,6 +364,7 @@ paths:
             type: string
         - name: action
           in: query
+          description: 邮件接入用 action=request_resume&status=succeeded&executed_after= 查询求简历记录
           schema:
             $ref: './schemas/common.json#/$defs/action'
         - name: status
@@ -381,6 +405,8 @@ paths:
                     type: [string, 'null']
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
 
   /commands/{command_id}:
     parameters:
@@ -396,8 +422,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CommandRecord'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
 
   /commands/{command_id}/ack:
     parameters:
@@ -426,6 +456,8 @@ paths:
                 $ref: '#/components/schemas/CommandRecord'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
@@ -434,6 +466,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
 
   /commands/{command_id}/result:
     parameters:
@@ -499,6 +533,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CommandRecord'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
@@ -507,6 +543,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
 
   /commands/{command_id}:confirm-sent:
     parameters:
@@ -630,6 +668,10 @@ paths:
                       $ref: '#/components/schemas/EventRecord'
                   next_cursor:
                     type: [string, 'null']
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
 
   /resume-documents:
     post:
@@ -637,10 +679,12 @@ paths:
       operationId: createResumeDocument
       summary: 邮件接入写入一份简历附件
       description: |
-        按 (mail.message_id, attachment.sha256) 去重：重复写入返回 200 与已有文档（duplicate=true）。
-        同一候选人多份简历按版本保留，不覆盖。附件哈希只用于文件去重，不作为候选人身份。
-        link 由邮件接入按"可靠标识 → 转发记录 → 账户+岗位+姓名"给出；不能唯一命中时
-        method=none 并列出候选 case，进入人工关联队列。
+        原件（variant=original）按 (mail_message_id, attachment.sha256) 去重；品牌化版本
+        （variant=branded）按 (derived_from, attachment.sha256) 去重。重复写入返回 200 与已有文档
+        （duplicate=true）。同一候选人多份简历按版本保留，不覆盖。附件哈希只用于文件去重，不作为候选人身份。
+        原件的 link 由邮件接入按"可靠标识 → 求简历记录（request_resume 执行时间窗）→ 账户+岗位+姓名"
+        给出；不能唯一命中时 method=none 并列出候选 case，进入人工关联队列。品牌化版本不带 mail 与 link，
+        继承原件的流程；原件始终保留，品牌化只新增派生版本。
       security:
         - serviceToken: []
       parameters:
@@ -666,6 +710,12 @@ paths:
                 $ref: '#/components/schemas/ResumeDocument'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: mail_message_id 或 derived_from 指向的记录不存在
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
         '422':
           $ref: '#/components/responses/ValidationFailed'
     get:
@@ -681,6 +731,14 @@ paths:
           in: query
           schema:
             type: string
+        - name: variant
+          in: query
+          schema:
+            $ref: '#/components/schemas/ResumeVariant'
+        - name: mail_message_id
+          in: query
+          schema:
+            $ref: './schemas/mail_message.json#/properties/mail_message_id'
         - $ref: '#/components/parameters/Cursor'
         - $ref: '#/components/parameters/Limit'
       responses:
@@ -789,6 +847,198 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+
+  /mail-messages:
+    get:
+      tags: [mail]
+      operationId: listMailMessages
+      summary: 公司邮箱邮件记录列表（控制台展示与人工队列；核对任务也可读取）
+      description: 按 received_at 倒序。用 status=needs_review 得到人工关联队列，status=failed 得到失败队列。
+      security:
+        - consoleSession: []
+        - serviceToken: []
+      parameters:
+        - name: status
+          in: query
+          description: 可重复，如 status=needs_review&status=failed
+          schema:
+            type: array
+            items:
+              $ref: './schemas/mail_message.json#/properties/status'
+          style: form
+          explode: true
+        - name: mailbox
+          in: query
+          schema:
+            type: string
+            format: email
+        - name: message_id
+          in: query
+          description: 邮件头 Message-ID 原文（精确匹配）
+          schema:
+            type: string
+        - name: received_after
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: received_before
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: 列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: './schemas/mail_message.json'
+                  next_cursor:
+                    type: [string, 'null']
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+
+  /mail-messages/{mail_message_id}:
+    parameters:
+      - $ref: '#/components/parameters/MailMessageId'
+    put:
+      tags: [mail]
+      operationId: putMailMessage
+      summary: 邮件接入写入或更新一封邮件的记录（幂等 upsert）
+      description: |
+        邮件接入先把原始 .eml 落盘，再以 status=pending 写入；之后按 states.MAIL_TRANSITIONS 更新
+        （pending → processed | needs_review | failed | ignored；needs_review → processed；failed → pending）。
+        路径中的 mail_message_id 必须与请求体一致，且等于 compute_mail_message_id(mailbox, message_id, uidvalidity, uid)。
+        同状态写入（例如未达上限的失败：仍为 pending、attempts +1）是更新，不是迁移。mailbox、message_id、
+        uidvalidity、uid、received_at、sha256 写入后不可变，不一致返回 409 mail_message_conflict；
+        不在迁移表内的状态变化返回 409 illegal_mail_transition。两种 409 都在 existing 中附上当前记录。
+        Idempotency-Key 用 mail_message_key(mail_message_id, status, attempts)。
+      security:
+        - serviceToken: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './schemas/mail_message.json'
+      responses:
+        '200':
+          description: 已更新（或与当前记录相同）
+          content:
+            application/json:
+              schema:
+                $ref: './schemas/mail_message.json'
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                $ref: './schemas/mail_message.json'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: 不可变字段冲突（mail_message_conflict）或非法状态迁移（illegal_mail_transition）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+
+  /mail-verifications:
+    post:
+      tags: [mail]
+      operationId: postMailVerification
+      summary: 邮件接入提交一次邮箱核对结果
+      description: |
+        核对任务（例如每小时一次）完成后提交，请求体为 mail_verification。按 verification_id 幂等：
+        相同请求体重复提交返回 200 与已有记录，不同请求体返回 409。outcome=issues_found / failed 时服务端
+        在总览与告警中展示；overdue_resume_requests 只作提醒，流程是否进入 needs_human 由服务端按
+        policy.resume_mail_timeout_days 判定。Idempotency-Key 用 mail_verification_key(verification_id)。
+      security:
+        - serviceToken: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './schemas/mail_verification.json'
+      responses:
+        '200':
+          description: 重复提交，返回已有记录
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MailVerificationRecord'
+        '201':
+          description: 已记录
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MailVerificationRecord'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: verification_id 已存在且内容不同
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+    get:
+      tags: [mail]
+      operationId: listMailVerifications
+      summary: 最近的邮箱核对结果（按 finished_at 倒序）
+      security:
+        - consoleSession: []
+        - serviceToken: []
+      parameters:
+        - name: mailbox
+          in: query
+          schema:
+            type: string
+            format: email
+        - name: outcome
+          in: query
+          schema:
+            $ref: './schemas/mail_verification.json#/properties/outcome'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: 列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/MailVerificationRecord'
+                  next_cursor:
+                    type: [string, 'null']
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
 
   /search-runs:
     post:
@@ -1143,9 +1393,9 @@ paths:
       operationId: putPolicy
       summary: 保存策略（乐观锁）
       description: |
-        请求体中的 policy_version、updated_at、updated_by 由服务端覆盖：保存成功后
-        policy_version = 原值 + 1。If-Match 必须等于当前 policy_version，否则 412。
-        pause_on_anomaly 必须为 true。
+        请求体中的 policy_version、updated_at、updated_by、company_mailbox 由服务端覆盖：保存成功后
+        policy_version = 原值 + 1。company_mailbox 只读展示（BOSS 账户预留的公司邮箱，以服务端配置为准）。
+        If-Match 必须等于当前 policy_version，否则 412。pause_on_anomaly 必须为 true。
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
         - name: If-Match
@@ -1250,6 +1500,12 @@ components:
       schema:
         type: string
         minLength: 1
+    MailMessageId:
+      name: mail_message_id
+      in: path
+      required: true
+      schema:
+        $ref: './schemas/mail_message.json#/properties/mail_message_id'
     Cursor:
       name: cursor
       in: query
@@ -1307,6 +1563,21 @@ components:
       $ref: './schemas/device_heartbeat.json'
     LoginQr:
       $ref: './schemas/login_qr.json'
+    MailMessage:
+      $ref: './schemas/mail_message.json'
+    MailVerification:
+      $ref: './schemas/mail_verification.json'
+    MailVerificationRecord:
+      type: object
+      description: 服务端保存的核对结果：verification 为提交的 mail_verification 原文，received_at 为服务端接收时间。
+      required: [verification, received_at]
+      additionalProperties: false
+      properties:
+        verification:
+          $ref: './schemas/mail_verification.json'
+        received_at:
+          type: string
+          format: date-time
 
     Problem:
       type: object
@@ -1601,11 +1872,27 @@ components:
     LinkStatus:
       type: string
       enum: [linked, needs_manual, unlinked]
+    ResumeVariant:
+      type: string
+      enum: [original, branded]
+      description: original 邮件里的原始附件；branded 套用公司模板渲染的派生版本（任务 R），原件始终保留
     ResumeDocumentCreate:
       type: object
-      required: [mail, attachment, link]
+      required: [attachment]
       additionalProperties: false
+      description: |
+        variant=original（默认）：必须带 mail_message_id、mail、link，derived_from 为 null 或省略。
+        variant=branded：必须带 derived_from（原件 doc_id），不带 mail 与 link（继承原件的流程），
+        mail_message_id 可省略（服务端从原件继承）。
       properties:
+        variant:
+          $ref: '#/components/schemas/ResumeVariant'
+        mail_message_id:
+          $ref: './schemas/mail_message.json#/properties/mail_message_id'
+        derived_from:
+          type: [string, 'null']
+          minLength: 1
+          description: 品牌化版本所派生的原件 doc_id
         mail:
           type: object
           required: [mailbox, message_id, received_at]
@@ -1654,6 +1941,24 @@ components:
           oneOf:
             - $ref: '#/components/schemas/ParseResult'
             - type: 'null'
+      allOf:
+        - if:
+            properties:
+              variant:
+                const: branded
+            required: [variant]
+          then:
+            required: [derived_from]
+            properties:
+              derived_from:
+                type: string
+              mail: false
+              link: false
+          else:
+            required: [mail_message_id, mail, link]
+            properties:
+              derived_from:
+                type: 'null'
     LinkDecision:
       type: object
       required: [method, case_id]
@@ -1661,14 +1966,14 @@ components:
       properties:
         method:
           type: string
-          enum: [reliable_id, forward_record, name_match, none]
-          description: 关联依据，按优先级：邮件可靠标识 → 转发记录 → 账户+岗位+姓名；none = 进入人工关联队列
+          enum: [reliable_id, resume_request, name_match, none]
+          description: 关联依据，按优先级：邮件可靠标识 → 求简历记录（该账户 request_resume 成功且在执行时间窗内，结合账户+岗位+姓名唯一命中）→ 账户+岗位+姓名；none = 进入人工关联队列（同名、多岗位或找不到）
         case_id:
           type: [string, 'null']
         command_id:
           type: [string, 'null']
           format: uuid
-          description: method=forward_record 时对应的 forward_resume 指令
+          description: method=resume_request 时对应的 request_resume 指令
         candidate_case_ids:
           type: array
           items:
@@ -1691,27 +1996,38 @@ components:
           type: [string, 'null']
     ResumeDocument:
       type: object
-      required: [doc_id, case_id, link_status, link_method, version, sha256, filename, parse_status, created_at, duplicate]
+      required: [doc_id, case_id, variant, derived_from, mail_message_id, link_status, link_method, version, sha256, filename, parse_status, created_at, duplicate]
       properties:
         doc_id:
           type: string
+        variant:
+          $ref: '#/components/schemas/ResumeVariant'
+        derived_from:
+          type: [string, 'null']
+          description: variant=branded 时为原件 doc_id；original 时为 null
+        mail_message_id:
+          oneOf:
+            - $ref: './schemas/mail_message.json#/properties/mail_message_id'
+            - type: 'null'
+          description: 来源邮件记录；branded 继承原件的值
         case_id:
           type: [string, 'null']
         link_status:
           $ref: '#/components/schemas/LinkStatus'
         link_method:
           type: string
-          enum: [reliable_id, forward_record, name_match, manual, none]
+          enum: [reliable_id, resume_request, name_match, manual, none]
         version:
           type: integer
           minimum: 1
-          description: 同一流程下第几份简历
+          description: 同一流程下第几份原件；branded 与其原件同号
         sha256:
           type: string
         filename:
           type: string
         message_id:
           type: string
+          description: 邮件头 Message-ID（展示用；关联用 mail_message_id）
         parse_status:
           type: string
           enum: [pending, parsed, suspected_scanned, failed]
@@ -1805,6 +2121,7 @@ components:
           type: boolean
         needs_human_reason:
           type: [string, 'null']
+          description: 例如 resume_mail_timeout（求简历成功后超过 policy.resume_mail_timeout_days 未收到邮件）、resume_link_ambiguous（邮件关联歧义）、unknown_result
         contact_status:
           $ref: '#/components/schemas/ContactExchangeStatus'
         latest_command:

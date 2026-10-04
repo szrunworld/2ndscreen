@@ -1,12 +1,11 @@
 {
   "contract": "search_snapshot",
-  "description": "无法读取时不得有结果",
+  "description": "卡片文本含手机号",
   "data": {
     "search_id": "s_42",
     "query": "golang 后端",
     "scope": "current_page",
-    "coverage": "unreadable",
-    "unreadable_reason": "results_are_image",
+    "coverage": "partial",
     "items": [
       {
         "result_ref": "s_42:item_1",
@@ -19,7 +18,7 @@
           },
           {
             "label": null,
-            "text": "5年"
+            "text": "电话 13812345678"
           },
           {
             "label": null,
@@ -78,6 +77,6 @@
     "captured_at": "2026-10-04T09:31:05+08:00"
   },
   "expected_error_paths": [
-    "items"
+    "items[0].fields[1].text"
   ]
 }

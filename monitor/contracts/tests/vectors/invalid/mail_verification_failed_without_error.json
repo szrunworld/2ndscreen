@@ -1,0 +1,24 @@
+{
+  "contract": "mail_verification",
+  "description": "failed 必须给出 error",
+  "data": {
+    "verification_id": "verify-20261004T1100",
+    "mailbox": "hr@example.com",
+    "started_at": "2026-10-04T11:00:00+08:00",
+    "finished_at": "2026-10-04T11:00:12+08:00",
+    "outcome": "failed",
+    "error": null,
+    "checks": [],
+    "overdue_resume_requests": [
+      {
+        "case_id": "case_007",
+        "command_id": "00000000-0000-4000-8000-000000000031",
+        "requested_at": "2026-10-01T09:30:00+08:00",
+        "days_waiting": 3
+      }
+    ]
+  },
+  "expected_error_paths": [
+    "error"
+  ]
+}

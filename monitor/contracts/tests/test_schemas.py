@@ -27,6 +27,8 @@ def test_required_schema_files_exist():
         "device_registration.json",
         "device_heartbeat.json",
         "login_qr.json",
+        "mail_message.json",
+        "mail_verification.json",
     }
     assert expected <= set(SCHEMA_FILES)
     assert set(CONTRACT_SCHEMAS.values()) == expected
@@ -60,9 +62,16 @@ def test_action_enum_matches_models():
         "request_resume",
         "request_contact_exchange",
         "search_candidates",
-        "forward_resume",
         "provide_input",
     }
+    # 0.3.0：forward_resume 从所有枚举中移除（名字保留，以后需要时再加回）
+    assert "forward_resume" not in mc.ACTIONS
+    for file_name, path in (
+        ("policy.json", ("properties", "allowed_actions", "items")),
+        ("device_registration.json", ("properties", "capabilities", "items")),
+    ):
+        assert "forward_resume" not in _enum(file_name, *path)
+    assert "forward_resume" not in load_schema("policy.json")["$defs"]["per_action_counts"]["properties"]
 
 
 def test_result_status_enum_matches_models():
@@ -138,6 +147,21 @@ def test_coverage_mode_exchange_enums_match_models():
 
 
 def test_version_is_consistent():
-    assert mc.__version__ == "0.2.0"
+    assert mc.__version__ == "0.3.0"
     pyproject = tomllib.loads((CONTRACTS_DIR / "pyproject.toml").read_text(encoding="utf-8"))
     assert pyproject["project"]["version"] == mc.__version__
+
+
+def test_mail_status_and_check_enums_match_models():
+    assert _enum("mail_message.json", "properties", "status") == list(mc.MAIL_STATUSES)
+    assert set(mc.MAIL_STATUSES) == {str(s) for s in mc.MailState}
+    code_enum = load_schema("mail_verification.json")["properties"]["checks"]["items"]["properties"]["code"]["enum"]
+    assert code_enum == list(mc.MAIL_CHECK_CODES)
+
+
+def test_policy_defaults_match_models():
+    props = load_schema("policy.json")["properties"]
+    assert props["resume_mail_timeout_days"]["default"] == models.Policy.model_fields["resume_mail_timeout_days"].default == 3
+    assert props["after_resume_received"]["default"] == models.AfterResumeReceived().to_wire()
+    assert props["after_resume_received"]["properties"]["action"]["default"] == "none"
+    assert props["company_mailbox"]["readOnly"] is True

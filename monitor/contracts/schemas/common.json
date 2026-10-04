@@ -51,10 +51,9 @@
         "request_resume",
         "request_contact_exchange",
         "search_candidates",
-        "forward_resume",
         "provide_input"
       ],
-      "description": "指令动作。"
+      "description": "指令动作。forward_resume 自 0.3.0 移除（简历由 BOSS 自动发到公司邮箱，Monitor 不转发），名字保留，以后需要时再加回。"
     },
     "exchange_type": {
       "type": "string",

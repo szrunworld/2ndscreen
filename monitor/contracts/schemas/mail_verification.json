@@ -1,0 +1,159 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "mail_verification",
+  "description": "邮箱核对任务的一次结果（方案 8.2 第 5 条），由邮件接入（G）定时提交（POST /mail-verifications）。outcome 只反映邮箱完整性检查；求简历超时提醒单列在 overdue_resume_requests，不影响 outcome。",
+  "type": "object",
+  "required": [
+    "verification_id",
+    "mailbox",
+    "started_at",
+    "finished_at",
+    "outcome",
+    "checks"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "verification_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:-]{8,128}$",
+      "description": "本次核对的标识，同时用作 Idempotency-Key。"
+    },
+    "mailbox": {
+      "type": "string",
+      "format": "email",
+      "maxLength": 254
+    },
+    "started_at": {
+      "$ref": "common.json#/$defs/timestamp"
+    },
+    "finished_at": {
+      "$ref": "common.json#/$defs/timestamp"
+    },
+    "outcome": {
+      "type": "string",
+      "enum": [
+        "ok",
+        "issues_found",
+        "failed"
+      ],
+      "description": "ok 全部检查项 count=0；issues_found 至少一项 count>0；failed 核对本身没跑完（必须给出 error）。"
+    },
+    "error": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 500,
+      "default": null
+    },
+    "checks": {
+      "type": "array",
+      "maxItems": 7,
+      "items": {
+        "type": "object",
+        "required": [
+          "code",
+          "count"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "type": "string",
+            "enum": [
+              "inbox_backlog",
+              "processed_without_record",
+              "original_missing",
+              "hash_mismatch",
+              "document_without_original",
+              "needs_review_mismatch",
+              "failed_mismatch"
+            ],
+            "description": "inbox_backlog INBOX 中超过 30 分钟未处理；processed_without_record Processed 中的邮件在数据库无记录；original_missing 原件不存在；hash_mismatch 原件哈希不一致；document_without_original resume_document 找不到原件；needs_review_mismatch / failed_mismatch 文件夹数量与人工队列不一致。"
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "refs": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "default": [],
+            "description": "抽样的 mail_message_id 或 doc_id，便于控制台跳转。"
+          }
+        }
+      },
+      "description": "outcome 为 ok / issues_found 时必须包含全部 7 个检查项，各一次。"
+    },
+    "overdue_resume_requests": {
+      "type": "array",
+      "maxItems": 200,
+      "default": [],
+      "items": {
+        "type": "object",
+        "required": [
+          "case_id",
+          "command_id",
+          "requested_at",
+          "days_waiting"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "case_id": {
+            "$ref": "common.json#/$defs/workflow_id"
+          },
+          "command_id": {
+            "$ref": "common.json#/$defs/uuid",
+            "description": "成功的 request_resume 指令。"
+          },
+          "requested_at": {
+            "$ref": "common.json#/$defs/timestamp"
+          },
+          "days_waiting": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "description": "求简历成功但超过 policy.resume_mail_timeout_days 仍未收到邮件的流程（提醒）。"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "const": "failed"
+          }
+        },
+        "required": [
+          "outcome"
+        ]
+      },
+      "then": {
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string",
+            "x-message": "outcome=failed 时必须给出 error"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "error": {
+            "type": "null",
+            "x-message": "只有 outcome=failed 时才能填写 error"
+          }
+        }
+      }
+    }
+  ]
+}
