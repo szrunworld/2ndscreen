@@ -12,7 +12,7 @@
 | `monitor_contracts` 包 | `monitor/contracts/monitor_contracts/` | pydantic v2 模型、`validate_*`、状态机、`compute_event_id`、Protocol |
 | 夹具格式 | `monitor/fixtures/schema/ax-fixture.schema.json` | B 录制、C 回放、E/H 测试的脱敏元素树格式 |
 | OpenAPI | `monitor/contracts/openapi.yaml` | 服务端 HTTP 接口；消息体直接 `$ref` 上面的 schema |
-| 测试向量 | `monitor/contracts/tests/vectors/{valid,invalid}/` | 合法 42 个、非法 58 个，其他任务可直接拿来做 fake 数据 |
+| 测试向量 | `monitor/contracts/tests/vectors/{valid,invalid}/` | 合法 42 个、非法 59 个，其他任务可直接拿来做 fake 数据 |
 
 ```sh
 cd monitor && uv sync && uv run pytest contracts
