@@ -199,7 +199,7 @@
 
 验收：过期二维码接口返回 410；查看记录可查询；搜索快照 `unreadable` 与 `empty_confirmed` 分别可查。
 
-### G0 邮件服务接口补充（仓库 amplifistudio/remotedesk-resend，需用户同意跨仓修改）
+### G0 邮件服务接口补充（已取消：用户 2026-10-04 决定不做，上游收信完整性由邮件服务侧的监控负责）
 
 为 Monitor 的对账补一个 integration 接口：`GET /v1/integration/messages?since=&cursor=&limit=`（`mail.read`，只列 key 绑定的邮箱，返回 message_id、received_at、from、has_attachments、scan 状态、purged），按该仓既有的 ACL、审计、迁移与测试规范实现。可选：`POST /v1/integration/messages/{id}/archive`（新 scope `mail.organize`，只移动文件夹到 archive，便于人工在门户看出哪些已处理）。不提供删除接口：销毁只走留存任务。
 
