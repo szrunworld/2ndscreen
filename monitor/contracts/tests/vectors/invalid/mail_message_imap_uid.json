@@ -6,7 +6,7 @@
     "provider": "remotedesk-mail",
     "provider_message_id": "3f6c2a9e-1b4d-4e8a-9c7f-2d5e8b1a0c44",
     "webhook_delivery_id": "6f1c9d2e-0a7b-4c3e-8f21-5b9a4d7e1c30",
-    "mailbox": "cv@remotedesk.io",
+    "mailbox": "zhaopin@remotedesk.io",
     "message_id": null,
     "received_at": "2026-10-04T10:02:00+08:00",
     "sha256": null,

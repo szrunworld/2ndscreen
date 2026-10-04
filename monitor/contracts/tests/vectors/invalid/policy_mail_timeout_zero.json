@@ -24,7 +24,7 @@
       "wait_for_parse": true
     },
     "resume_mail_timeout_days": 0,
-    "company_mailbox": "cv@remotedesk.io",
+    "company_mailbox": "zhaopin@remotedesk.io",
     "mail_retention_days": 30,
     "work_hours": {
       "timezone": "Asia/Shanghai",

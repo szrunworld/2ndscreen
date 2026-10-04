@@ -3,7 +3,7 @@
   "description": "provider_missing 已改名 upstream_missing",
   "data": {
     "verification_id": "verify-20261004T1100",
-    "mailbox": "cv@remotedesk.io",
+    "mailbox": "zhaopin@remotedesk.io",
     "started_at": "2026-10-04T11:00:00+08:00",
     "finished_at": "2026-10-04T11:00:12+08:00",
     "outcome": "ok",

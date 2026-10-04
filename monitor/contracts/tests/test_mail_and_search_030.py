@@ -65,7 +65,7 @@ def test_mail_message_id_rejects_non_uuid(bad):
 
 
 def test_normalizers():
-    assert normalize_mailbox("  CV@RemoteDesk.io ") == "cv@remotedesk.io"
+    assert normalize_mailbox("  ZhaoPin@RemoteDesk.IO ") == "zhaopin@remotedesk.io"
     assert normalize_message_id(" <a@b> ") == "a@b"
     assert normalize_message_id("< >") is None
     assert normalize_message_id(None) is None
@@ -260,7 +260,7 @@ def test_policy_defaults():
     model = validate_policy(data)
     assert model.after_resume_received.action == "none"
     assert model.resume_mail_timeout_days == 3
-    assert model.company_mailbox == "cv@remotedesk.io"
+    assert model.company_mailbox == "zhaopin@remotedesk.io"
     assert model.mail_retention_days == 30
     # 模型层默认值：未提供时收到简历后不自动交换联系方式、超时 3 天、未配置邮箱
     optional = ("after_resume_received", "resume_mail_timeout_days", "company_mailbox", "mail_retention_days")

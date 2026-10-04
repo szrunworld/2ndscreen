@@ -885,7 +885,7 @@ Sha256Hex = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 
 
 class MailMessage(ContractModel):
-    """公司邮箱 cv@ 里的一封邮件在我方的记录（方案 8.2，0.3.1 起来自 mail 服务的 mail.ready 推送）。
+    """公司邮箱 zhaopin@ 里的一封邮件在我方的记录（方案 8.2，0.3.1 起来自 mail 服务的 mail.ready 推送）。
 
     收到推送即以 pending 写入（此时只有标识，副本字段为 null）；回取邮件与附件、写我方副本后
     补齐 sha256 与 raw_storage_uri。状态按 states.MAIL_TRANSITIONS 前进。Monitor 不删除 mail

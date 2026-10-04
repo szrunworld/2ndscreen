@@ -917,7 +917,7 @@ paths:
       operationId: putMailMessage
       summary: 邮件接入写入或更新一封邮件的记录（幂等 upsert）
       description: |
-        邮件接入是公司邮件服务 mail 的订阅方：收到 cv@ 的 mail.ready webhook（验签、按投递 id 幂等）后
+        邮件接入是公司邮件服务 mail 的订阅方：收到 zhaopin@ 的 mail.ready webhook（验签、按投递 id 幂等）后
         立即以 status=pending 写入（只有标识，sha256 / raw_storage_uri 为 null），再用 mail 的 integration
         API key 回取邮件与附件、写我方副本，之后按 states.MAIL_TRANSITIONS 更新
         （pending → processed | needs_review | failed | ignored；needs_review → processed；failed → pending）。

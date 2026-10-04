@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "mail_message",
-  "description": "公司邮箱 cv@remotedesk.io 里的一封邮件在我方的记录（方案 8.2）。Monitor 不直接接 Resend，而是公司邮件服务 mail（amplifistudio/remotedesk-resend）的订阅方：收到 mail.ready webhook 即以 status=pending 写入（PUT /mail-messages/{mail_message_id}，此时只有标识），再用 mail 的 integration API key 回取邮件与附件、写我方副本，之后按 monitor_contracts.states.MAIL_TRANSITIONS 更新状态。Monitor 不删除 mail 里的邮件；我方副本按 policy.mail_retention_days 清理，只留元数据。",
+  "description": "公司邮箱 zhaopin@remotedesk.io 里的一封邮件在我方的记录（方案 8.2）。Monitor 不直接接 Resend，而是公司邮件服务 mail（amplifistudio/remotedesk-resend）的订阅方：收到 mail.ready webhook 即以 status=pending 写入（PUT /mail-messages/{mail_message_id}，此时只有标识），再用 mail 的 integration API key 回取邮件与附件、写我方副本，之后按 monitor_contracts.states.MAIL_TRANSITIONS 更新状态。Monitor 不删除 mail 里的邮件；我方副本按 policy.mail_retention_days 清理，只留元数据。",
   "type": "object",
   "required": [
     "mail_message_id",
@@ -46,7 +46,7 @@
       "type": "string",
       "format": "email",
       "maxLength": 254,
-      "description": "收件邮箱（cv@remotedesk.io）。"
+      "description": "收件邮箱（zhaopin@remotedesk.io）。"
     },
     "message_id": {
       "type": [

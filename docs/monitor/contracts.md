@@ -169,7 +169,7 @@ cd monitor && uv sync && uv run pytest contracts
 - **policy**：账户级策略。字段包括 `policy_version`（PUT 用 If-Match 做乐观锁）、`allowed_actions`（对外动作白名单，默认空即全部关闭；provide_input 和 verify_only 不受它控制）、`job_scope`、`greeting{enabled, template}`、`auto_request_resume`、`after_resume_received{action, wait_for_parse}`、`resume_mail_timeout_days`、`company_mailbox`、`work_hours`（IANA 时区 + 窗口，空窗口表示任何时段都不生成对外指令）、`daily_limits` 与 `min_interval_seconds`（四个对外动作各一项：send_greeting、request_resume、request_contact_exchange、search_candidates）、`pause_on_anomaly`（只能为 true）、`paused`。Monitor 本地另有写死的硬上限和最小间隔下限，策略只能收紧、不能放宽。这些常量由 D2 定义，不在契约里。
   - `after_resume_received.action` 0.3.0 起只能是 `none`（也是默认值）：收到并关联简历后不做任何自动动作。换微信只能人工触发（`POST /cases/{case_id}:request-wechat`），服务端不得在任何自动流程中生成 `request_contact_exchange`。对象保留以便以后扩展；`wait_for_parse` 默认 true，目前不起作用。线上仍必须写全。`request_contact_exchange` 仍在 `allowed_actions` 白名单与上限里：人工触发的指令到了 Monitor 也要白名单开启才执行。
   - `resume_mail_timeout_days`（默认 3，范围 1–30）：求简历成功后超过该天数仍未收到并关联简历邮件，服务端把流程转 `needs_human`（`needs_human_reason=resume_mail_timeout`），核对任务也会把它列为提醒。
-  - `company_mailbox`：BOSS 账户设置里预留的公司邮箱（cv@remotedesk.io），只读展示，以服务端配置为准；PUT 时服务端忽略请求里的值。未配置时为 null。
+  - `company_mailbox`：BOSS 账户设置里预留的公司邮箱（zhaopin@remotedesk.io），只读展示，以服务端配置为准；PUT 时服务端忽略请求里的值。未配置时为 null。
   - `mail_retention_days`（0.3.1，默认 30，范围 1–365）：我方邮件副本的保留天数，到期由我方清理任务删除副本、只留元数据。mail 服务里的邮件不归它管（见下文"公司邮箱"）。不加 `resume_route`：v1 只有这一条简历路线。
 - **device_registration**：`POST /devices` 的请求体。字段包括 `enrollment_code`、`device_name`、`mode`、`platform`、`monitor_version`、`contracts_version`、`capabilities`。local 模式不能声明 `login_relay`。
 - **device_heartbeat**：默认 30 秒一次。字段包括 `mode`、`account_id`（绑定账户，见下文"账户来源"）、`client_state`、`paused` + `pause_reason`（paused 时必填）、`needs_baseline`、`current_action`、`queue{queued_commands, undelivered_results, outbox_events}`、`last_error`、`monitor_version`。
@@ -179,9 +179,9 @@ cd monitor && uv sync && uv run pytest contracts
 
 简历路线（用户 2026-10-04 二次决定）：新投递 →（可选）问候 → 求简历 → 候选人同意 → BOSS 按账户设置把附件简历自动发到公司邮箱 → 邮件接入（G）读取、关联、解析。Monitor 不参与这一段。
 
-收件邮箱是 `cv@remotedesk.io`，它是公司邮件服务 **mail**（仓库 `amplifistudio/remotedesk-resend`）里的公共邮箱。邮件接入**不直接接 Resend**，而是 mail 的订阅方（方案 8.2，0.3.1）：订阅 cv@ 的 `mail.ready` webhook（附件扫描完、可下载时才推；推送体只有标识），用 mail 为 cv@ 签发的 `mail.read` integration API key 回取邮件与附件（`GET /v1/integration/messages/{id}`）。
+收件邮箱是 `zhaopin@remotedesk.io`（用户 2026-10-04 决定，不是 cv@），它是公司邮件服务 **mail**（仓库 `amplifistudio/remotedesk-resend`）里的公共邮箱。邮件接入**不直接接 Resend**，而是 mail 的订阅方（方案 8.2，0.3.1）：订阅 zhaopin@ 的 `mail.ready` webhook（附件扫描完、可下载时才推；推送体只有标识），用 mail 为 zhaopin@ 签发的 `mail.read` integration API key 回取邮件与附件（`GET /v1/integration/messages/{id}`）。
 
-**mail_message**：cv@ 里的一封邮件在我方的记录。收到推送即以 `pending` 写入（`PUT /mail-messages/{mail_message_id}`，此时只有标识），回取并写我方副本后补齐副本字段，处理后更新状态。
+**mail_message**：zhaopin@ 里的一封邮件在我方的记录。收到推送即以 `pending` 写入（`PUT /mail-messages/{mail_message_id}`，此时只有标识），回取并写我方副本后补齐副本字段，处理后更新状态。
 
 | 字段 | 说明 |
 | --- | --- |
@@ -189,7 +189,7 @@ cd monitor && uv sync && uv run pytest contracts
 | `provider` | 只能是 `remotedesk-mail` |
 | `provider_message_id` | mail 的 message_id（推送体里的 `message_id`，UUID），回取邮件用它 |
 | `webhook_delivery_id?` | 首次收到的推送投递 id，用于和 mail 的投递台账对账 |
-| `mailbox` | 收件邮箱（cv@remotedesk.io） |
+| `mailbox` | 收件邮箱（zhaopin@remotedesk.io） |
 | `message_id` | 邮件头 Message-ID 原文，保留用于展示和排查，**不参与主键**；推送阶段未知或邮件缺失时为 null |
 | `received_at` | mail 收到邮件的时间 |
 | `sha256`、`raw_storage_uri`、`copy_purged_at?` | 我方副本（原始邮件）的哈希与位置。回取前 sha256 为 null；`processed` / `needs_review` 必须有 sha256 和位置（已清理的除外）。副本按 `policy.mail_retention_days` 清理后 `copy_purged_at` 非空、`raw_storage_uri` 为 null，只留元数据。sha256 只用于核对，不是候选人身份 |
@@ -199,7 +199,7 @@ cd monitor && uv sync && uv run pytest contracts
 | `error` | `failed` 必填；`pending` 可记最近一次失败原因；`needs_review` / `ignored` 可写原因；`processed` 必须为 null |
 | `updated_at` | 不早于 `received_at` |
 
-**Monitor 不删除 mail 里的邮件**，也不移动它们。mail 的设计是"只有留存任务才真正销毁内容"：受 legal hold 约束，删除内容时保留信封与 sha256。cv@ 在 mail 侧设 `retention_days=30`，由 mail 的 purge 任务统一清理。我方的副本按 `policy.mail_retention_days`（默认 30）由我方清理任务删除，只留元数据。
+**Monitor 不删除 mail 里的邮件**，也不移动它们。mail 的设计是"只有留存任务才真正销毁内容"：受 legal hold 约束，删除内容时保留信封与 sha256。zhaopin@ 在 mail 侧设 `retention_days=30`，由 mail 的 purge 任务统一清理。我方的副本按 `policy.mail_retention_days`（默认 30）由我方清理任务删除，只留元数据。
 
 **mail_verification**：核对任务（方案 8.2 第 6 条）一次的结果，`POST /mail-verifications` 提交。
 
@@ -407,7 +407,7 @@ Locator 的文本匹配（0.2.0 追认任务 C 的实现）：`text` 在规范�
 | Locator 文本匹配面 | 0.2.0 追认 C 的实现：text / text_contains 匹配 text、label、value 任一（规范化后），仍要求唯一命中 |
 | 简历路线 | 0.3.0（用户 2026-10-04）：求简历 → 候选人同意 → BOSS 自动发到公司邮箱；Monitor 不转发，`forward_resume` 移除，名字保留 |
 | mail_messages 由谁写 | 0.3.0（协调者裁决）：邮件接入用 `PUT /mail-messages/{mail_message_id}` 幂等 upsert；状态迁移表进 `states.py`。0.3.1：主键改为 `"mail:" + mail 的 message_id`，不再按 Message-ID / IMAP UID 计算 |
-| 收信方式 | 0.3.1（协调者裁决）：不直接接 Resend，作为公司邮件服务 mail 的订阅方（cv@ 的 mail.ready webhook + integration API key 回取）。`provider=remotedesk-mail`；保留邮件头 message_id；核对项 provider_missing 改名 upstream_missing；Monitor 不删除 mail 里的邮件，我方副本按 `policy.mail_retention_days` 清理 |
+| 收信方式 | 0.3.1（协调者裁决）：不直接接 Resend，作为公司邮件服务 mail 的订阅方（zhaopin@ 的 mail.ready webhook + integration API key 回取）。`provider=remotedesk-mail`；保留邮件头 message_id；核对项 provider_missing 改名 upstream_missing；Monitor 不删除 mail 里的邮件，我方副本按 `policy.mail_retention_days` 清理 |
 | 人工换微信的阶段 | 0.3.1（协调者裁决）：除 closed 外全部允许，迁移表加 4 条 `→ contact_requested`；之后邮件才到时关联成功、阶段不回退，时间线记 resume_linked |
 | 搜索结果是否识别身份 | 0.3.0（用户 2026-10-04）：不识别。卡片只原样返回可读文本与道具卡文案；搜索结果不能作为指令目标（删除会话目标的 `result_ref`） |
 | 交换联系方式 | 0.3.0（用户 2026-10-04 确认）：只换微信（`exchange_type` 只有 `wechat`，依据 B 观察到的『请求交换微信已发送』）；只能人工触发，新增 `POST /cases/{case_id}:request-wechat`，`after_resume_received.action` 只能为 none |
