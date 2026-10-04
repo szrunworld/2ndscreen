@@ -146,6 +146,9 @@ class World {
   account?: AccountScope;
   /** Lifecycle marks in the order they happened: bridge exits, session closes. */
   order: string[] = [];
+  closeFails = false;
+  /** Called at each acquisition, before the file is written. */
+  onAcquire?: (name: string) => void;
 
   constructor(people: Person[]) {
     this.people = people;
@@ -337,6 +340,7 @@ class FakeSession implements Session {
 
   async close(): Promise<void> {
     await this.inFlight;
+    if (this.world.closeFails) throw new RuntimeError('io', 'the window could not be released');
     this.world.order.push('session_closed');
     this.closed = true;
     this.actionsAtClose = this.world.actions.length;
@@ -525,6 +529,7 @@ function fakeWorkflow(world: World, noScripted: readonly BossUnitName[] = []): B
       const person = world.people[index]!;
       if (world.page !== 'resume' || world.people[world.opened]?.name !== name) return { status: 'failed', reason: 'resume_not_open' };
       world.acquired.set(name, (world.acquired.get(name) ?? 0) + 1);
+      world.onAcquire?.(name);
       const path = join(context.staging!.dir, 'resume.png');
       writeFileSync(path, png(index));
       return { status: 'acquired', branch: 'online', artifacts: [{ itemId: context.item!.id, kind: 'captured_image', path, capture: person.capture === 'partial' ? PARTIAL : COMPLETE }] };
@@ -700,6 +705,13 @@ async function harness(
 
 const run = (h: Harness, taskId: string, signal = new AbortController().signal) => h.runner.run(taskId, signal);
 
+/** What TaskControl.resume does for a paused or waiting task, then a run. */
+async function resumeAndRun(h: Harness, taskId: string) {
+  const task = (await h.store.getTask(taskId))!;
+  if (task.status === 'paused' || task.status === 'waiting_user') await h.store.transitionTask(taskId, 'running', { phase: 'preparing', error: null }, task.status);
+  return run(h, taskId);
+}
+
 // ---------------------------------------------------------------------------
 // tests
 
@@ -837,7 +849,7 @@ test('no model: the task waits for the user with model_unavailable, then resumes
     // A model is configured now; resume.
     const bridge = new FakeBridge(world, { input: 10, output: 20 });
     h.rebuild({ explorer: bridge });
-    const second = await run(h, taskId);
+    const second = await resumeAndRun(h, taskId);
     assert.equal(second.status, 'succeeded');
     assert.equal(second.counts.committed, 5);
     assert.equal(bridge.requests.length, 1);
@@ -1003,13 +1015,13 @@ test('another visible account, or a login page, waits for the user before any ca
 
     world.account = undefined;
     world.page = 'login';
-    const login = await run(h, taskId);
+    const login = await resumeAndRun(h, taskId);
     assert.equal(login.waitReason, 'login_required');
     assert.equal(world.actions.length, 0);
     assert.equal((await h.store.listWorkItems(taskId)).length, 0);
 
     world.page = 'list';
-    const done = await run(h, taskId);
+    const done = await resumeAndRun(h, taskId);
     assert.equal(done.status, 'succeeded');
     assert.equal(((await h.store.getTask(taskId))!.account!).accountKey, 'acct-a', 'the bound account is kept');
   } finally {
@@ -1028,12 +1040,12 @@ test('a session that cannot be opened leaves the task resumable; the next run cl
     assert.equal((await h.store.getTask(taskId))!.error?.code, 'lease_held');
 
     h.sessions.failWith = new RuntimeError('permission_missing', 'accessibility not granted');
-    const perm = await run(h, taskId);
+    const perm = await resumeAndRun(h, taskId);
     assert.equal(perm.status, 'waiting_user');
     assert.equal(perm.waitReason, 'permission_missing');
 
     h.sessions.failWith = undefined;
-    const done = await run(h, taskId);
+    const done = await resumeAndRun(h, taskId);
     assert.equal(done.status, 'succeeded');
     assert.equal((await h.store.getTask(taskId))!.error, undefined, 'a resumed run clears the old error');
     assert.deepEqual(done.usage.uiModelCalls, emptyUsage().uiModelCalls);
@@ -1056,11 +1068,11 @@ test('with no bound account and none configured the task waits for the user; an 
 
     // A key that would break lease scopes is refused, not used.
     await h.store.transitionTask(taskId, 'waiting_user', { account: { platform: 'boss', accountKey: 'a:b', binding: 'explicit' } });
-    assert.equal((await run(h, taskId)).waitReason, 'account_changed');
+    assert.equal((await resumeAndRun(h, taskId)).waitReason, 'account_changed');
     assert.equal(world.actions.length, 0);
 
     await h.store.transitionTask(taskId, 'waiting_user', { account: { platform: 'boss', accountKey: 'acct-7', binding: 'explicit' } });
-    const done = await run(h, taskId);
+    const done = await resumeAndRun(h, taskId);
     assert.equal(done.status, 'succeeded');
     assert.ok((await h.store.listWorkItems(taskId)).every((i) => i.identity.accountKey === 'acct-7'));
   } finally {
@@ -1138,6 +1150,101 @@ test('cancel during an exploration: the bridge is stopped and has exited before 
     assert.equal(second.status, 'discovered');
     // The model call made before the cancel is still counted.
     assert.equal(outcome.usage.uiModelCalls + outcome.usage.repairModelCalls, 1);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('a paused or waiting task is left alone: only a resume moves it back to running', async () => {
+  const world = new World(people(2));
+  const h = await harness(world);
+  try {
+    const taskId = await h.submit({ requestedCount: 2 });
+    await h.store.transitionTask(taskId, 'running', {}, 'queued');
+    await h.store.transitionTask(taskId, 'paused', {}, 'running');
+    const paused = await run(h, taskId);
+    assert.equal(paused.status, 'paused');
+    await h.store.transitionTask(taskId, 'running', {}, 'paused');
+    await h.store.transitionTask(taskId, 'waiting_user', { waitReason: 'login_required' }, 'running');
+    assert.equal((await run(h, taskId)).status, 'waiting_user');
+    assert.equal(h.sessions.opened.length, 0);
+    assert.equal(world.actions.length, 0);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('a failed replay falls back to the verified scripted path before any model; the procedure is degraded, not the run', async () => {
+  const world = new World(people(4));
+  const h = await harness(world, { explorer: 'unavailable', stable: false });
+  try {
+    // A seeded return_to_list that presses a control the app does not have.
+    await h.store.insertProcedure(
+      stableProcedure('return_to_list', [{ id: 's1', action: { kind: 'click', target: { kind: 'element', role: 'AXButton', label: '关闭窗口' }, effect: 'navigation' } }], [], UNITS.return_to_list.postconditions),
+    );
+    const taskId = await h.submit({ requestedCount: 4 });
+    const outcome = await run(h, taskId);
+    assert.equal(outcome.status, 'succeeded');
+    assert.equal(h.explorerCalls, 0, 'no model was needed: the scripted path closed the resume');
+    assert.equal(outcome.usage.uiModelCalls + outcome.usage.repairModelCalls, 0);
+    const key = { skill: SPEC.id, skillVersion: SPEC.version, unit: 'return_to_list', platform: 'macos' as const, appVersion: '5.0.0', profile: PROFILE.id };
+    assert.equal((await h.store.listProcedures(key))[0]!.status, 'degraded');
+    assert.ok((await h.store.listEvents(taskId)).some((e) => e.type === 'replay_fallback' && e.detail?.route === 'scripted'));
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('a replay whose own postcondition is wrong but whose unit verifies is not repeated: no input is sent twice', async () => {
+  const world = new World(people(3));
+  const h = await harness(world, { explorer: 'unavailable', stable: false });
+  try {
+    await h.store.insertProcedure(
+      stableProcedure('open_resume', [{ id: 's1', action: { kind: 'click', target: { kind: 'element', role: 'AXLink', label: '在线简历' }, effect: 'navigation' } }], ['candidate.name'], [text('this text never shows')]),
+    );
+    const taskId = await h.submit({ requestedCount: 3 });
+    const outcome = await run(h, taskId);
+    assert.equal(outcome.status, 'succeeded');
+    assert.equal(world.actions.filter((a) => a.label === '在线简历').length, 3, 'one click per candidate');
+    // The first candidate's unit was verified as done without scripting it; the degraded procedure is then skipped for the others.
+    assert.equal(h.workflow.scripted.filter((u) => u === 'open_resume').length, 2);
+    assert.equal(h.explorerCalls, 0);
+    assert.ok((await h.store.listEvents(taskId)).some((e) => e.type === 'replay_fallback' && e.detail?.route === 'verified'));
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('success is decided on the files on disk: a committed file deleted later does not count', async () => {
+  const world = new World(people(7));
+  const h = await harness(world);
+  try {
+    const taskId = await h.submit({ requestedCount: 5 });
+    world.onAcquire = (name) => {
+      if (name !== world.people[4]!.name) return;
+      // Someone removes the first candidate's archived resume before the target is checked.
+      void h.store.listArtifacts(taskId).then((artifacts) => {
+        const first = artifacts[0]!;
+        rmSync(join(h.dir, 'out', taskId, first.relativePath));
+      });
+    };
+    const outcome = await run(h, taskId);
+    assert.equal(outcome.status, 'succeeded');
+    assert.equal(outcome.counts.committed, 6, 'one more candidate was collected to make up for the lost file');
+    const manifest = JSON.parse(readFileSync(join(outcome.outputPath, 'manifest.json'), 'utf8'));
+    assert.equal(manifest.delivered, 5);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('a run whose session cannot be closed rejects, so no one may treat its actor as stopped', async () => {
+  const world = new World(people(2));
+  const h = await harness(world);
+  try {
+    const taskId = await h.submit({ requestedCount: 2 });
+    world.closeFails = true;
+    await assert.rejects(run(h, taskId), /could not be released/);
   } finally {
     await h.cleanup();
   }

@@ -219,8 +219,6 @@ class TaskRun {
   private cursor: string | undefined;
   /** Items by the list row they were last seen as, to skip finished candidates without opening them. */
   private readonly bySourceRef = new Map<string, WorkItem>();
-  /** Committed items whose files were checked on disk in this run. */
-  private readonly delivered = new Set<string>();
   private itemErrorsInRow = 0;
 
   constructor(deps: TaskRunnerDeps & TaskRunnerOptions, clock: Clock, taskId: string, signal: AbortSignal) {
@@ -242,7 +240,9 @@ class TaskRun {
     const found = await this.store.getTask(this.taskId);
     if (!found) throw new RuntimeError('not_found', `no task ${this.taskId}`);
     this.task = found;
-    if (TERMINAL_TASK_STATUSES.includes(found.status)) return this.outcome();
+    // Ended, or held by a control decision (paused, waiting for the user):
+    // only TaskControl.resume moves a held task back to running.
+    if (TERMINAL_TASK_STATUSES.includes(found.status) || found.status === 'paused' || found.status === 'waiting_user') return this.outcome();
     if (found.status === 'cancelling') {
       // Nothing of this run ever acted, so the cancel can be confirmed here.
       await this.transition('cancelled', { terminationReason: 'cancelled' }, 'cancelling').catch(() => undefined);
@@ -257,9 +257,8 @@ class TaskRun {
     let stop: Stop;
     try {
       throwIfAborted(this.signal);
-      if (found.status !== 'running') {
-        // queued, paused or waiting_user: this run picks it up.
-        this.task = await this.transition('running', { phase: 'preparing', error: null }, found.status);
+      if (found.status === 'queued') {
+        this.task = await this.transition('running', { phase: 'preparing', error: null }, 'queued');
       } else {
         this.task = await this.transition('running', { phase: 'preparing' }, 'running');
       }
@@ -439,7 +438,7 @@ class TaskRun {
         return;
       }
 
-      item = await this.acquireAndCommit(item, itemContext, resume.observation);
+      item = await this.acquireAndCommit(item, itemContext);
       this.itemErrorsInRow = 0;
       await this.backToList({ ...itemContext, item }, state);
     } catch (error) {
@@ -460,7 +459,7 @@ class TaskRun {
   }
 
   /** stage → acquire → validate → archive → commit → index; counts only when the commit says so. */
-  private async acquireAndCommit(item: WorkItem, context: UnitContext, observation: Observation): Promise<WorkItem> {
+  private async acquireAndCommit(item: WorkItem, context: UnitContext): Promise<WorkItem> {
     const artifacts = this.artifactStore!;
     await this.checkStillRunning();
     await this.checkpoint('acquire_resume', item.id);
@@ -474,7 +473,8 @@ class TaskRun {
       this.recorder.record({ type: 'unit', unit: 'acquire_resume', route: 'scripted', ok: false, elapsedMs: this.clock.now().getTime() - started });
       return this.moveItem(item, 'failed', acquisition.reason);
     }
-    const acquired = await this.deps.workflow.verifyUnit('acquire_resume', withStaging, observation);
+    // Judged on the screen and staging as they are after the acquisition, not before it.
+    const acquired = await this.deps.workflow.verifyUnit('acquire_resume', withStaging, await this.session!.observe({ elements: true }, this.signal));
     this.recorder.record({ type: 'unit', unit: 'acquire_resume', route: 'scripted', ok: acquired.ok, elapsedMs: this.clock.now().getTime() - started });
     if (!acquired.ok || acquisition.artifacts.length === 0) return this.moveItem(item, 'failed', `acquire_unverified: ${acquired.evidence.join('; ') || 'no files'}`);
     item = await this.moveItem(item, 'acquired', undefined, 'acquire_resume');
@@ -500,10 +500,9 @@ class TaskRun {
     item = committed.item;
     this.bySourceRef.set(item.ref.sourceRef, item);
     if (committed.counted) {
-      const persisted = await this.deps.workflow.verifyUnit('persist_candidate', { ...withStaging, item }, observation);
+      const persisted = await this.deps.workflow.verifyUnit('persist_candidate', { ...withStaging, item }, await this.session!.observe({ elements: true }, this.signal));
       if (!persisted.ok) await this.event('persist_unverified', { itemId: item.id, unit: 'persist_candidate', result: 'failed', detail: { evidence: persisted.evidence } });
       this.lastCommittedItemId = item.id;
-      this.delivered.add(item.id);
     }
     await this.writeIndex();
     return item;
@@ -570,6 +569,18 @@ class TaskRun {
       if (fact) return { ok: false, reason: fact };
       failure = check ? { status: 'verify_failed', check } : replay;
       failedProcedureId = procedure.id;
+      // The deterministic path stays available before any model: the unit may
+      // already be done (then nothing is sent again), else the scripted path runs.
+      const fallback = await this.scriptedFallback(name, context, verify);
+      if (fallback.ok) {
+        await engine.recordOutcome(procedure.id, { itemId: outcomeItem, ok: false });
+        await this.event('replay_fallback', { unit: name, ...(context.item ? { itemId: context.item.id } : {}), result: 'ok', detail: { procedureId: procedure.id, route: fallback.route } });
+        return { ok: true, observation: fallback.observation, ...(fallback.reason ? { reason: fallback.reason } : {}) };
+      }
+      if (fallback.reason && NOT_REPAIRABLE.has(fallback.reason)) return { ok: false, reason: fallback.reason, ...(fallback.observation ? { observation: fallback.observation } : {}) };
+      const later = fallback.observation && (await this.pageFact(fallback.observation));
+      if (later) return { ok: false, reason: later, observation: fallback.observation };
+      scriptedReason = fallback.reason;
     } else {
       const scripted = workflow.runScripted(name, context);
       if (scripted) {
@@ -645,6 +656,29 @@ class TaskRun {
   }
 
   /**
+   * After a failed replay: a fresh check whether the unit is in fact done,
+   * then the workflow's scripted path, each confirmed by the verifier.
+   */
+  private async scriptedFallback(
+    name: BossUnitName,
+    context: UnitContext,
+    verify: (observation: Observation) => Promise<CheckResult>,
+  ): Promise<{ ok: true; observation: Observation; route: 'verified' | 'scripted'; reason?: string } | { ok: false; reason?: string; observation?: Observation }> {
+    const fresh = await this.session!.observe({ elements: true }, this.signal);
+    if ((await verify(fresh)).ok) return { ok: true, observation: fresh, route: 'verified' };
+    const scripted = this.deps.workflow.runScripted(name, context);
+    if (!scripted) return { ok: false, observation: fresh };
+    const started = this.clock.now().getTime();
+    const result = await scripted;
+    throwIfAborted(this.signal);
+    const check = result.ok ? await verify(result.observation) : undefined;
+    const ok = check?.ok === true;
+    this.recorder.record({ type: 'unit', unit: name, route: 'scripted', ok, elapsedMs: this.clock.now().getTime() - started });
+    if (ok) return { ok: true, observation: result.observation, route: 'scripted', ...(result.reason ? { reason: result.reason } : {}) };
+    return { ok: false, reason: result.ok ? `unverified: ${check!.evidence.join('; ')}` : (result.reason ?? 'scripted_failed'), observation: result.observation };
+  }
+
+  /**
    * The business state a failed unit ended on, when the page shows one: the
    * user must log in or solve a captcha, or the resume is only available by
    * request. None of these is repaired by a model.
@@ -694,16 +728,10 @@ class TaskRun {
     const root = this.artifactStore?.root;
     let count = 0;
     for (const item of committed) {
-      if (this.delivered.has(item.id)) {
-        count += 1;
-        continue;
-      }
+      // Checked on disk every time: a file removed after its commit does not count.
       const present: ArtifactRecord[] = [];
       for (const a of artifacts) if (a.itemId === item.id && root && (await fileMatches(root, a))) present.push(a);
-      if (isCountable(present, this.task.input.captureMode)) {
-        this.delivered.add(item.id);
-        count += 1;
-      }
+      if (isCountable(present, this.task.input.captureMode)) count += 1;
     }
     return count;
   }
