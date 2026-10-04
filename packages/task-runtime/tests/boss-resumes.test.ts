@@ -49,7 +49,7 @@ import {
 } from '../src/contracts.ts';
 import { createArtifactStore } from '../src/artifacts.ts';
 import { createBossResumesWorkflow, createBossResumesWorkflowWith } from '../../../agents/boss/src/resumes/workflow.ts';
-import { classifyPage, jobFilter, resumeOverlay } from '../../../agents/boss/src/resumes/pages.ts';
+import { chatHeaderName, classifyPage, jobFilter, resumeOverlay } from '../../../agents/boss/src/resumes/pages.ts';
 import { identify, listCandidates, matchJob } from '../../../agents/boss/src/resumes/candidates.ts';
 import { captureOnlineResume, footerVisible, headerShowsName, overlayShowsName, resumeText } from '../../../agents/boss/src/resumes/capture.ts';
 import { Trace } from '../../../agents/boss/src/resumes/actions.ts';
@@ -225,7 +225,12 @@ interface AppOptions {
   menuColumnBackground?: string[];
   /** Reads after an option click before the menu closes and the filter shows it. */
   menuCloseReads?: number;
+  /** How the conversation header reports the name (default one text at 531, 66 wide); x/y window-relative. */
+  headerParts?: (name: string) => Array<{ text: string; x: number; y?: number; width?: number; height?: number }>;
 }
+
+/** P0 (BOSS 1.7.4): one 22x24 text per character, side by side from x 531. */
+const perChar = (name: string) => [...name].map((ch, k) => ({ text: ch, x: 531 + 22 * k, width: 22 }));
 
 class FakeBoss implements Session {
   readonly id = 'session-1';
@@ -342,7 +347,9 @@ class FakeBoss implements Session {
       const delay = this.opts.headerDelayMs ?? 0;
       const named = left <= delay / 2;
       const full = left <= 0;
-      if (named) add('AXStaticText', p.name, { x: 531, y: 23, width: 66, height: 24 }, '', p.name);
+      if (named)
+        for (const part of this.opts.headerParts?.(p.name) ?? [{ text: p.name, x: 531, width: 66 }])
+          add('AXStaticText', part.text, { x: part.x, y: part.y ?? 23, width: part.width ?? 66, height: part.height ?? 24 }, '', part.text);
       if (full) (p.summary as string[]).forEach((s, k) => add('AXStaticText', s, { x: 531 + 50 * k, y: 62, width: 30, height: 16 }, '', s));
       add('AXLink', '在线简历', { x: 1164, y: 36, width: 96, height: 38 }, 'link:online');
       add('AXStaticText', '在线简历', { x: 1196, y: 48, width: 53, height: 15 }, 'link:online', '在线简历');
@@ -975,6 +982,56 @@ test('open_candidate waits out a header that fills in after the message box, and
     assert.equal(result.reason, 'identity_ambiguous');
   } finally {
     await c.cleanup();
+  }
+});
+
+test('a conversation header reported one character per text reads as the whole name, and nothing looser does', async () => {
+  // Three-character names, as in P0, with the list row whole.
+  const persons = people().map((p, i) => (i === 0 ? { ...p, name: '欧阳一' } : i === 1 ? { ...p, name: '司马二' } : p));
+  const header = async (parts: AppOptions['headerParts']) => {
+    const r = await rig({ people: persons, headerParts: parts });
+    const listing = r.workflow.listCandidates(await r.app.observe(), ACCOUNT);
+    const ref = listing.candidates.find((c) => c.name === '欧阳一')!;
+    return { r, ref };
+  };
+  const correct = await header(perChar);
+  try {
+    const opened = await correct.r.workflow.runScripted('open_candidate', correct.r.context({ candidate: correct.ref }))!;
+    assert.equal(opened.ok, true, opened.reason);
+    const o = await correct.r.app.observe();
+    assert.deepEqual(chatHeaderName(o), { name: '欧阳一' }, 'the whole name, not its first character');
+    const m = identify(o, correct.ref, ACCOUNT);
+    assert.equal(m.kind, 'match');
+    assert.equal((await correct.r.workflow.verifyUnit('open_candidate', correct.r.context({ candidate: correct.ref }), o)).ok, true);
+  } finally {
+    await correct.r.cleanup();
+  }
+  // An activity note and an icon on the header line are not part of the name.
+  const noted = await header((name) => [...perChar(name), { text: '刚刚活跃', x: 620, width: 60 }, { text: '', x: 690, width: 20 }]);
+  try {
+    noted.r.app.open = 0;
+    assert.equal(identify(await noted.r.app.observe(), noted.ref, ACCOUNT).kind, 'match');
+  } finally {
+    await noted.r.cleanup();
+  }
+  // Refused: a gap, a second line, a stray large text, or another person's characters.
+  const refused: Array<[string, AppOptions['headerParts'], string]> = [
+    ['gap', (name) => perChar(name).map((p, k) => (k === 2 ? { ...p, x: p.x + 8 } : p)), 'ambiguous'],
+    ['second line', (name) => perChar(name).map((p, k) => (k === 2 ? { ...p, y: 0 } : p)), 'ambiguous'],
+    ['stray text', (name) => [...perChar(name), { text: '林', x: 700, width: 22 }], 'ambiguous'],
+    ['other person', () => perChar('司马二'), 'mismatch'],
+    ['first character only', (name) => perChar(name).slice(0, 1), 'mismatch'],
+  ];
+  for (const [what, parts, kind] of refused) {
+    const { r, ref } = await header(parts);
+    try {
+      r.app.open = 0;
+      const o = await r.app.observe();
+      assert.equal(identify(o, ref, ACCOUNT).kind, kind, what);
+      assert.equal((await r.workflow.verifyUnit('open_candidate', r.context({ candidate: ref }), o)).ok, false, what);
+    } finally {
+      await r.cleanup();
+    }
   }
 });
 
@@ -1659,6 +1716,45 @@ test('the top header is the listed name as the first text row near the top, neve
   assert.equal(headerShowsName(ocr([['陈一', 36, 1000], ['经历', 110]]), '陈一', band), false);
   // A line cut by the clipped border row above the content does not count as text above the name.
   assert.equal(headerShowsName(ocr([['残行', -39], ['陈一', 36, 170], ['摘要', 110]]), '陈一', band), true);
+});
+
+test('the header line may start with its decorative mark, and with nothing else', async () => {
+  // P0 (BOSS 1.7.4, redacted): image 1468x1750, first OCR line "◎ <name> 刚刚活跃" at x 178.09, y 63.59, 340.92x45.78, nothing above it.
+  const line = (text: string, box = { x: 178.09, y: 63.59, width: 340.92, height: 45.78 }): OcrResult => ({
+    lines: [{ text, box, confidence: 0.9 }, { text: '30岁|6年|本科', box: { x: 178, y: 150, width: 300, height: 40 }, confidence: 0.9 }],
+    imageSha256: '', widthPx: 1468, heightPx: 1750,
+  });
+  const band = { topPx: 2, maxYPx: 242, maxXPx: 880 };
+  for (const text of ['◎ 欧阳一 刚刚活跃', '◎欧阳一刚刚活跃', '◎ 欧阳一', '  ◎  欧阳一  今日活跃', '欧阳一 刚刚活跃'])
+    assert.equal(headerShowsName(line(text), '欧阳一', band), true, text);
+  for (const text of [
+    '◎ 司马二 刚刚活跃', // another person
+    '◎ 欧阳一的项目经历', // prose with the name in it
+    '◎ 欧阳一 刚刚', // not an activity note
+    '◎◎ 欧阳一', // the mark twice
+    '★ 欧阳一 刚刚活跃', // another mark
+    'x◎ 欧阳一', // text before the mark
+    '◎ 期望 欧阳一', // text between the mark and the name
+    '欧阳一 ◎', // the mark elsewhere
+  ])
+    assert.equal(headerShowsName(line(text), '欧阳一', band), false, text);
+  // The mark changes nothing about where the header must be.
+  assert.equal(headerShowsName(line('◎ 欧阳一 刚刚活跃', { x: 178, y: 300, width: 340, height: 45 }), '欧阳一', band), false, 'below the band');
+  assert.equal(headerShowsName(line('◎ 欧阳一 刚刚活跃', { x: 900, y: 63, width: 340, height: 45 }), '欧阳一', band), false, 'right of the band');
+  const under: OcrResult = { ...line('◎ 欧阳一 刚刚活跃'), lines: [{ text: '项目经历', box: { x: 178, y: 10, width: 200, height: 40 }, confidence: 0.9 }, ...line('◎ 欧阳一 刚刚活跃').lines] };
+  assert.equal(headerShowsName(under, '欧阳一', band), false, 'not the topmost line');
+
+  // End to end on the real overlay shape: open_resume confirms the marked header, and refuses another person's.
+  for (const [shown, ok] of [['◎ 陈一', true], ['◎ 林二', false]] as const) {
+    const r = await rig({ overlayName: false, people: people().map((p, i) => (i === 0 ? { ...p, headerName: shown } : p)) });
+    try {
+      const { ctx } = await openPerson(r, '陈一');
+      const opened = await r.workflow.runScripted('open_resume', ctx)!;
+      assert.equal(opened.ok, ok, `${shown}: ${opened.reason}`);
+    } finally {
+      await r.cleanup();
+    }
+  }
 });
 
 test('a real-shaped resume without a logo is complete only from the header name, the start probe and the end', async () => {

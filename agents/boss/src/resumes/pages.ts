@@ -38,9 +38,45 @@ export function listRows(observation: Observation) {
   return conversations((observation.elements ?? []) as Element[], observation.window.frame as Frame);
 }
 
-/** The open conversation, as the existing assistant reads it. */
+/** Activity notes BOSS shows beside a name: on the conversation header line and in the resume image header. */
+export const ACTIVITY_NOTE = /^(刚刚活跃|今日活跃|昨日活跃|本周活跃|本月活跃|半年内活跃|\d+(日|天|周|月)内活跃|在线)$/;
+
+/**
+ * The candidate's name in the open conversation's header. BOSS 1.7.4 may
+ * report it as one text per character (P0: a 3-character name as three
+ * AXStaticText 22x24 at window-relative 531, 553 and 575, y 23), so it is
+ * built from the large texts at the top of the chat pane: icons and an
+ * activity note are left out, and every remaining one must sit on one line,
+ * each starting where the one before it ends. Texts on another line, or
+ * with a gap between them, make the header unreadable rather than guessed.
+ */
+export function chatHeaderName(observation: Observation): { name: string } | { reason: 'no_name' | 'two_lines' | 'gap' } {
+  const win = observation.window.frame;
+  const parts = (observation.elements ?? [])
+    .filter((e) => e.role === 'AXStaticText' && e.frame && e.frame.x - win.x >= 500 && e.frame.y - win.y < 50 && e.frame.height >= 20)
+    .filter((e) => text(e) !== '' && !/^[\uE000-\uF8FF\s]+$/.test(text(e)) && !ACTIVITY_NOTE.test(text(e)))
+    .sort((a, b) => a.frame!.x - b.frame!.x);
+  if (!parts.length) return { reason: 'no_name' };
+  const first = parts[0]!.frame!;
+  if (parts.some((e) => Math.abs(e.frame!.y - first.y) > 3 || Math.abs(e.frame!.height - first.height) > 3)) return { reason: 'two_lines' };
+  for (let i = 1; i < parts.length; i++) {
+    const before = parts[i - 1]!.frame!;
+    const gap = parts[i]!.frame!.x - (before.x + before.width);
+    if (gap < -1 || gap > 2) return { reason: 'gap' };
+  }
+  return { name: parts.map(text).join('') };
+}
+
+/**
+ * The open conversation, as the existing assistant reads it, with the
+ * candidate's name taken from the whole header (chatHeaderName) rather than
+ * its first text; an unreadable header gives no name.
+ */
 export function openChat(observation: Observation) {
-  return chat((observation.elements ?? []) as Element[], observation.window.frame as Frame);
+  const open = chat((observation.elements ?? []) as Element[], observation.window.frame as Frame);
+  if (!open) return undefined;
+  const header = chatHeaderName(observation);
+  return { ...open, candidate: { ...open.candidate, name: 'name' in header ? header.name : '' } };
 }
 
 const area = (r: Rect) => r.width * r.height;
