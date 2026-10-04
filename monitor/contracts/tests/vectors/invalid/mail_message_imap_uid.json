@@ -1,6 +1,6 @@
 {
   "contract": "mail_message",
-  "description": "未知状态",
+  "description": "0.3.1 不再有 IMAP UID 字段",
   "data": {
     "mail_message_id": "mail:3f6c2a9e-1b4d-4e8a-9c7f-2d5e8b1a0c44",
     "provider": "remotedesk-mail",
@@ -14,12 +14,13 @@
     "copy_purged_at": null,
     "from_address": null,
     "subject": null,
-    "status": "deleted",
+    "status": "pending",
     "attempts": 0,
     "error": null,
-    "updated_at": "2026-10-04T10:02:01+08:00"
+    "updated_at": "2026-10-04T10:02:01+08:00",
+    "uid": 4211
   },
   "expected_error_paths": [
-    "status"
+    "uid"
   ]
 }

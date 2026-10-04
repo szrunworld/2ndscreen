@@ -1,6 +1,6 @@
 {
   "contract": "mail_message",
-  "description": "关联歧义，进入人工关联队列",
+  "description": "回取、关联、写入简历后",
   "data": {
     "mail_message_id": "mail:3f6c2a9e-1b4d-4e8a-9c7f-2d5e8b1a0c44",
     "provider": "remotedesk-mail",
@@ -14,9 +14,9 @@
     "copy_purged_at": null,
     "from_address": "noreply@zhipin.example",
     "subject": "候选人A 的简历（后端工程师）",
-    "status": "needs_review",
+    "status": "processed",
     "attempts": 0,
-    "error": "同名候选人在两个岗位下都有求简历记录",
+    "error": null,
     "updated_at": "2026-10-04T10:02:40+08:00"
   }
 }

@@ -36,7 +36,7 @@
         "issues_found",
         "failed"
       ],
-      "description": "ok 全部检查项 count=0；issues_found 至少一项 count>0；failed 核对本身没跑完（必须给出 error）。"
+      "description": "ok 已执行的检查项 count 都为 0（未执行的项不算问题）；issues_found 至少一项 count>0；failed 核对本身没跑完（必须给出 error）。"
     },
     "error": {
       "type": [
@@ -49,7 +49,7 @@
     },
     "checks": {
       "type": "array",
-      "maxItems": 7,
+      "maxItems": 8,
       "items": {
         "type": "object",
         "required": [
@@ -61,19 +61,24 @@
           "code": {
             "type": "string",
             "enum": [
-              "inbox_backlog",
-              "processed_without_record",
-              "original_missing",
+              "pending_backlog",
+              "copy_missing",
               "hash_mismatch",
-              "document_without_original",
+              "document_without_copy",
               "needs_review_mismatch",
-              "failed_mismatch"
+              "failed_mismatch",
+              "webhook_delivery_failed",
+              "upstream_missing"
             ],
-            "description": "inbox_backlog INBOX 中超过 30 分钟未处理；processed_without_record Processed 中的邮件在数据库无记录；original_missing 原件不存在；hash_mismatch 原件哈希不一致；document_without_original resume_document 找不到原件；needs_review_mismatch / failed_mismatch 文件夹数量与人工队列不一致。"
+            "description": "pending_backlog pending 超过 30 分钟；copy_missing 我方副本不存在（已按保留期清理的不算）；hash_mismatch 副本哈希不一致；document_without_copy resume_document 找不到副本；needs_review_mismatch / failed_mismatch 与人工队列不一致；webhook_delivery_failed mail 投递台账里失败或落死的 mail.ready 投递；upstream_missing mail 里有、我方没有的邮件（需要 mail 提供列出邮件的接口，见任务 G0；没有时 count=null 并写 unavailable_reason）。"
           },
           "count": {
-            "type": "integer",
-            "minimum": 0
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "description": "null 表示本次没能执行该检查，此时必须给出 unavailable_reason。"
           },
           "refs": {
             "type": "array",
@@ -85,10 +90,52 @@
             },
             "default": [],
             "description": "抽样的 mail_message_id 或 doc_id，便于控制台跳转。"
+          },
+          "unavailable_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 200,
+            "default": null
           }
-        }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "count": {
+                  "type": "null"
+                }
+              },
+              "required": [
+                "count"
+              ]
+            },
+            "then": {
+              "required": [
+                "unavailable_reason"
+              ],
+              "properties": {
+                "unavailable_reason": {
+                  "type": "string",
+                  "x-message": "count 为 null 时必须给出 unavailable_reason"
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "unavailable_reason": {
+                  "type": "null",
+                  "x-message": "执行了的检查项不能带 unavailable_reason"
+                }
+              }
+            }
+          }
+        ]
       },
-      "description": "outcome 为 ok / issues_found 时必须包含全部 7 个检查项，各一次。"
+      "description": "outcome 为 ok / issues_found 时必须包含全部 8 个检查项，各一次。"
     },
     "overdue_resume_requests": {
       "type": "array",
@@ -121,6 +168,12 @@
         }
       },
       "description": "求简历成功但超过 policy.resume_mail_timeout_days 仍未收到邮件的流程（提醒）。"
+    },
+    "purged_copies": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 0,
+      "description": "本次按 policy.mail_retention_days 清理的我方副本数量。只删我方副本，不删 mail 里的邮件。"
     }
   },
   "allOf": [

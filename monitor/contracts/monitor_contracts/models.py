@@ -756,6 +756,8 @@ class Policy(ContractModel):
     resume_mail_timeout_days: Annotated[int, Field(ge=1, le=30)] = 3
     # 只读展示：BOSS 账户预留的公司邮箱，以服务端配置为准，PUT 时忽略请求中的值
     company_mailbox: Email | None = None
+    # 我方邮件副本的保留天数；到期由我方清理任务删除副本、只留元数据（mail 服务里的邮件由其留存任务处理）
+    mail_retention_days: Annotated[int, Field(ge=1, le=365)] = 30
     work_hours: WorkHours
     daily_limits: PerActionCounts
     min_interval_seconds: PerActionCounts
@@ -883,16 +885,23 @@ Sha256Hex = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 
 
 class MailMessage(ContractModel):
-    """公司邮箱里的一封邮件（方案 8.2）。先落盘原件再以 pending 写入，状态按 states.MAIL_TRANSITIONS 前进。"""
+    """公司邮箱 cv@ 里的一封邮件在我方的记录（方案 8.2，0.3.1 起来自 mail 服务的 mail.ready 推送）。
+
+    收到推送即以 pending 写入（此时只有标识，副本字段为 null）；回取邮件与附件、写我方副本后
+    补齐 sha256 与 raw_storage_uri。状态按 states.MAIL_TRANSITIONS 前进。Monitor 不删除 mail
+    服务里的邮件；我方副本按 policy.mail_retention_days 清理，只留元数据（copy_purged_at）。
+    """
 
     mail_message_id: MailMessageId
+    provider: Literal["remotedesk-mail"]
+    provider_message_id: UUID
+    webhook_delivery_id: Annotated[str, StringConstraints(min_length=1, max_length=128)] | None = None
     mailbox: Email
     message_id: Annotated[str, StringConstraints(min_length=1, max_length=998)] | None
-    uidvalidity: Annotated[int, Field(ge=1)] | None
-    uid: Annotated[int, Field(ge=1)] | None
     received_at: AwareDatetime
-    sha256: Sha256Hex
+    sha256: Sha256Hex | None
     raw_storage_uri: Annotated[str, StringConstraints(min_length=1, max_length=1024)] | None = None
+    copy_purged_at: AwareDatetime | None = None
     from_address: Annotated[str, StringConstraints(max_length=254)] | None = None
     subject: Annotated[str, StringConstraints(max_length=500)] | None = None
     status: MailStatus
@@ -902,42 +911,58 @@ class MailMessage(ContractModel):
 
     @model_validator(mode="after")
     def _check(self) -> MailMessage:
-        if (self.uidvalidity is None) != (self.uid is None):
-            raise _fail("uid", "uidvalidity 与 uid 必须同时给出或同时为 null")
-        if self.message_id is None and self.uid is None:
-            raise _fail("message_id", "没有 Message-ID 时必须给出 uidvalidity 与 uid")
-        expected = compute_mail_message_id(
-            self.mailbox, self.message_id, uidvalidity=self.uidvalidity, uid=self.uid
-        )
-        if self.mail_message_id != expected:
-            raise _fail("mail_message_id", "mail_message_id 与 compute_mail_message_id(mailbox, message_id, uidvalidity, uid) 不一致")
+        if self.mail_message_id != compute_mail_message_id(self.provider_message_id):
+            raise _fail("mail_message_id", "mail_message_id 必须等于 'mail:' + provider_message_id（小写 UUID）")
+        if self.status in ("processed", "needs_review"):
+            if self.sha256 is None:
+                raise _fail("sha256", f"status={self.status} 时必须已有我方副本的 sha256")
+            if self.raw_storage_uri is None and self.copy_purged_at is None:
+                raise _fail("raw_storage_uri", f"status={self.status} 时必须给出我方副本位置（已按保留期清理的除外）")
+        if self.copy_purged_at is not None:
+            if self.raw_storage_uri is not None:
+                raise _fail("raw_storage_uri", "副本已清理（copy_purged_at 非空）时 raw_storage_uri 必须为 null")
+            if self.copy_purged_at < self.received_at:
+                raise _fail("copy_purged_at", "copy_purged_at 不能早于 received_at")
         if self.status == "failed" and self.error is None:
             raise _fail("error", "status=failed 时必须给出 error")
-        if self.status in ("pending", "processed") and self.error is not None:
-            raise _fail("error", f"status={self.status} 时 error 必须为 null")
+        if self.status == "processed" and self.error is not None:
+            raise _fail("error", "status=processed 时 error 必须为 null")
         if self.updated_at < self.received_at:
             raise _fail("updated_at", "updated_at 不能早于 received_at")
         return self
 
 
 MailCheckCode = Literal[
-    "inbox_backlog",
-    "processed_without_record",
-    "original_missing",
+    "pending_backlog",
+    "copy_missing",
     "hash_mismatch",
-    "document_without_original",
+    "document_without_copy",
     "needs_review_mismatch",
     "failed_mismatch",
+    "webhook_delivery_failed",
+    "upstream_missing",
 ]
 MAIL_CHECK_CODES: tuple[str, ...] = MailCheckCode.__args__  # type: ignore[attr-defined]
 
 
 class MailCheck(ContractModel):
+    """一个检查项。做不了（例如 mail 还没有列出邮件的接口，upstream_missing 无法对账）时
+    count 为 null 并写明 unavailable_reason，不能报 0 冒充"没问题"。"""
+
     code: MailCheckCode
-    count: Annotated[int, Field(ge=0)]
+    count: Annotated[int, Field(ge=0)] | None
+    unavailable_reason: Annotated[str, StringConstraints(min_length=1, max_length=200)] | None = None
     refs: Annotated[list[Annotated[str, StringConstraints(min_length=1, max_length=128)]], Field(max_length=20)] = (
         Field(default_factory=list)
     )
+
+    @model_validator(mode="after")
+    def _check(self) -> MailCheck:
+        if (self.count is None) != (self.unavailable_reason is not None):
+            raise _fail("count", "count 为 null 当且仅当给出 unavailable_reason")
+        if self.count is None and self.refs:
+            raise _fail("refs", "未执行的检查项不能带 refs")
+        return self
 
 
 class OverdueResumeRequest(ContractModel):
@@ -960,6 +985,8 @@ class MailVerification(ContractModel):
     overdue_resume_requests: Annotated[list[OverdueResumeRequest], Field(max_length=200)] = Field(
         default_factory=list
     )
+    # 本次按 policy.mail_retention_days 清理的我方副本数量（只删副本，不删 mail 里的邮件）
+    purged_copies: Annotated[int, Field(ge=0)] = 0
 
     @model_validator(mode="after")
     def _check(self) -> MailVerification:
@@ -977,9 +1004,9 @@ class MailVerification(ContractModel):
         missing = [c for c in MAIL_CHECK_CODES if c not in codes]
         if missing:
             raise _fail("checks", f"outcome={self.outcome} 时必须包含全部检查项，缺少 {', '.join(missing)}")
-        any_issue = any(c.count > 0 for c in self.checks)
+        any_issue = any((c.count or 0) > 0 for c in self.checks)
         if self.outcome == "ok" and any_issue:
             raise _fail("outcome", "有检查项 count>0 时 outcome 不能是 ok")
         if self.outcome == "issues_found" and not any_issue:
-            raise _fail("outcome", "所有检查项 count=0 时 outcome 应为 ok")
+            raise _fail("outcome", "所有已执行检查项 count=0 时 outcome 应为 ok（未执行的项不算问题）")
         return self

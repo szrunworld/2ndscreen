@@ -1,9 +1,9 @@
 {
   "contract": "mail_message",
-  "description": "未知状态",
+  "description": "provider 只能是 remotedesk-mail",
   "data": {
     "mail_message_id": "mail:3f6c2a9e-1b4d-4e8a-9c7f-2d5e8b1a0c44",
-    "provider": "remotedesk-mail",
+    "provider": "resend",
     "provider_message_id": "3f6c2a9e-1b4d-4e8a-9c7f-2d5e8b1a0c44",
     "webhook_delivery_id": "6f1c9d2e-0a7b-4c3e-8f21-5b9a4d7e1c30",
     "mailbox": "cv@remotedesk.io",
@@ -14,12 +14,12 @@
     "copy_purged_at": null,
     "from_address": null,
     "subject": null,
-    "status": "deleted",
+    "status": "pending",
     "attempts": 0,
     "error": null,
     "updated_at": "2026-10-04T10:02:01+08:00"
   },
   "expected_error_paths": [
-    "status"
+    "provider"
   ]
 }

@@ -1,14 +1,14 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "mail_message",
-  "description": "公司邮箱里的一封邮件（方案 8.2）。邮件接入（G）先把原始 .eml 落盘，再以 status=pending 写入（PUT /mail-messages/{mail_message_id}），处理后更新状态。状态迁移见 monitor_contracts.states.MAIL_TRANSITIONS。mail_message_id 是记录主键，不是邮件头 Message-ID。",
+  "description": "公司邮箱 cv@remotedesk.io 里的一封邮件在我方的记录（方案 8.2）。Monitor 不直接接 Resend，而是公司邮件服务 mail（amplifistudio/remotedesk-resend）的订阅方：收到 mail.ready webhook 即以 status=pending 写入（PUT /mail-messages/{mail_message_id}，此时只有标识），再用 mail 的 integration API key 回取邮件与附件、写我方副本，之后按 monitor_contracts.states.MAIL_TRANSITIONS 更新状态。Monitor 不删除 mail 里的邮件；我方副本按 policy.mail_retention_days 清理，只留元数据。",
   "type": "object",
   "required": [
     "mail_message_id",
+    "provider",
+    "provider_message_id",
     "mailbox",
     "message_id",
-    "uidvalidity",
-    "uid",
     "received_at",
     "sha256",
     "status",
@@ -18,14 +18,35 @@
   "properties": {
     "mail_message_id": {
       "type": "string",
-      "pattern": "^mail:[0-9a-f]{32}$",
-      "description": "确定性主键：compute_mail_message_id(mailbox, message_id, uidvalidity, uid)。有 Message-ID 时只用它，否则用 (mailbox, UIDVALIDITY, UID) 兜底。"
+      "pattern": "^mail:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "description": "记录主键 = 'mail:' + provider_message_id（小写 UUID），由 compute_mail_message_id 生成。"
+    },
+    "provider": {
+      "type": "string",
+      "enum": [
+        "remotedesk-mail"
+      ],
+      "description": "邮件来源：公司邮件服务 mail。"
+    },
+    "provider_message_id": {
+      "$ref": "common.json#/$defs/uuid",
+      "description": "mail 的 message_id（mail.ready 推送体里的 message_id），回取邮件用 GET /v1/integration/messages/{id}。"
+    },
+    "webhook_delivery_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 128,
+      "default": null,
+      "description": "首次收到的 mail.ready 投递 id（推送体 id），用于和 mail 的 webhook 投递台账对账。"
     },
     "mailbox": {
       "type": "string",
       "format": "email",
       "maxLength": 254,
-      "description": "收件邮箱（公司预留邮箱）。"
+      "description": "收件邮箱（cv@remotedesk.io）。"
     },
     "message_id": {
       "type": [
@@ -34,31 +55,23 @@
       ],
       "minLength": 1,
       "maxLength": 998,
-      "description": "邮件头 Message-ID 原文；缺失时为 null，此时必须给出 uidvalidity 与 uid。"
-    },
-    "uidvalidity": {
-      "type": [
-        "integer",
-        "null"
-      ],
-      "minimum": 1,
-      "description": "IMAP UIDVALIDITY；企业邮箱 API 没有时为 null（须与 uid 同时为 null）。"
-    },
-    "uid": {
-      "type": [
-        "integer",
-        "null"
-      ],
-      "minimum": 1,
-      "description": "IMAP UID；与 uidvalidity 同时给出或同时为 null。"
+      "description": "邮件头 Message-ID 原文，只用于展示与排查，不参与主键；推送阶段未知或邮件缺失时为 null。"
     },
     "received_at": {
-      "$ref": "common.json#/$defs/timestamp"
+      "$ref": "common.json#/$defs/timestamp",
+      "description": "mail 收到邮件的时间（推送体 occurred_at 或回取结果）。"
     },
     "sha256": {
-      "type": "string",
-      "pattern": "^[0-9a-f]{64}$",
-      "description": "原始 .eml 的 sha256，用于核对原件完整性。只用于去重与核对，不是候选人身份。"
+      "oneOf": [
+        {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "我方副本（原始邮件）的 sha256；回取前为 null。processed / needs_review 时必填。只用于核对，不是候选人身份。"
     },
     "raw_storage_uri": {
       "type": [
@@ -68,7 +81,19 @@
       "minLength": 1,
       "maxLength": 1024,
       "default": null,
-      "description": "原始 .eml 的存储位置（本地路径或对象存储 URI）。"
+      "description": "我方副本的存储位置；副本按保留期清理后为 null。"
+    },
+    "copy_purged_at": {
+      "oneOf": [
+        {
+          "$ref": "common.json#/$defs/timestamp"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "我方副本按 policy.mail_retention_days 清理的时间；非空时 raw_storage_uri 必须为 null。"
     },
     "from_address": {
       "type": [
@@ -95,7 +120,7 @@
         "failed",
         "ignored"
       ],
-      "description": "pending 已落盘待消费；processed 已提交并移到 Monitor/Processed；needs_review 关联歧义或找不到流程，移到 Monitor/NeedsReview；failed 连续失败达到上限，移到 Monitor/Failed；ignored 非 BOSS 发件人，移到 Monitor/Ignored。"
+      "description": "我方处理状态（不对应 mail 里的文件夹，Monitor 不移动、不删除 mail 里的邮件）：pending 已登记待消费；processed 已提交；needs_review 关联歧义或找不到流程；failed 连续失败达到上限；ignored 非 BOSS 发件人。"
     },
     "attempts": {
       "type": "integer",
@@ -111,7 +136,7 @@
       "minLength": 1,
       "maxLength": 500,
       "default": null,
-      "description": "status=failed 时必填；needs_review / ignored 可写原因；pending / processed 必须为 null。"
+      "description": "failed 必填；pending 可记最近一次失败原因；needs_review / ignored 可写原因；processed 必须为 null。"
     },
     "updated_at": {
       "$ref": "common.json#/$defs/timestamp"
@@ -145,10 +170,7 @@
       "if": {
         "properties": {
           "status": {
-            "enum": [
-              "pending",
-              "processed"
-            ]
+            "const": "processed"
           }
         },
         "required": [
@@ -159,7 +181,7 @@
         "properties": {
           "error": {
             "type": "null",
-            "x-message": "status 为 pending / processed 时 error 必须为 null"
+            "x-message": "status=processed 时 error 必须为 null"
           }
         }
       }
@@ -167,22 +189,22 @@
     {
       "if": {
         "properties": {
-          "message_id": {
-            "type": "null"
+          "status": {
+            "enum": [
+              "processed",
+              "needs_review"
+            ]
           }
         },
         "required": [
-          "message_id"
+          "status"
         ]
       },
       "then": {
         "properties": {
-          "uidvalidity": {
-            "type": "integer"
-          },
-          "uid": {
-            "type": "integer",
-            "x-message": "没有 Message-ID 时必须给出 uidvalidity 与 uid"
+          "sha256": {
+            "type": "string",
+            "x-message": "processed / needs_review 时必须已有我方副本的 sha256"
           }
         }
       }

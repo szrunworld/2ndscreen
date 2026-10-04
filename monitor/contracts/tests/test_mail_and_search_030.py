@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import copy
 import json
+import re
+from uuid import UUID
 
 import pytest
 from pydantic import ValidationError
 from vector_helpers import VECTORS_DIR
 
 from monitor_contracts import (
+    MAIL_MESSAGE_ID_PATTERN,
+    MAIL_PROVIDER,
     MAIL_TRANSITIONS,
     TERMINAL_MAIL_STATES,
     ContractValidationError,
@@ -40,53 +44,32 @@ def _vector(kind: str, name: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# mail_message_id
+# mail_message_id（0.3.1：'mail:' + mail 服务的 message_id）
 # ---------------------------------------------------------------------------
 
-
-def test_mail_message_id_is_deterministic_and_normalised():
-    a = compute_mail_message_id("HR@Example.com ", "<abc@mail.example>")
-    b = compute_mail_message_id("hr@example.com", "  abc@mail.example ")
-    assert a == b
-    assert a.startswith("mail:") and len(a) == 5 + 32
-    # 不同邮箱、不同 Message-ID 得到不同主键
-    assert a != compute_mail_message_id("other@example.com", "<abc@mail.example>")
-    assert a != compute_mail_message_id("hr@example.com", "<abd@mail.example>")
+PID = "3f6c2a9e-1b4d-4e8a-9c7f-2d5e8b1a0c44"
 
 
-def test_mail_message_id_prefers_message_id_over_uid():
-    with_uid = compute_mail_message_id("hr@example.com", "<x@y>", uidvalidity=1, uid=2)
-    assert with_uid == compute_mail_message_id("hr@example.com", "<x@y>")
+def test_mail_message_id_is_prefix_plus_provider_uuid():
+    assert compute_mail_message_id(PID) == f"mail:{PID}"
+    # 大写、两侧空白、UUID 对象都规范成同一个主键
+    assert compute_mail_message_id(f"  {PID.upper()} ") == f"mail:{PID}"
+    assert compute_mail_message_id(UUID(PID)) == f"mail:{PID}"
+    assert re.fullmatch(MAIL_MESSAGE_ID_PATTERN, compute_mail_message_id(PID))
 
 
-def test_mail_message_id_uid_fallback():
-    a = compute_mail_message_id("hr@example.com", None, uidvalidity=7, uid=9)
-    assert a == compute_mail_message_id("hr@example.com", "<>", uidvalidity=7, uid=9)  # 空 Message-ID 视为缺失
-    assert a != compute_mail_message_id("hr@example.com", None, uidvalidity=8, uid=9)
-    # 兜底与"恰好长得像 UID 的 Message-ID"不会撞
-    assert a != compute_mail_message_id("hr@example.com", "7:9")
-
-
-@pytest.mark.parametrize(
-    ("mailbox", "message_id", "uidvalidity", "uid"),
-    [
-        ("hr@example.com", None, None, None),
-        ("hr@example.com", None, 7, None),
-        ("hr@example.com", "  ", None, 3),
-        ("hr@example.com", None, 0, 3),
-        ("   ", "<x@y>", None, None),
-    ],
-)
-def test_mail_message_id_rejects_missing_identity(mailbox, message_id, uidvalidity, uid):
+@pytest.mark.parametrize("bad", ["", "not-a-uuid", "<abc@mail.example>", "mail:" + PID])
+def test_mail_message_id_rejects_non_uuid(bad):
     with pytest.raises(ValueError):
-        compute_mail_message_id(mailbox, message_id, uidvalidity=uidvalidity, uid=uid)
+        compute_mail_message_id(bad)
 
 
 def test_normalizers():
-    assert normalize_mailbox("  HR@Example.COM ") == "hr@example.com"
+    assert normalize_mailbox("  CV@RemoteDesk.io ") == "cv@remotedesk.io"
     assert normalize_message_id(" <a@b> ") == "a@b"
     assert normalize_message_id("< >") is None
     assert normalize_message_id(None) is None
+    assert MAIL_PROVIDER == "remotedesk-mail"
 
 
 # ---------------------------------------------------------------------------
@@ -102,14 +85,20 @@ def test_mail_message_round_trip():
 
 
 def test_mail_message_error_rules():
-    data = _vector("valid", "mail_message_pending")
-    processed_with_error = dict(data, status="processed", error="x")
-    assert "error" in [e.path for e in check("mail_message", processed_with_error)]
-    half_uid = dict(data, uid=None)
-    errors = check("mail_message", half_uid)
-    assert [e.path for e in errors] == ["uid"] and errors[0].layer == "model"
-    early_update = dict(data, updated_at="2026-10-04T09:00:00+08:00")
+    pending = _vector("valid", "mail_message_pending")
+    processed = _vector("valid", "mail_message_processed")
+    # 推送阶段没有副本也合法；processed 不行
+    assert pending["sha256"] is None and check("mail_message", pending) == []
+    assert "error" in [e.path for e in check("mail_message", dict(processed, error="x"))]
+    no_copy = dict(processed, raw_storage_uri=None)
+    errors = check("mail_message", no_copy)
+    assert [e.path for e in errors] == ["raw_storage_uri"] and errors[0].layer == "model"
+    early_purge = dict(processed, raw_storage_uri=None, copy_purged_at="2026-10-01T00:00:00+08:00")
+    assert [e.path for e in check("mail_message", early_purge)] == ["copy_purged_at"]
+    early_update = dict(pending, updated_at="2026-10-04T09:00:00+08:00")
     assert [e.path for e in check("mail_message", early_update)] == ["updated_at"]
+    # pending 可以记录最近一次失败原因
+    assert check("mail_message", _vector("valid", "mail_message_pending_retry")) == []
 
 
 def test_mail_verification_rules():
@@ -129,6 +118,14 @@ def test_mail_verification_rules():
     with pytest.raises(ContractValidationError) as info:
         validate_mail_verification(dict(ok, error="x"))
     assert "error" in info.value.paths
+    # 未执行的检查项不算问题，但不能带 refs，也不能"有原因又有计数"
+    unrun = copy.deepcopy(ok)
+    unrun["checks"][-1]["refs"] = ["mail:x"]
+    assert "checks[7].refs" in [e.path for e in check("mail_verification", unrun)]
+    both = copy.deepcopy(ok)
+    both["checks"][-1]["count"] = 0
+    assert "checks[7].unavailable_reason" in [e.path for e in check("mail_verification", both)]
+    assert validate_mail_verification(ok).purged_copies == 4
 
 
 # ---------------------------------------------------------------------------
@@ -172,7 +169,21 @@ def test_case_resume_main_path_via_mailbox():
     assert can_transition_case("resume_requested", "needs_human")  # 超时或关联歧义
     assert can_transition_case("resume_requested", "resume_received")  # 可选观察
     assert can_transition_case("needs_human", "resume_linked")  # 人工关联
-    assert not can_transition_case("resume_requested", "contact_requested")
+
+
+@pytest.mark.parametrize(
+    "stage", ["new_application", "greeted", "resume_requested", "resume_received", "resume_linked", "needs_human"]
+)
+def test_manual_wechat_allowed_from_every_open_stage(stage):
+    """0.3.1：人工换微信除 closed 外都允许。"""
+    assert can_transition_case(stage, "contact_requested")
+
+
+def test_manual_wechat_not_allowed_from_closed_and_stage_never_regresses():
+    assert not can_transition_case("closed", "contact_requested")
+    # 换微信之后简历邮件才到：关联照常成功，但阶段不回退到 resume_linked
+    assert not can_transition_case("contact_requested", "resume_linked")
+    assert not can_transition_case("contact_available", "resume_linked")
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +192,7 @@ def test_case_resume_main_path_via_mailbox():
 
 
 def test_mail_keys():
-    mid = compute_mail_message_id("hr@example.com", "<x@y>")
+    mid = compute_mail_message_id(PID)
     k1 = mail_message_key(mid, "pending", 0)
     assert is_valid_idempotency_key(k1)
     assert k1 == mail_message_key(mid, "pending", 0)
@@ -249,18 +260,22 @@ def test_policy_defaults():
     model = validate_policy(data)
     assert model.after_resume_received.action == "none"
     assert model.resume_mail_timeout_days == 3
-    assert model.company_mailbox == "hr@example.com"
+    assert model.company_mailbox == "cv@remotedesk.io"
+    assert model.mail_retention_days == 30
     # 模型层默认值：未提供时收到简历后不自动交换联系方式、超时 3 天、未配置邮箱
-    trimmed = {k: v for k, v in data.items() if k not in ("after_resume_received", "resume_mail_timeout_days", "company_mailbox")}
+    optional = ("after_resume_received", "resume_mail_timeout_days", "company_mailbox", "mail_retention_days")
+    trimmed = {k: v for k, v in data.items() if k not in optional}
     defaults = Policy.model_validate(trimmed)
     assert defaults.after_resume_received.action == "none"
     assert defaults.resume_mail_timeout_days == 3
     assert defaults.company_mailbox is None
+    assert defaults.mail_retention_days == 30
     # 线上必须写全
     assert {e.path for e in check("policy", trimmed)} == {
         "after_resume_received",
         "resume_mail_timeout_days",
         "company_mailbox",
+        "mail_retention_days",
     }
 
 

@@ -1,13 +1,13 @@
 {
   "contract": "mail_verification",
-  "description": "核对本身失败（IMAP 连接不上）",
+  "description": "核对本身失败（mail 接口不可达）",
   "data": {
     "verification_id": "verify-20261004T1200",
-    "mailbox": "hr@example.com",
+    "mailbox": "cv@remotedesk.io",
     "started_at": "2026-10-04T12:00:00+08:00",
     "finished_at": "2026-10-04T12:00:30+08:00",
     "outcome": "failed",
-    "error": "imap_connect_timeout",
+    "error": "mail_api_unreachable",
     "checks": []
   }
 }

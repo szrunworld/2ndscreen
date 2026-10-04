@@ -1,22 +1,21 @@
-"""邮件记录主键 mail_message_id 的计算规则（0.3.0）。
+"""邮件记录主键 mail_message_id 的计算规则（0.3.1）。
 
-mail_message_id 由邮件接入（G）确定性生成，保证重试时 PUT /mail-messages/{id}
-幂等。它是 mail_messages 记录的主键，不是邮件头 Message-ID。两种来源：
+Monitor 不直接接 Resend，而是公司邮件服务 mail（amplifistudio/remotedesk-resend）的订阅方：
+mail.ready webhook 推来 mail 的 message_id（UUID），邮件接入（G）用它回取邮件与附件。
+因此 mail_message_id = ``"mail:" + mail 的 message_id``（小写 UUID）。同一封邮件的 webhook
+可能投递多次，主键不变，所以 PUT /mail-messages/{id} 天然幂等。
 
-- 有 Message-ID：``"mail:" + sha256(邮箱 + "\\n" + 规范化 Message-ID)[:32]``
-- 没有 Message-ID：``"mail:" + sha256(邮箱 + "\\n\\n" + UIDVALIDITY + ":" + UID)[:32]``
-
-邮箱地址去首尾空白后转小写；Message-ID 做 NFC、去首尾空白、去掉外层尖括号。
-规范化后的 Message-ID 不会以换行开头，所以两种来源的哈希输入不会混淆。
+邮件头 Message-ID 仍保留在 mail_message.message_id，只用于展示和排查，不参与主键。
 修改本规则属于契约变更（版本号 +1）。
 """
 
 from __future__ import annotations
 
-import hashlib
 import unicodedata
+from uuid import UUID
 
-MAIL_MESSAGE_ID_PATTERN = r"^mail:[0-9a-f]{32}$"
+MAIL_PROVIDER = "remotedesk-mail"
+MAIL_MESSAGE_ID_PATTERN = r"^mail:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 
 
 def normalize_mailbox(mailbox: str) -> str:
@@ -34,22 +33,10 @@ def normalize_message_id(message_id: str | None) -> str | None:
     return text or None
 
 
-def compute_mail_message_id(
-    mailbox: str,
-    message_id: str | None = None,
-    *,
-    uidvalidity: int | None = None,
-    uid: int | None = None,
-) -> str:
-    """计算 mail_message_id。有 Message-ID 时只用它；没有时必须给出 uidvalidity 与 uid。"""
-    box = normalize_mailbox(mailbox)
-    if not box:
-        raise ValueError("mailbox 不能为空")
-    mid = normalize_message_id(message_id)
-    if mid is not None:
-        material = f"{box}\n{mid}"
-    else:
-        if uidvalidity is None or uid is None or uidvalidity < 1 or uid < 1:
-            raise ValueError("缺少 Message-ID 时必须给出正整数 uidvalidity 与 uid")
-        material = f"{box}\n\n{uidvalidity}:{uid}"
-    return "mail:" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
+def compute_mail_message_id(provider_message_id: str | UUID) -> str:
+    """mail 的 message_id（UUID）→ mail_message_id。不是合法 UUID 时抛 ValueError。"""
+    try:
+        value = provider_message_id if isinstance(provider_message_id, UUID) else UUID(str(provider_message_id).strip())
+    except ValueError:
+        raise ValueError(f"mail 的 message_id 必须是 UUID：{provider_message_id!r}") from None
+    return f"mail:{value}"
