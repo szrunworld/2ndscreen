@@ -173,18 +173,20 @@ class FakeDriver:
 
     # ---- 读 ----
 
+    def _elements(self, snapshot_id: str | None, include_tree: bool = True) -> tuple[Element, ...]:
+        """当前步骤的夹具元素（FixtureElement）转成契约 Element。"""
+        elements = []
+        for e in self.step.elements:
+            element = e.to_element(snapshot_id)
+            if not include_tree:
+                element = element.model_copy(update={"parent_index": None, "depth": None})
+            elements.append(element)
+        return tuple(elements)
+
     def _snapshot(self, include_tree: bool) -> Snapshot:
         self._serial += 1
         sid = f"fake-{self.fixture.scene}-{self._serial}"
-        elements = tuple(
-            e.model_copy(
-                update={
-                    "snapshot_id": sid,
-                    **({} if include_tree else {"parent_index": None, "depth": None}),
-                }
-            )
-            for e in self.step.elements
-        )
+        elements = self._elements(sid, include_tree)
         snapshot = Snapshot(snapshot_id=sid, taken_at=self.clock(), window=self.step.window, elements=elements)
         self._latest = snapshot
         self._latest_step = self.step_index
@@ -240,7 +242,7 @@ class FakeDriver:
         if rule.target is not None:
             if call.element is None:
                 return False
-            hits = find_all(self.step.elements, rule.target)
+            hits = find_all(self._elements(None), rule.target)
             if not any(h.index == call.element.index for h in hits):
                 return False
         if rule.when is not None and not rule.when(call):

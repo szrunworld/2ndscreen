@@ -155,7 +155,7 @@ def test_element_without_snapshot_id_is_stale():
     fake = FakeDriver(chat_fixture())
     fake.state()
     with pytest.raises(StaleSnapshotError):
-        fake.click(load_fixture(chat_fixture()).steps[0].elements[1])
+        fake.click(load_fixture(chat_fixture()).steps[0].elements[1].to_element())
 
 
 def test_locator_errors_are_rejected_not_counted():
