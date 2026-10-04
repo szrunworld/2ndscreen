@@ -8,7 +8,7 @@
 | A2 | 契约 0.2.0 审查修正（写操作标志拆分、账户不可读、定位器语义） | ctx_6b7c4980f328 / monitor-A2 | monitor-A2 | 进行 | — | forward_resume 来源与搜索页问候待用户决定，下一版处理 |
 | B | 只读可行性验证与夹具 | ctx_1b25ee64eab9（已释放） | monitor-B | 已合（898edbd） | 201001d | 登录/二维码、新招呼首次打开、电话待同意/已交换/已拒绝、邮件转发内容、搜索输入后结果 → 留给 N/K |
 | C | Driver 适配器 | ctx_3dfbecec466d（已释放） | monitor-C | 已合（ecfe9da；client 入工作区 + relock，contracts+client 351 tests） | ec6aed9 | 定位器 text 同时匹配 label/value（比契约宽），0.2.0 契约里追认；CliDriver 未在 BOSS 上真机跑过 → N |
-| D1 | 本地账本 | — | — | 未派 | — | — |
+| D1 | 本地账本 | ctx_18b2867a5255 / monitor-D1 | monitor-D1 | 进行 | — | — |
 | D2 | 指令客户端与执行管线 | ctx_be925b1cfd1f（已释放） | monitor-D2 | 已合（810c993；relock httpx；contracts+client 464 tests） | dc26e24 | 工厂入口：D1 open_ledger(path)、E create_observer()、H create_handlers()；0.2.0 合并后跟进 core/write_flags.py 与 guard.py |
 | E | 观察模块 | — | — | 未派 | — | — |
 | F1 | 服务端基础 | ctx_5b46093fd09a / monitor-F1 | monitor-F1 | 进行 | — | — |
