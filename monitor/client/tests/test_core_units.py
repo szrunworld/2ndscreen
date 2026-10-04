@@ -92,6 +92,18 @@ def _executed(clock, at, *, action="send_greeting", wrote=True, mode="execute"):
     return LedgerCommand(command=cmd, state="succeeded", result=res, delivery="pending", received_at=at, updated_at=at)
 
 
+def test_hard_limits_values_confirmed_by_user():
+    # 用户 2026-10-04 确认的数值；改动需要用户同意
+    assert dict(HARD_DAILY_CAPS) == {k: 40 for k in HARD_DAILY_CAPS} and len(HARD_DAILY_CAPS) == 5
+    assert dict(MIN_INTERVAL_FLOORS) == {
+        "send_greeting": 45,
+        "request_resume": 45,
+        "forward_resume": 45,
+        "request_contact_exchange": 60,
+        "search_candidates": 30,
+    }
+
+
 def test_check_rate_daily_cap_and_interval():
     clock = ManualClock(datetime(2026, 10, 4, 10, 0, tzinfo=UTC))
     policy = validate_policy(make_policy(daily_limits={k: 2 for k in HARD_DAILY_CAPS}))
@@ -109,7 +121,8 @@ def test_check_rate_daily_cap_and_interval():
     ]
     assert check_rate("send_greeting", now=now, history=hist2, policy=policy).allowed
     d = check_rate("send_greeting", now=now, history=[_executed(clock, now - timedelta(seconds=5))], policy=policy)
-    assert d.kind == "min_interval" and d.retry_at == now + timedelta(seconds=25)
+    floor = MIN_INTERVAL_FLOORS["send_greeting"]
+    assert d.kind == "min_interval" and d.retry_at == now + timedelta(seconds=floor - 5)
 
 
 def _failed_result(cid, at, *, action, navigation, outbound):

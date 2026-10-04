@@ -6,7 +6,7 @@
 
 | 验收项 | 结果 |
 | --- | --- |
-| `cd monitor && uv sync && uv run pytest contracts client` | 496 passed，0 failed（改动前 41 failed，全部在 core 测试） |
+| `cd monitor && uv sync && uv run pytest contracts client` | 497 passed，0 failed（改动前 41 failed，全部在 core 测试） |
 | `uv run --with ruff ruff check --select F client/monitor/core client/monitor/__main__.py client/tests/test_core*.py` | 无告警 |
 
 `__main__.py` 没有引用写标志，无需改动。
@@ -48,7 +48,21 @@
 
   verify_only 指令的恢复照旧直接采用复核结果（verify 模式守卫，outbound 恒为 false）。
 
-### 4. 测试
+### 4. 硬上限改值（协调者追加，用户 2026-10-04 确认）
+
+`core/limits.py`，注释写明来源"用户 2026-10-04 确认，N 阶段实测后再调"：
+
+| 动作 | 每日硬上限 | 最小间隔下限（秒） |
+| --- | --- | --- |
+| send_greeting | 40 | 45 |
+| request_resume | 40 | 45 |
+| forward_resume | 40 | 45 |
+| request_contact_exchange | 40 | 60 |
+| search_candidates | 40 | 30 |
+
+新增 `test_hard_limits_values_confirmed_by_user` 锁定数值；`test_check_rate_daily_cap_and_interval` 的期望重试时间改为按 `MIN_INTERVAL_FLOORS` 计算。其余限额测试原本就读常量，无需改。D2 报告第六节的旧数值作废。
+
+### 5. 测试
 
 更新受影响测试（client、units、exceptions、runtime），新增：
 
@@ -106,4 +120,4 @@ E（观察）不受影响：仍是 `read_only` 守卫。
 
 ## 五、提交
 
-只改了 `monitor/client/monitor/core/**`、`monitor/client/tests/test_core*.py` 与本报告；未提交 `uv.lock` 与 `__pycache__`。
+两个 commit：契约 0.2.0 适配；硬上限改值。只改了 `monitor/client/monitor/core/**`、`monitor/client/tests/test_core*.py` 与本报告；未提交 `uv.lock` 与 `__pycache__`。
