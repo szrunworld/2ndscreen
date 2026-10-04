@@ -129,7 +129,8 @@ public enum LocalVision {
         /// The best shift must beat any shift further than `ambiguityRadius` by this much.
         static let ambiguityMargin = 0.75
         static let ambiguityRadius = 3
-        static let duplicateSimilarity = 0.999
+        /// Compose: pixels per overlap row allowed to differ beyond `equalTolerance`.
+        static let maxChangedPixelsPerRow = 2
     }
 
     public static let defaultLanguages = ["zh-Hans", "en-US"]
@@ -410,13 +411,36 @@ public enum LocalVision {
         return (best.shift, meanDiff)
     }
 
+    /// Whether every overlapping row of `a` and `b` at `shift` is the same,
+    /// up to `Tuning.maxChangedPixelsPerRow` pixels: a mean difference can
+    /// hide a changed word, a row-by-row check cannot.
+    static func overlapMatches(_ a: Grey, _ b: Grey, shift: Int) -> Bool {
+        let (ra, rb, count) = overlapRows(shift, height: a.height)
+        let width = a.width
+        return a.pixels.withUnsafeBufferPointer { pa in
+            b.pixels.withUnsafeBufferPointer { pb in
+                for row in 0..<count {
+                    let offsetA = (ra + row) * width, offsetB = (rb + row) * width
+                    var changed = 0
+                    for column in 0..<width where abs(Int(pa[offsetA + column]) - Int(pb[offsetB + column])) > Tuning.equalTolerance {
+                        changed += 1
+                        if changed > Tuning.maxChangedPixelsPerRow { return false }
+                    }
+                }
+                return true
+            }
+        }
+    }
+
     // MARK: Composing a scrolled page
 
     /// Stacks screens of one scrolled region into one PNG, top to bottom.
     /// Each screen after the first is placed only by a proven overlap with
-    /// the screen before it; a screen with no new rows is a duplicate and is
-    /// skipped; a screen with no proven overlap is appended whole and marked
-    /// a gap, which the caller must treat as an incomplete capture.
+    /// the screen before it: a shift found on textured, unambiguous rows and
+    /// an overlap that matches row by row. A screen proven unmoved and
+    /// unchanged is a duplicate and is skipped. Any other screen, including
+    /// identical blank or repeating ones, is appended whole and marked a
+    /// gap, which the caller must treat as an incomplete capture.
     ///
     /// The PNG is written to a hidden partial file next to `output`, named
     /// by this call's `nonce`, and linked into place, so `output` only ever
@@ -467,15 +491,17 @@ public enum LocalVision {
             let grey = try Grey(loaded.image, region: frameRegion)
             let placement: ComposedFrame
             if let previous {
+                // Continuity needs a shift proven on textured, unambiguous rows
+                // and an overlap that matches row by row. Blank or repeating
+                // screens, and screens that changed anywhere in the overlap,
+                // prove nothing, however many pixels are equal: they are gaps.
                 let shift = findShift(previous, grey, minOverlap: minOverlap)
-                if let shift, shift.shift == 0 {
+                    .flatMap { overlapMatches(previous, grey, shift: $0.shift) ? $0.shift : nil }
+                if shift == 0 {
                     placement = ComposedFrame(index: index, placement: .duplicate, outputY: height, rows: 0, overlapPx: grey.height)
-                } else if let shift, shift.shift > 0 {
-                    placement = ComposedFrame(index: index, placement: .placed, outputY: height, rows: shift.shift,
-                                              overlapPx: grey.height - shift.shift)
-                } else if shift == nil, equalShare(previous, grey) >= Tuning.duplicateSimilarity {
-                    // Identical blank screens: nothing new to add, and nothing proven either.
-                    placement = ComposedFrame(index: index, placement: .duplicate, outputY: height, rows: 0, overlapPx: nil)
+                } else if let shift, shift > 0 {
+                    placement = ComposedFrame(index: index, placement: .placed, outputY: height, rows: shift,
+                                              overlapPx: grey.height - shift)
                 } else {
                     placement = ComposedFrame(index: index, placement: .gap, outputY: height, rows: grey.height, overlapPx: nil)
                 }

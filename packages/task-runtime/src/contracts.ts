@@ -735,7 +735,11 @@ export interface ComposeOptions {
 export interface ComposedFrame {
   /** Position in framePaths. */
   index: number;
-  /** first: the top frame; placed: appended after a proven overlap; duplicate: no new rows, skipped; gap: no overlap proven, appended whole. */
+  /**
+   * first: the top frame; placed: appended after a proven overlap; duplicate:
+   * proven unmoved and unchanged on textured content, skipped; gap: no
+   * overlap proven (including blank or repeating screens), appended whole.
+   */
   placement: 'first' | 'placed' | 'duplicate' | 'gap';
   /** First output row this frame contributed (output pixels, top-left). */
   outputY: number;

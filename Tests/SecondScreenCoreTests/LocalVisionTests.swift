@@ -288,6 +288,57 @@ private func expectFailure(_ code: String, _ body: () throws -> Void) {
         #expect(composed.heightPx == 300 + 300 + 110)
     }
 
+    /// Screens that are equal pixel for pixel but prove nothing about
+    /// continuity: compose must never let them make a capture look whole.
+    @Test func blankRepeatingAndSparseScreensAreGapsNotDuplicates() throws {
+        let dir = try Fixture.directory()
+        let blank = Fixture.context(width: 240, height: 300).makeImage()!
+        let repeating: CGImage = {
+            let context = Fixture.context(width: 240, height: 300)
+            context.setFillColor(CGColor(gray: 0.2, alpha: 1))
+            // Truly periodic through both edges: a 24-row scroll would look the same.
+            for top in stride(from: -18, to: 320, by: 24) {
+                for x in stride(from: 10, to: 220, by: 30) { context.fill(CGRect(x: x, y: 300 - top - 10, width: 22, height: 10)) }
+            }
+            return context.makeImage()!
+        }()
+        let sparse: CGImage = {
+            let context = Fixture.context(width: 240, height: 300)
+            context.draw(Fixture.rows(page, from: 0, count: 24), in: CGRect(x: 0, y: 140, width: 240, height: 24))
+            return context.makeImage()!
+        }()
+        for (name, image) in [("blank", blank), ("repeating", repeating), ("sparse", sparse)] {
+            let frames = [try Fixture.write(image, dir, "\(name)-1.png"), try Fixture.write(image, dir, "\(name)-2.png")]
+            #expect(try LocalVision.compare(frames[0], frames[1]).similarity == 1, "\(name)")
+            let composed = try LocalVision.compose(frames, output: dir.appendingPathComponent("\(name).png").path)
+            #expect(composed.frames.map(\.placement) == [.first, .gap], "\(name)")
+            #expect(composed.hasGap, "\(name)")
+            #expect(composed.heightPx == 600, "\(name): a gap frame is appended whole")
+        }
+    }
+
+    @Test func aSmallChangeAnywhereInTheOverlapIsAGap() throws {
+        let dir = try Fixture.directory()
+        func marked(_ image: CGImage, at top: Int) -> CGImage {
+            let context = Fixture.context(width: image.width, height: image.height)
+            context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+            context.setFillColor(CGColor(red: 0.9, green: 0.1, blue: 0.1, alpha: 1))
+            context.fill(CGRect(x: 100, y: image.height - top - 8, width: 16, height: 8)) // one changed "word"
+            return context.makeImage()!
+        }
+        let a = Fixture.rows(page, from: 0, count: 300)
+        let still = [try Fixture.write(a, dir, "a.png"), try Fixture.write(marked(a, at: 150), dir, "a-changed.png")]
+        // Nearly every pixel is equal and the mean difference is tiny, yet the screen changed.
+        #expect(try LocalVision.compare(still[0], still[1]).similarity > 0.99)
+        let unmoved = try LocalVision.compose(still, output: dir.appendingPathComponent("unmoved.png").path)
+        #expect(unmoved.frames.map(\.placement) == [.first, .gap])
+
+        let scrolled = [still[0], try Fixture.write(marked(Fixture.rows(page, from: 100, count: 300), at: 20), dir, "b-changed.png")]
+        let moved = try LocalVision.compose(scrolled, output: dir.appendingPathComponent("moved.png").path)
+        #expect(moved.frames.map(\.placement) == [.first, .gap], "the change sits in the 200-row overlap")
+        #expect(moved.hasGap)
+    }
+
     @Test func oneFrameWithAnROIIsACrop() throws {
         let dir = try Fixture.directory()
         let frame = try Fixture.write(Fixture.rows(page, from: 0, count: 300), dir, "a.png")
