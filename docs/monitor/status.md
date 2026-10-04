@@ -24,7 +24,7 @@
 | G | 邮件接入（mail 服务订阅方） | 已释放 | monitor-G | 已合（mail 入工作区；全量 1313） | f29f5a9 | 交接给服务器端（docs/monitor/handover-mail-ingestion.md），Monitor 内冻结 |
 | H1 | 动作公共层 + 问候 + 求简历 | 已释放 | monitor-H1 | 已合（合并时全量 963 tests） | — | 9 条界面假设待 N（H1.md 第五节）；接口请求：Driver 层过滤 PDF 子树、hints 稳定 |
 | H2 | 搜索动作 | — | — | 未派 | — | — |
-| H3 | 换联系方式 + 转发简历 | — | — | 未派 | — | — |
+| H3 | 换微信（人工触发） | ctx_91f17dd8c7d9 / monitor-H3 | monitor-H3 | 进行 | — | — |
 | I1 | 控制台骨架、总览、连接与策略 | — | — | 撤销（2026-10-04：管理页放服务器端 / ATS 门户，见 handover-device-console.md） | — | — |
 | I2 | 控制台候选人流程、执行记录、搜索 | — | — | 撤销（同上） | — | — |
 | J | 安装、模式、launchd、状态窗口 | 已释放 | monitor-J | 已合（2420f09；其分支上 982 tests；合并后受 0.3.0 limits 影响由 X 修） | 3a33e4d | 真机验证步骤见 J.md 第七节；接口请求：CliFailure 冻结 bug、window release 分类（→ C2）、python -m monitor install 分发（→ X 之后） |
