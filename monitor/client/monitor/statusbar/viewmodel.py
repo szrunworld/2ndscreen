@@ -12,6 +12,7 @@ CLIENT_TEXT = {
     "not_running": "未运行 / 窗口不在专用屏",
     "login_required": "需要登录",
     "blocked_by_dialog": "被弹窗挡住",
+    "suspended": "窗口已归还（挂起）",
     "unknown": "未知",
 }
 PAUSE_TEXT = {

@@ -15,7 +15,7 @@
 | A4 | 契约 0.3.2 汇总补丁 | 已释放 | monitor-A4 | 已合（5dc14d1，contracts 299）；server 一致性测试 21 个失败待 F4 | 2810273 | 多账户策略取值未裁决（A4.md） |
 | F4 | 服务端适配 0.3.2 | 已释放 | monitor-F4 | 已合（5bf3bd8；全量 1665 + 1 xfail） | f95735b | 搜索时段外直接 409（不顺延）；最小间隔仍按 search_runs 计算，被取消的搜索也占间隔 |
 | F5 | 修 M-1（契约 0.3.3 HeartbeatAck.account_binding + 服务端）与 M-4 | 已释放 | monitor-F5 | 已合（e3d4644；全量 1757 + 5 xfail） | — | 客户端部分归 D2d |
-| D2d | 管线收尾（搜索=对外动作、M-1 客户端、M-2、M-3、suspended） | ctx_e735d5dd2f10 / monitor-D2d | monitor-D2d | 进行 | — | — |
+| D2d | 管线收尾（搜索=对外动作、M-1 客户端、M-2、M-3、suspended） | 已释放 | monitor-D2d | 已合（f80adb2；全量 1774 + 1 xfail（K）） | 36c3bde | integration_kit.bind_locally 仍作测试捷径保留（无害） |
 | R | 品牌化简历渲染 | — | — | 移出本项目（用户 2026-10-04：属于 ATS 功能，见 ~/orca/ats） | — | — |
 | B | 只读可行性验证与夹具 | ctx_1b25ee64eab9（已释放） | monitor-B | 已合（898edbd） | 201001d | 登录/二维码、新招呼首次打开、电话待同意/已交换/已拒绝、邮件转发内容、搜索输入后结果 → 留给 N/K |
 | C | Driver 适配器 | ctx_3dfbecec466d（已释放） | monitor-C | 已合（ecfe9da；client 入工作区 + relock，contracts+client 351 tests） | ec6aed9 | 定位器 text 同时匹配 label/value（比契约宽），0.2.0 契约里追认；CliDriver 未在 BOSS 上真机跑过 → N |
@@ -97,7 +97,7 @@ Run：run_7d52e82ce7ed。分支 monitor-v1（a12a931，自 szrunworld/ss-runtime
 
 - A4 未裁决两项（多账户时邮件接入读哪个账户的策略、控制台待办的 HTTP 接口）：分别随邮件接入交接与设备管理页交接给服务器端，Monitor 不处理。
 
-## D2d 范围（已派）
+## D2d 范围（已完成）
 
 - 搜索按对外动作计数（core write_flags / limits / 崩溃恢复），解除 H2 的 xfail。
 - M-1 客户端部分：读取心跳回执的 account_binding，写入本机绑定并按需重建基线。

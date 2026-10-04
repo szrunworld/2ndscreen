@@ -82,18 +82,11 @@ cd server && uv run python -m app.main serve --db /var/lib/monitor/server.db --p
    console PUT /devices/$DEV/account-binding '{"account_id":"<招聘账户 ID>","note":"确认人：李四"}'
    ```
 
-2. **把绑定写进设备**（缺陷 M-1 的替代步骤；任务 D2d 合并后设备会从心跳回执自动取得绑定，这一步将不再需要）：目前 Monitor 无法从服务端得知绑定的账户，状态窗口会一直显示"尚未绑定招聘账户"、不领取任何指令。在设备上，**Monitor 停止时**执行：
-
-   ```sh
-   launchctl bootout gui/$(id -u)/com.recruit-monitor.monitor 2>/dev/null || true   # 前台运行的话 Ctrl-C
-   cd monitor && uv run python scripts/bind_account.py --account <招聘账户 ID> --confirmed-by <确认人>
-   ```
-
-   然后按第六节启动。启动后先重建观察基线（首次启用只建基线，不把积压的数百条『新招呼』当成新投递），完成后才开始领取指令。
+2. **设备自动取得绑定**：设备在下一次心跳回执里收到 `account_binding`，写入本机并开始重建观察基线（首次启用只建基线，不把积压的『新招呼』当成新投递），完成后才领取指令。无需在设备上做任何操作（缺陷 M-1 已由任务 F5 + D2d 修复，原 `bind_account.py` 已删除）。
 
 3. 核对：`console GET /devices/$DEV` 的 `last_heartbeat.account_id` 等于绑定账户、`account_binding` 非空；状态窗口"账户"一栏显示该账户。
 
-换账户：控制台重新确认绑定 → 设备上重跑 `bind_account.py`（换账户会自动要求重建基线）→ 启动。
+换账户：控制台重新确认绑定即可。设备从心跳回执得知账户变更后，暂停对外动作、重建基线，完成后恢复领取。撤销绑定时设备清除本机绑定并停止领取。
 
 ## 五、开启自动化策略
 
