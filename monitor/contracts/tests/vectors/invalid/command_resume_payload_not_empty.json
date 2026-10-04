@@ -1,0 +1,29 @@
+{
+  "contract": "command",
+  "description": "求简历不接受参数",
+  "data": {
+    "command_id": "00000000-0000-4000-8000-000000000002",
+    "workflow_id": "case_001",
+    "account_id": "acct_demo",
+    "action": "request_resume",
+    "target": {
+      "conversation": {
+        "candidate_name": "候选人A",
+        "job_title": "后端工程师",
+        "hints": [
+          "本科",
+          "上海"
+        ]
+      }
+    },
+    "payload": {
+      "text": "x"
+    },
+    "issued_at": "2026-10-04T09:30:00+08:00",
+    "expires_at": "2026-10-04T09:40:00+08:00",
+    "depends_on": "00000000-0000-4000-8000-000000000001"
+  },
+  "expected_error_paths": [
+    "payload"
+  ]
+}

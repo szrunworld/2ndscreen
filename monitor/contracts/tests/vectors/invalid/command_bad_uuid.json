@@ -1,0 +1,31 @@
+{
+  "contract": "command",
+  "description": "command_id 不是 UUID",
+  "data": {
+    "command_id": "cmd-1",
+    "workflow_id": "case_001",
+    "account_id": "acct_demo",
+    "action": "send_greeting",
+    "target": {
+      "conversation": {
+        "candidate_name": "候选人A",
+        "job_title": "后端工程师",
+        "hints": [
+          "本科",
+          "上海"
+        ]
+      },
+      "candidate_ref": "cand_9",
+      "result_ref": null
+    },
+    "payload": {
+      "text": "你好，方便聊聊吗？"
+    },
+    "issued_at": "2026-10-04T09:30:00+08:00",
+    "expires_at": "2026-10-04T09:40:00+08:00",
+    "depends_on": null
+  },
+  "expected_error_paths": [
+    "command_id"
+  ]
+}

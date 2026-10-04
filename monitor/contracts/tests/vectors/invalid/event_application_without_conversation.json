@@ -1,0 +1,27 @@
+{
+  "contract": "event",
+  "description": "新投递必须有会话",
+  "data": {
+    "event_id": "51696fd36487432a5cfc3df72b035786de3745414dcfd267c3c5e4a44f2c5704",
+    "device_id": "dev_mac_01",
+    "account_id": "acct_demo",
+    "kind": "application_observed",
+    "conversation": null,
+    "bucket": "2026-10-04T01:00:00Z/3600",
+    "observed_at": "2026-10-04T09:31:05+08:00",
+    "payload": {
+      "marker_text": "新招呼",
+      "evidence": [
+        {
+          "text": "新招呼",
+          "role": "AXStaticText",
+          "source": "list",
+          "captured_at": "2026-10-04T09:31:05+08:00"
+        }
+      ]
+    }
+  },
+  "expected_error_paths": [
+    "conversation"
+  ]
+}

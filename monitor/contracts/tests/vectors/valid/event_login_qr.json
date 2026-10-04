@@ -1,0 +1,17 @@
+{
+  "contract": "event",
+  "description": "二维码更新通知（不含内容）",
+  "data": {
+    "event_id": "3014cbe6eeaab37982a83f961754c0927d6fa43c4d64fc3f1d9df1c998742652",
+    "device_id": "dev_mac_01",
+    "account_id": null,
+    "kind": "login_qr",
+    "conversation": null,
+    "bucket": "2026-10-04T01:00:00Z/3600",
+    "observed_at": "2026-10-04T09:31:05+08:00",
+    "payload": {
+      "qr_seq": 2,
+      "expires_at": "2026-10-04T09:33:05+08:00"
+    }
+  }
+}

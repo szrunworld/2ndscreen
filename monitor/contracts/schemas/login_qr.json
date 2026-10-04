@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "login_qr",
+  "description": "POST /login-qr 请求体：独立设备模式下把本地解码的登录二维码内容接力到控制台。服务端只保留到 expires_at，过期后不再返回内容。本机模式不得发送。",
+  "type": "object",
+  "required": ["device_id", "account_id", "qr_payload", "qr_seq", "captured_at", "expires_at", "decoder"],
+  "additionalProperties": false,
+  "properties": {
+    "device_id": {"$ref": "common.json#/$defs/device_id"},
+    "account_id": {"oneOf": [{"$ref": "common.json#/$defs/account_id"}, {"type": "null"}], "description": "设备已绑定的账户；首次登录前可为 null。"},
+    "qr_payload": {"type": "string", "minLength": 1, "maxLength": 2048, "description": "二维码解码出的原始文本（不是图片）。"},
+    "qr_seq": {"type": "integer", "minimum": 1, "description": "同一设备上二维码内容每变化一次 +1。"},
+    "captured_at": {"$ref": "common.json#/$defs/timestamp"},
+    "expires_at": {"$ref": "common.json#/$defs/timestamp", "description": "必须晚于 captured_at。"},
+    "decoder": {"type": "string", "enum": ["vision_barcode", "other"]}
+  }
+}

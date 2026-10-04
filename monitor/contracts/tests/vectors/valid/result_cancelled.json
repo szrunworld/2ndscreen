@@ -1,0 +1,17 @@
+{
+  "contract": "command_result",
+  "description": "排队时被取消",
+  "data": {
+    "command_id": "00000000-0000-4000-8000-000000000009",
+    "action": "request_resume",
+    "status": "cancelled",
+    "reason": null,
+    "observed": {
+      "before": [],
+      "after": []
+    },
+    "evidence": [],
+    "executed_at": null,
+    "reported_at": "2026-10-04T09:31:20+08:00"
+  }
+}

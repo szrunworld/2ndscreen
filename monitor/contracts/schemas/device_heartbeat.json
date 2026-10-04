@@ -1,0 +1,219 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "device_heartbeat",
+  "description": "POST /devices/{device_id}/heartbeat 请求体，默认每 30 秒一次。",
+  "type": "object",
+  "required": [
+    "device_id",
+    "sent_at",
+    "mode",
+    "account_id",
+    "client_state",
+    "paused",
+    "needs_baseline",
+    "current_action",
+    "queue",
+    "monitor_version"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "device_id": {
+      "$ref": "common.json#/$defs/device_id"
+    },
+    "sent_at": {
+      "$ref": "common.json#/$defs/timestamp"
+    },
+    "mode": {
+      "$ref": "common.json#/$defs/mode"
+    },
+    "account_id": {
+      "oneOf": [
+        {
+          "$ref": "common.json#/$defs/account_id"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "本机已确认绑定的账户；未绑定为 null。"
+    },
+    "client_state": {
+      "type": "string",
+      "enum": [
+        "running",
+        "not_running",
+        "login_required",
+        "blocked_by_dialog",
+        "unknown"
+      ],
+      "description": "BOSS 客户端状态。"
+    },
+    "paused": {
+      "type": "boolean"
+    },
+    "pause_reason": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "user_request",
+        "login_required",
+        "account_switched",
+        "anomaly",
+        "server_request",
+        "rebaseline",
+        null
+      ],
+      "default": null
+    },
+    "needs_baseline": {
+      "type": "boolean",
+      "description": "离线超过 24 小时或首次启动，需要先重建观察基线。"
+    },
+    "current_action": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "command_id",
+            "action",
+            "started_at"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "command_id": {
+              "$ref": "common.json#/$defs/uuid"
+            },
+            "action": {
+              "$ref": "common.json#/$defs/action"
+            },
+            "started_at": {
+              "$ref": "common.json#/$defs/timestamp"
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "queue": {
+      "type": "object",
+      "required": [
+        "queued_commands",
+        "undelivered_results",
+        "outbox_events"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "queued_commands": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "undelivered_results": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "outbox_events": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "last_error": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "code",
+            "at"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]{0,63}$",
+              "description": "如 unsupported_presentation、driver_error、screen_lost。"
+            },
+            "message": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 500
+            },
+            "scene": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 64,
+              "description": "出错时的页面类别，如 conversation_list、search、login。unsupported_presentation 时必填。"
+            },
+            "at": {
+              "$ref": "common.json#/$defs/timestamp"
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "code": {
+                    "const": "unsupported_presentation"
+                  }
+                },
+                "required": [
+                  "code"
+                ]
+              },
+              "then": {
+                "required": [
+                  "scene"
+                ],
+                "properties": {
+                  "scene": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "monitor_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+([-+][0-9A-Za-z.-]+)?$"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "paused": {
+            "const": true
+          }
+        },
+        "required": [
+          "paused"
+        ]
+      },
+      "then": {
+        "properties": {
+          "pause_reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "pause_reason"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,399 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "command",
+  "description": "服务端 → Monitor 的指令。target 与 payload 的形状由 action 决定（见 allOf 中的 if/then）。",
+  "type": "object",
+  "required": [
+    "command_id",
+    "workflow_id",
+    "account_id",
+    "action",
+    "target",
+    "payload",
+    "issued_at",
+    "expires_at"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "command_id": {
+      "$ref": "common.json#/$defs/uuid"
+    },
+    "workflow_id": {
+      "oneOf": [
+        {
+          "$ref": "common.json#/$defs/workflow_id"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "所属 recruitment_case。search_candidates 与 provide_input 必须为 null，其余动作必填。"
+    },
+    "account_id": {
+      "$ref": "common.json#/$defs/account_id"
+    },
+    "action": {
+      "$ref": "common.json#/$defs/action"
+    },
+    "execution_mode": {
+      "type": "string",
+      "enum": [
+        "execute",
+        "verify_only"
+      ],
+      "default": "execute",
+      "description": "verify_only：只读界面判断动作是否已发生（控制台'重新检查界面状态'），不做任何写操作，不受每日上限、最小间隔与白名单开关约束。"
+    },
+    "target": {
+      "type": "object"
+    },
+    "payload": {
+      "type": "object"
+    },
+    "issued_at": {
+      "$ref": "common.json#/$defs/timestamp"
+    },
+    "expires_at": {
+      "$ref": "common.json#/$defs/timestamp"
+    },
+    "depends_on": {
+      "oneOf": [
+        {
+          "$ref": "common.json#/$defs/uuid"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "前置指令 command_id。前置指令未 succeeded（含 unknown）时本指令不执行。"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "enum": [
+              "send_greeting",
+              "request_resume",
+              "request_contact_exchange",
+              "forward_resume"
+            ]
+          }
+        },
+        "required": [
+          "action"
+        ]
+      },
+      "then": {
+        "properties": {
+          "workflow_id": {
+            "$ref": "common.json#/$defs/workflow_id"
+          },
+          "target": {
+            "$ref": "#/$defs/conversation_target"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "enum": [
+              "search_candidates",
+              "provide_input"
+            ]
+          }
+        },
+        "required": [
+          "action"
+        ]
+      },
+      "then": {
+        "properties": {
+          "workflow_id": {
+            "type": "null"
+          },
+          "execution_mode": {
+            "const": "execute"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "send_greeting"
+          }
+        },
+        "required": [
+          "action"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/send_greeting_payload"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "request_resume"
+          }
+        },
+        "required": [
+          "action"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/empty_payload"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "request_contact_exchange"
+          }
+        },
+        "required": [
+          "action"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/request_contact_exchange_payload"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "forward_resume"
+          }
+        },
+        "required": [
+          "action"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/forward_resume_payload"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "search_candidates"
+          }
+        },
+        "required": [
+          "action"
+        ]
+      },
+      "then": {
+        "properties": {
+          "target": {
+            "$ref": "#/$defs/search_target"
+          },
+          "payload": {
+            "$ref": "#/$defs/search_candidates_payload"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "provide_input"
+          }
+        },
+        "required": [
+          "action"
+        ]
+      },
+      "then": {
+        "properties": {
+          "target": {
+            "$ref": "#/$defs/input_target"
+          },
+          "payload": {
+            "$ref": "#/$defs/provide_input_payload"
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "conversation_target": {
+      "type": "object",
+      "description": "会话类动作的目标。Monitor 必须重新定位并核对 conversation 全部字段；多处命中即歧义，不执行。",
+      "required": [
+        "conversation"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "conversation": {
+          "$ref": "common.json#/$defs/conversation"
+        },
+        "candidate_ref": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 128,
+          "default": null,
+          "description": "服务端的候选人引用，Monitor 只回显，不用于定位。"
+        },
+        "result_ref": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[A-Za-z0-9_-]{1,64}:item_[1-9][0-9]*$",
+          "default": null,
+          "description": "来自搜索快照的位置引用（仅提示来源）；不能代替身份核对。"
+        }
+      }
+    },
+    "search_target": {
+      "type": "object",
+      "required": [
+        "scope"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "scope": {
+          "const": "current_page"
+        }
+      }
+    },
+    "input_target": {
+      "type": "object",
+      "required": [
+        "input_request_id"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "input_request_id": {
+          "$ref": "common.json#/$defs/uuid",
+          "description": "对应 human_input_required 事件 payload.input_request_id。"
+        }
+      }
+    },
+    "empty_payload": {
+      "type": "object",
+      "maxProperties": 0,
+      "description": "该动作没有参数。"
+    },
+    "send_greeting_payload": {
+      "type": "object",
+      "required": [
+        "text"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500,
+          "description": "服务端按策略模板渲染好的问候文本。"
+        }
+      }
+    },
+    "request_contact_exchange_payload": {
+      "type": "object",
+      "required": [
+        "exchange_type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "exchange_type": {
+          "$ref": "common.json#/$defs/exchange_type"
+        }
+      }
+    },
+    "forward_resume_payload": {
+      "type": "object",
+      "required": [
+        "destination"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "destination": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 254,
+          "description": "转发目标邮箱（策略配置的指定邮箱）。"
+        },
+        "attachment_hint": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 200,
+          "description": "附件文件名等辅助核对信息（可选）。"
+        }
+      }
+    },
+    "search_candidates_payload": {
+      "type": "object",
+      "required": [
+        "search_id",
+        "query",
+        "max_results"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "search_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,64}$"
+        },
+        "query": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "max_results": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        }
+      }
+    },
+    "provide_input_payload": {
+      "type": "object",
+      "required": [
+        "value"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "value": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "人工输入内容（如短信验证码）。敏感：不得写入日志与 evidence。"
+        }
+      }
+    }
+  }
+}

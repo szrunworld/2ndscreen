@@ -1,0 +1,24 @@
+{
+  "contract": "device_registration",
+  "description": "未知模式",
+  "data": {
+    "enrollment_code": "ENR-7Q4K-22",
+    "device_name": "招聘专用 Mac mini",
+    "mode": "cloud",
+    "platform": {
+      "os": "macos",
+      "os_version": "15.1",
+      "arch": "arm64"
+    },
+    "monitor_version": "0.1.0",
+    "contracts_version": "0.1.0",
+    "capabilities": [
+      "observe",
+      "request_resume",
+      "login_relay"
+    ]
+  },
+  "expected_error_paths": [
+    "mode"
+  ]
+}

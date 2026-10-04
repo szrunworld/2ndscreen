@@ -1,0 +1,21 @@
+{
+  "contract": "event",
+  "description": "未知 kind",
+  "data": {
+    "event_id": "62f693eb3c287451535f22a7a506735ad492ef211a8016bef3da4c18c0f8a0e1",
+    "device_id": "dev_mac_01",
+    "account_id": "acct_demo",
+    "kind": "message_received",
+    "conversation": null,
+    "bucket": "2026-10-04T01:00:00Z/3600",
+    "observed_at": "2026-10-04T09:31:05+08:00",
+    "payload": {
+      "reason": "user_request",
+      "by": "user",
+      "detail": null
+    }
+  },
+  "expected_error_paths": [
+    "kind"
+  ]
+}

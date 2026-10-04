@@ -1,0 +1,13 @@
+{
+  "contract": "login_qr",
+  "description": "首次登录二维码",
+  "data": {
+    "device_id": "dev_mac_01",
+    "account_id": null,
+    "qr_payload": "https://example.invalid/qr?k=abc123",
+    "qr_seq": 1,
+    "captured_at": "2026-10-04T09:31:05+08:00",
+    "expires_at": "2026-10-04T09:33:05+08:00",
+    "decoder": "vision_barcode"
+  }
+}

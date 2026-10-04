@@ -1,0 +1,27 @@
+{
+  "contract": "device_heartbeat",
+  "description": "暂停中且有不支持的呈现",
+  "data": {
+    "device_id": "dev_mac_01",
+    "sent_at": "2026-10-04T09:31:20+08:00",
+    "mode": "local",
+    "account_id": "acct_demo",
+    "client_state": "running",
+    "paused": true,
+    "pause_reason": "user_request",
+    "needs_baseline": false,
+    "current_action": null,
+    "queue": {
+      "queued_commands": 2,
+      "undelivered_results": 1,
+      "outbox_events": 0
+    },
+    "last_error": {
+      "code": "unsupported_presentation",
+      "message": "会话列表出现未识别分组",
+      "scene": "conversation_list",
+      "at": "2026-10-04T09:31:05+08:00"
+    },
+    "monitor_version": "0.1.0"
+  }
+}

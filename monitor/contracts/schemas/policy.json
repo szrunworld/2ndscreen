@@ -1,0 +1,267 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "policy",
+  "description": "账户级策略。服务端保存与下发；Monitor 本地另有写死的硬上限与最小间隔下限，策略只能收紧、不能放宽。",
+  "type": "object",
+  "required": [
+    "account_id",
+    "policy_version",
+    "allowed_actions",
+    "job_scope",
+    "greeting",
+    "auto_request_resume",
+    "after_resume_received",
+    "work_hours",
+    "daily_limits",
+    "min_interval_seconds",
+    "pause_on_anomaly",
+    "paused",
+    "updated_at",
+    "updated_by"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "account_id": {
+      "$ref": "common.json#/$defs/account_id"
+    },
+    "policy_version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "每次修改 +1；PUT 时用 If-Match 做乐观锁。"
+    },
+    "allowed_actions": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "enum": [
+          "send_greeting",
+          "request_resume",
+          "request_contact_exchange",
+          "forward_resume",
+          "search_candidates"
+        ]
+      },
+      "default": [],
+      "description": "对外动作白名单，默认空 = 全部关闭。provide_input 与 verify_only 不受白名单控制。"
+    },
+    "job_scope": {
+      "type": "object",
+      "required": [
+        "mode",
+        "job_titles"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "all",
+            "listed"
+          ]
+        },
+        "job_titles": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "maxItems": 200,
+          "uniqueItems": true
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "listed"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "job_titles": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "greeting": {
+      "type": "object",
+      "required": [
+        "enabled",
+        "template"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "template": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "问候模板，可用占位符 {candidate_name}、{job_title}。"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "enabled": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "template": {
+                "minLength": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "auto_request_resume": {
+      "type": "boolean"
+    },
+    "after_resume_received": {
+      "type": "object",
+      "required": [
+        "action",
+        "wait_for_parse"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "none",
+            "request_contact_exchange"
+          ]
+        },
+        "wait_for_parse": {
+          "type": "boolean",
+          "description": "是否等 PDF 解析完成再发起后续动作。"
+        }
+      }
+    },
+    "work_hours": {
+      "type": "object",
+      "required": [
+        "timezone",
+        "windows"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "timezone": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "IANA 时区名，如 Asia/Shanghai。"
+        },
+        "windows": {
+          "type": "array",
+          "maxItems": 14,
+          "items": {
+            "type": "object",
+            "required": [
+              "days",
+              "start",
+              "end"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "days": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 7
+                },
+                "minItems": 1,
+                "uniqueItems": true,
+                "description": "ISO 星期，1=周一。"
+              },
+              "start": {
+                "type": "string",
+                "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$"
+              },
+              "end": {
+                "type": "string",
+                "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$"
+              }
+            }
+          },
+          "description": "空数组 = 任何时段都不生成对外指令。"
+        }
+      }
+    },
+    "daily_limits": {
+      "$ref": "#/$defs/per_action_counts"
+    },
+    "min_interval_seconds": {
+      "$ref": "#/$defs/per_action_counts"
+    },
+    "pause_on_anomaly": {
+      "const": true,
+      "description": "异常时暂停并通知，不可关闭。",
+      "x-message": "异常时暂停并通知不可关闭，必须为 true"
+    },
+    "paused": {
+      "type": "boolean"
+    },
+    "updated_at": {
+      "$ref": "common.json#/$defs/timestamp"
+    },
+    "updated_by": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    }
+  },
+  "$defs": {
+    "per_action_counts": {
+      "type": "object",
+      "required": [
+        "send_greeting",
+        "request_resume",
+        "request_contact_exchange",
+        "forward_resume",
+        "search_candidates"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "send_greeting": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 86400
+        },
+        "request_resume": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 86400
+        },
+        "request_contact_exchange": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 86400
+        },
+        "forward_resume": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 86400
+        },
+        "search_candidates": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 86400
+        }
+      }
+    }
+  }
+}
