@@ -18,6 +18,7 @@ from monitor_contracts import (
     SearchOutput,
     check,
     validate_command,
+    validate_ax_fixture,
     validate_command_result,
     validate_device_heartbeat,
     validate_device_registration,
@@ -142,3 +143,19 @@ def test_sensitive_values_not_in_repr():
     assert "abc123" not in repr(qr)
     # 但线上序列化必须保留原值
     assert cmd.to_wire()["payload"]["value"] == "123456"
+
+
+# --- 夹具元素 enabled 可为 null / 省略（契约 0.1.1） -------------------------------
+
+
+def test_fixture_element_enabled_may_be_null_or_missing():
+    fixture = copy.deepcopy(V["ax_fixture_new_application"])
+    elements = fixture["steps"][0]["elements"]
+    elements[0]["enabled"] = None
+    del elements[1]["enabled"]
+    assert check("ax_fixture", fixture) == []
+    step = validate_ax_fixture(fixture).steps[0]
+    assert step.elements[0].enabled is None and step.elements[1].enabled is None
+    assert step.elements[0].to_element("s1").enabled is None
+    elements[0]["enabled"] = "yes"
+    assert [e.path for e in check("ax_fixture", fixture)] == ["steps[0].elements[0].enabled"]

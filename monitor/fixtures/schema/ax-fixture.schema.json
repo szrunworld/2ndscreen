@@ -138,8 +138,7 @@
         "role",
         "label",
         "value",
-        "frame",
-        "enabled"
+        "frame"
       ],
       "additionalProperties": false,
       "properties": {
@@ -162,7 +161,11 @@
           "$ref": "#/$defs/frame"
         },
         "enabled": {
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "null 或省略 = 来源不提供（2ndscreen CLI 不输出 enabled）"
         },
         "parent_index": {
           "type": [

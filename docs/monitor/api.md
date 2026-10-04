@@ -1,6 +1,6 @@
 # 招聘 Monitor 服务端 HTTP 接口
 
-版本 0.1.0，与 `monitor_contracts` 0.1.0 对应。机器可读的定义在 [`monitor/contracts/openapi.yaml`](../../monitor/contracts/openapi.yaml)（OpenAPI 3.1，已通过 `openapi-spec-validator` 校验）。本文写给实现者（F1–F3、G、I1/I2、D2）看，冲突时以 openapi.yaml 为准。消息体的字段含义见 [contracts.md](contracts.md)。
+版本 0.1.1，与 `monitor_contracts` 0.1.1 对应。机器可读的定义在 [`monitor/contracts/openapi.yaml`](../../monitor/contracts/openapi.yaml)（OpenAPI 3.1，已通过 `openapi-spec-validator` 校验）。本文写给实现者（F1–F3、G、I1/I2、D2）看，冲突时以 openapi.yaml 为准。消息体的字段含义见 [contracts.md](contracts.md)。
 
 ## 一、通用规则
 

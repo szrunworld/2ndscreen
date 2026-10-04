@@ -1,6 +1,6 @@
 # 招聘 Monitor 契约说明
 
-契约版本：`monitor_contracts.__version__ = "0.1.0"`（2026-10-04）。本文说明 `monitor/contracts/` 的产物，是[方案](monitor-spec.md)第六、七节的落地版本。HTTP 接口见 [api.md](api.md)。
+契约版本：`monitor_contracts.__version__ = "0.1.1"`（2026-10-04）。本文说明 `monitor/contracts/` 的产物，是[方案](monitor-spec.md)第六、七节的落地版本。HTTP 接口见 [api.md](api.md)。
 
 本文中"已验证"只表示 `uv run pytest contracts` 通过的契约层行为，不代表 BOSS 客户端上的任何能力。
 
@@ -255,7 +255,7 @@ event_id = sha256_hex( JSON( ["monitor-event-v1", account_id or "", kind, 会话
 
 Driver 错误码（`DriverError.code`，可以写入 `heartbeat.last_error.code`）：`window_lost`、`screen_lost`、`timeout`、`snapshot_stale`、`cli_failed`、`target_ambiguous`、`target_not_found`，以及基类 `driver_error`。
 
-`Element` 的字段为 `index, role, label, value, frame, enabled`，另有可选的 `snapshot_id`（由 Driver 填写）和 `parent_index / depth`（仅 include_tree）。只读属性 `text` = label 与 value 去重后拼接，定位和 evidence 默认用它。
+`Element` 的字段为 `index, role, label, value, frame, enabled`，另有可选的 `snapshot_id`（由 Driver 填写）和 `parent_index / depth`（仅 include_tree）。`enabled` 为 `bool | None`，默认 None，表示来源不提供（2ndscreen CLI 不输出该字段），不等于不可用。只读属性 `text`：label 去空白后非空就返回 label，否则返回 value，两者不拼接，所以输入框（label=搜索、value=关键词）仍能被 `Locator(text="搜索")` 命中。Locator 的 text 和 text_contains 都匹配这个属性，定位和 evidence 默认也用它。
 
 ## 十一、夹具格式
 
@@ -263,6 +263,7 @@ Driver 错误码（`DriverError.code`，可以写入 `heartbeat.last_error.code`
 
 - 顶层：`fixture_version: 1`、`scene`（与目录名一致）、`description`、`recorded_at`、`source{app, app_version?, driver, recorded_by?}`、`redaction{names_replaced, phones_removed, wechat_removed}`（三项都必须为 true）、`steps[≥1]`。
 - 每一步：`label`、`window`、`elements[]`（`FixtureElement`：与 Element 相同，但没有 snapshot_id，`index` 必须等于位置，`to_element(snapshot_id)` 可转成 Element），以及 `annotations`。
+- `enabled` 可以为 null 或省略。从 2ndscreen CLI 录制的夹具一律为 null，因为 CLI 实测不输出 enabled；不要为了凑值写 true。
 - `annotations`：`page`（页面类别）、`conversations[]{element_index, conversation, is_new_application, unread?, ambiguous?}`、`is_new_application[]`（元素 index 简写）、`qr_region`、`expected_events[]`（观察本步后应产生的事件 kind，空列表表示不应产生事件）、`notes`，扩展键必须以 `x_` 开头。
 - label、value、窗口标题若含中国大陆手机号样式的 11 位数字，schema 会直接拒绝。这只是兜底检查，不能替代人工脱敏抽查。
 
@@ -274,7 +275,7 @@ Driver 错误码（`DriverError.code`，可以写入 `heartbeat.last_error.code`
 4. 在 `docs/monitor/status.md` 的"契约版本"表登记变更和受影响的任务，并通知这些任务 rebase。
 5. 服务端在 `POST /devices` 时比较 `contracts_version`，主版本或次版本不兼容时返回 409 `contracts_version_unsupported`。
 
-## 十三、v0.1.0 已裁决的契约缺口
+## 十三、契约缺口裁决与变更记录
 
 | 问题 | 裁决 |
 | --- | --- |
@@ -285,3 +286,10 @@ Driver 错误码（`DriverError.code`，可以写入 `heartbeat.last_error.code`
 | `workflow_id` | 会话类动作必填；search_candidates 和 provide_input 为 null |
 | `reason` 与 status 的约束 | 见第四节 |
 | `monitor/uv.lock` | 由 A 提交；后续任务不提交 lock 改动，由监督者合并时统一重新 lock |
+
+### 变更记录
+
+| 版本 | 日期 | 变更 | 受影响任务 |
+| --- | --- | --- | --- |
+| 0.1.0 | 2026-10-04 | 首版 | 全部 |
+| 0.1.1 | 2026-10-04 | Driver 协议两处修正：`Element.enabled` 改为 `bool \| None = None`（None 表示来源不提供；FixtureElement 与 ax-fixture schema 同步允许 null 或省略）；`Element.text` 改为 label 非空取 label，否则取 value，不再拼接。8.1 中推断的三条迁移经审查全部接受，未改 | C、E、H1–H3、B（夹具） |
