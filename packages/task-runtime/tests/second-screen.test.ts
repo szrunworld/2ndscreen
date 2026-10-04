@@ -374,6 +374,58 @@ test('act reports stale indexes, classified failures, and unknown when a command
   assert.equal(outside.status, 'failed');
 });
 
+test('an explicit accessibility press goes out as ax-press on one index and reports its own route', async () => {
+  let reply: object = { ok: true, route: 'ax.press.explicit' };
+  const { run, calls } = fakeRunner({ cli: () => reply, tools: identityTools });
+  const adapter = createSecondScreenAdapter({ cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' });
+  const base = ['--screen', profile.id, '--pid', '4242', '--window-id', '77'];
+  const press = (extra: object = {}, target: object = { kind: 'element', index: 5 }) =>
+    adapter.act(binding, { actionId: 'p', snapshotId: 's', action: { kind: 'click', target, method: 'accessibility', effect: 'navigation', ...extra } as never });
+  const cli = () => calls.filter((c) => c.file === 'cli');
+
+  let r = await press();
+  assert.equal(r.status, 'ok');
+  assert.equal(r.route, 'accessibility');
+  assert.equal(r.point, undefined);
+  assert.deepEqual(cli().at(-1)!.args, ['ax-press', ...base, '--index', '5']);
+
+  // The default click is unchanged: same verb and words, element route, even when the CLI pressed a native control.
+  reply = { ok: true, route: 'ax.press' };
+  r = await adapter.act(binding, { actionId: 'c', snapshotId: 's', action: { kind: 'click', target: { kind: 'element', index: 5 }, effect: 'navigation' } });
+  assert.equal(r.route, 'element');
+  assert.deepEqual(cli().at(-1)!.args, ['click', ...base, '--index', '5']);
+
+  // Refused before any command: points, other buttons, double clicks, unknown methods.
+  const sent = cli().length;
+  for (const [what, result] of [
+    ['point', await press({}, { kind: 'relative', point: { x: 0.3, y: 0.04 } })],
+    ['right', await press({ button: 'right' })],
+    ['double', await press({ count: 2 })],
+    ['method', await press({ method: 'event' })],
+  ] as const) {
+    assert.equal(result.status, 'failed', what);
+    assert.equal(result.error?.code, 'invalid_input', what);
+  }
+  assert.equal(cli().length, sent, 'nothing was sent for a malformed press');
+
+  // A CLI or side instance that predates ax-press refuses it before any input: capability_missing.
+  for (const error of ['unknown command\n\nusage: 2ndscreen …', 'bad request: The data couldn’t be read because it isn’t in the correct format.']) {
+    reply = { ok: false, error };
+    r = await press();
+    assert.equal(r.status, 'failed');
+    assert.equal(r.error?.code, 'capability_missing', error);
+  }
+  reply = { ok: false, error: 'element 5 does not advertise AXPress; nothing was pressed' };
+  assert.equal((await press()).error?.code, 'capability_missing');
+  reply = { ok: false, error: 'no element 5 in the window; run state again' };
+  assert.equal((await press()).status, 'stale_snapshot');
+  // Answered ok without the explicit route: whatever happened, it was not a verified press.
+  reply = { ok: true, route: 'event.click' };
+  r = await press();
+  assert.equal(r.status, 'unknown');
+  assert.equal(r.error?.code, 'capability_missing');
+});
+
 test('an aborted signal stops every operation before it runs a command', async () => {
   const { run, calls } = fakeRunner({ cli: () => ({ ok: true }) });
   const adapter = createSecondScreenAdapter({ cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' });
@@ -533,6 +585,55 @@ test('session and adapter together map window fractions against the window as it
     frame = { x: 6000, y: 50, width: 1200, height: 800 };
     await session.act({ actionId: 'o', action: { kind: 'click', target: { kind: 'ocr', text: 'Open' }, effect: 'read' } });
     assert.deepEqual([flag(clicks().at(-1)!.args, '--x'), flag(clicks().at(-1)!.args, '--y')], [String(6000 + 600), String(50 + 400)]);
+    await session.close({ keepWindow: true });
+  });
+});
+
+test('the session resolves a semantic target to one index and keeps the accessibility method to the CLI', async () => {
+  const { createSessionManager } = await import('../src/session.ts');
+  await withDir(async (dir) => {
+    const elements = [
+      { index: 1, role: 'AXStaticText', label: '全部职位', frame: { x: 3155, y: 54, width: 52, height: 16 } },
+      { index: 2, role: 'AXGroup', label: '', frame: { x: 3416, y: 56, width: 12, height: 12 } },
+    ];
+    const { run, calls } = fakeRunner({
+      cli: async (args) => {
+        switch (verb(args)) {
+          case 'screen list':
+            return { ok: true, screens: [{ ...SCREEN, ownerPID: process.pid }] };
+          case 'state':
+            return { ok: true, pid: 4242, windowID: 77, app: 'Synthetic', windowFrame: MAIN, elements };
+          case 'ax-press':
+            return { ok: true, route: 'ax.press.explicit' };
+          default:
+            return { ok: true };
+        }
+      },
+      tools: { ...identityTools, lsappinfo: (args) => (args.includes('bundleID') ? { stdout: `"CFBundleIdentifier"="${BUNDLE}"` } : { stdout: '"pid"=4242' }) },
+    });
+    const adapter = createSecondScreenAdapter({ cli: 'cli', socket: SOCKET, run, screenshotDir: dir });
+    const leases = {
+      async acquireLease(r: { scopeKey: string; holder: 'runtime'; ownerPid: number; taskId?: string; ttlMs: number }) {
+        return { scopeKey: r.scopeKey, holder: r.holder, ownerPid: r.ownerPid, taskId: r.taskId, leaseId: 'l', expiresAt: new Date(Date.now() + r.ttlMs).toISOString() };
+      },
+      async renewLease(id: string, ttl: number) {
+        return { leaseId: id, scopeKey: `${BUNDLE}:*`, holder: 'runtime' as const, ownerPid: 1, expiresAt: new Date(Date.now() + ttl).toISOString() };
+      },
+      async releaseLease() {},
+    };
+    const session = await createSessionManager({ adapter, leases, policy: { submitAllowed: false, foregroundAllowed: false } }).open({ taskId: 't', profile, takeOver: false, leaseTtlMs: 60_000 });
+    const r = await session.act({ actionId: 'x', action: { kind: 'click', target: { kind: 'element', role: 'AXGroup' }, method: 'accessibility', effect: 'navigation' } });
+    assert.equal(r.status, 'ok');
+    assert.equal(r.route, 'accessibility');
+    const sent = calls.filter((c) => c.file === 'cli' && verb(c.args) !== 'state' && verb(c.args) !== 'screen list');
+    assert.deepEqual(sent.map((c) => c.args[0]), ['ax-press']);
+    assert.equal(flag(sent[0]!.args, '--index'), '2');
+    // The session validates before anything is resolved: a point-only press never reaches the adapter.
+    await assert.rejects(
+      session.act({ actionId: 'y', action: { kind: 'click', target: { kind: 'relative', point: { x: 0.3, y: 0.04 } }, method: 'accessibility', effect: 'navigation' } }),
+      (e) => isRuntimeError(e, 'invalid_input'),
+    );
+    assert.equal(calls.filter((c) => c.file === 'cli' && c.args[0] === 'ax-press').length, 1);
     await session.close({ keepWindow: true });
   });
 });

@@ -415,7 +415,7 @@ public final class ExplorationBridge {
         case .click: return "navigation"
         case .type: return (action.value ?? "").contains("\n") || (action.value ?? "").contains("\r") ? "external-submit" : "navigation"
         case .key: return ["return", "enter", "kpenter"].contains((action.key ?? "").lowercased()) ? "external-submit" : "navigation"
-        case .drag: return nil
+        case .drag, .accessibilityPress: return nil
         }
     }
 
@@ -594,7 +594,7 @@ public final class ExplorationBridge {
             if let amount = input.amount { action["amount"] = min(max(amount, 1), 50) }
             if let by = input.by, ["line", "page"].contains(by) { action["by"] = by }
             if let locator { action["target"] = locator }
-        case .drag:
+        case .drag, .accessibilityPress:
             return nil
         }
         return Shape(action: action, route: route, point: point)

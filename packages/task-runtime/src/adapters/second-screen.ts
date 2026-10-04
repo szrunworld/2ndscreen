@@ -97,6 +97,19 @@ export function classifyCliError(message: string): RuntimeErrorCode {
   return 'io';
 }
 
+/** The route the CLI reports for `ax-press`; anything else is not an explicit press. */
+export const EXPLICIT_PRESS_ROUTE = 'ax.press.explicit';
+
+/**
+ * An `ax-press` refusal. A CLI or side instance that predates it stops with
+ * an unknown command or a request it cannot decode, before any input; an
+ * element without AXPress is the host's limit too. Both are capability_missing.
+ */
+export function classifyPressError(message: string): RuntimeErrorCode {
+  if (/^unknown command|bad request:|does not advertise AXPress/i.test(message.trim())) return 'capability_missing';
+  return classifyCliError(message);
+}
+
 const cliError = (what: string, reply: CliReply, details?: Record<string, unknown>) => {
   const message = reply.error ?? 'failed';
   return new RuntimeError(classifyCliError(message), `${what}: ${message}`, details);
@@ -462,12 +475,21 @@ export function createSecondScreenAdapter(options: SecondScreenAdapterOptions): 
       });
       const target = targetArgs(binding, action.kind === 'key' ? undefined : action.target);
       if (target.error) return failed('invalid_input', target.error);
+      // An explicit accessibility press takes one element of the current snapshot, nothing else.
+      const explicit = action.kind === 'click' && action.method !== undefined;
+      if (explicit) {
+        if (action.method !== 'accessibility') return failed('invalid_input', `click method ${String(action.method)} is not supported`);
+        if (target.route !== 'element') return failed('invalid_input', 'an accessibility press needs an element index; points are not pressed');
+        if ((action.button ?? 'left') !== 'left' || (action.count ?? 1) !== 1) return failed('invalid_input', 'an accessibility press is one plain press');
+      }
       const replaced = await sameProcess(binding, signal);
       if (replaced) return failed(replaced.code, replaced.message);
-      const words = [action.kind, '--screen', binding.screenId, '--pid', String(binding.window.pid), '--window-id', String(binding.window.windowId)];
-      let route = target.route;
+      const verb = explicit ? 'ax-press' : action.kind;
+      const words = [verb, '--screen', binding.screenId, '--pid', String(binding.window.pid), '--window-id', String(binding.window.windowId)];
+      let route = explicit ? ('accessibility' as const) : target.route;
       switch (action.kind) {
         case 'click':
+          if (explicit) break;
           if (action.button === 'right') words.push('--right');
           if (action.count === 2) words.push('--double');
           break;
@@ -498,7 +520,13 @@ export function createSecondScreenAdapter(options: SecondScreenAdapterOptions): 
           return { actionId: request.actionId, status: 'unknown', route, point: target.point, startedAt, finishedAt: clock.now().toISOString(), error: { code: error.code, message: error.message } };
         throw error;
       }
-      if (!reply.ok) return { ...failed(classifyCliError(reply.error ?? ''), reply.error ?? 'failed'), route, point: target.point };
+      if (!reply.ok) {
+        const code = (explicit ? classifyPressError : classifyCliError)(reply.error ?? '');
+        return { ...failed(code, reply.error ?? 'failed'), route, point: target.point };
+      }
+      if (explicit && reply.json.route !== EXPLICIT_PRESS_ROUTE)
+        // Something answered ok without saying it pressed through accessibility: what it did cannot be told.
+        return { actionId: request.actionId, status: 'unknown', route, startedAt, finishedAt: clock.now().toISOString(), error: { code: 'capability_missing', message: `ax-press answered with route ${String(reply.json.route ?? 'none')}, not ${EXPLICIT_PRESS_ROUTE}` } };
       return { actionId: request.actionId, status: 'ok', route, point: target.point, startedAt, finishedAt: clock.now().toISOString() };
     },
 
