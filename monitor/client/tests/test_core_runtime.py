@@ -520,3 +520,131 @@ def test_status_snapshot():
     st = env.runtime.status()
     assert st["mode"] == "local" and st["account_id"] == ACCOUNT and st["online"] is True
     assert st["paused"] is False and st["current_action"] is None
+
+
+def test_status_includes_outbox_last_error_and_current_command():
+    seen = {}
+
+    def run(cmd, driver, ctx):
+        seen["st"] = env.runtime.status()  # 执行中（运行时线程）读状态
+        with ctx.outbound():
+            driver.click(None)
+        return ActionResult(status="succeeded")
+
+    env = make_env(handlers=[ScriptedHandler("send_greeting", run=run)])
+    st = env.runtime.status()
+    assert st["device_id"] == DEVICE and st["monitor_version"] == env.runtime.config.monitor_version
+    assert st["current_command_id"] is None and st["current_started_at"] is None
+    assert st["last_error"] is None and st["outbox_events"] == 0
+    env.runtime.record_error("demo_error", "示例错误", scene="greeting")
+    env.runtime._emit("device_paused", {"reason": "user_request", "by": "user"}, env.clock.now())
+    st = env.runtime.status()
+    assert st["last_error"]["code"] == "demo_error" and st["last_error"]["message"] == "示例错误"
+    assert st["last_error"]["scene"] == "greeting" and st["last_error"]["at"] == env.clock.now()
+    assert st["outbox_events"] == 1
+    c = env.cmd()
+    env.server.enqueue(c)
+    env.run_until(lambda: "st" in seen)
+    cur = seen["st"]
+    assert cur["current_command_id"] == c["command_id"] and cur["current_action"] == "send_greeting"
+    assert cur["current_started_at"] is not None
+
+
+# ---------------------------------------------------------------------------
+# 窗口挂起（suspend_gui / resume_gui）
+# ---------------------------------------------------------------------------
+
+
+class _ClosedWindowObserver(ScriptedObserver):
+    """窗口归还后，界面调用会抛 window_lost（GateDriver 的行为）。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.window_open = True
+
+    def observe(self, driver, baseline):
+        if not self.window_open:
+            self.calls.append(baseline)
+            raise WindowLostError("窗口已归还")
+        return super().observe(driver, baseline)
+
+
+def test_suspend_gui_stops_observe_execute_and_keeps_real_error():
+    obs = _ClosedWindowObserver()
+    env = make_env(observer=obs)
+    rt = env.runtime
+    env.run()
+    observed = len(obs.calls)
+    assert observed == 1 and rt.client_state == "unknown"
+    rt.record_error("bootstrap_takeover", "引导失败")  # 尚未随心跳发出的真实错误
+    rt.suspend_gui("时段外")
+    obs.window_open = False
+    c = env.cmd()
+    env.server.enqueue(c)
+    for _ in range(4):
+        env.clock.advance(46)
+        env.run()
+    st = rt.status()
+    assert st["gui_suspended"] is True and st["gui_suspend_reason"] == "时段外"
+    assert len(obs.calls) == observed  # 不观察
+    assert env.handlers["send_greeting"].run_calls == []  # 不执行
+    assert env.server.queue and env.server.queue[0]["command_id"] == c["command_id"]  # 不领取
+    assert rt.last_error.code == "bootstrap_takeover"  # 没被 window_lost 覆盖
+    sent = [hb["last_error"]["code"] for hb in env.server.heartbeats if hb["last_error"]]
+    assert sent == ["bootstrap_takeover"]
+    assert env.server.heartbeats[-1]["client_state"] == "unknown"  # 契约没有 suspended，如实报 unknown
+    assert env.server.heartbeats[-1]["paused"] is False  # 挂起不是暂停
+    # 挂起期间 window_lost 直接上报也不记
+    rt.record_error("window_lost", "x")
+    assert rt.last_error.code == "bootstrap_takeover"
+
+    obs.window_open = True
+    rt.resume_gui()
+    env.run()
+    assert rt.status()["gui_suspended"] is False
+    assert len(obs.calls) == observed + 1  # 恢复后立即观察一次
+    env.run_until(lambda: c["command_id"] in env.server.results)
+    assert env.handlers["send_greeting"].run_calls
+    # 恢复后 window_lost 照常是错误
+    rt.record_error("window_lost", "真的丢了")
+    assert rt.last_error.code == "window_lost"
+
+
+def test_suspend_request_is_queued_until_runtime_thread_applies_it():
+    env = make_env(observer=ScriptedObserver())
+    rt = env.runtime
+    rt.suspend_gui("用户暂停")
+    # 还没轮到运行时线程：状态未变，但已到的请求足以让 window_lost 不被记为错误
+    assert rt.gui_suspended is False
+    rt.record_error("window_lost", "窗口已归还")
+    assert rt.last_error is None
+    rt.resume_gui()
+    rt.suspend_gui("时段外")
+    env.run()
+    assert rt.gui_suspended and rt.gui_suspend_reason == "时段外"  # 按顺序生效，最后一个为准
+    assert env.observer.calls == []
+
+
+def test_suspend_after_command_picked_leaves_it_queued():
+    """窗口归属方持有 GUI 锁归还窗口时，管线拿到锁后再确认一次，指令留在队列不执行。"""
+    from monitor_contracts import validate_command
+
+    env = make_env()
+    rt = env.runtime
+    env.run()  # 拿到策略
+    c = env.cmd()
+    rt.handle_claim(ClaimResponse(commands=(validate_command(c),), cancellations=(), lease_seconds=60, server_time=env.clock.now()))
+    rt.suspend_gui("用户暂停")  # 请求已到，尚未生效
+    assert rt.pipeline.run_next(rt.gate()) is None
+    assert env.handlers["send_greeting"].run_calls == []
+    assert env.ledger.list_commands()[0].state == "queued"
+
+
+def test_suspend_does_not_busy_loop_on_deferred_command():
+    env = make_env(observer=ScriptedObserver())
+    rt = env.runtime
+    env.run()
+    rt.suspend_gui("时段外")
+    rt.pipeline.wake_at = env.clock.now() - timedelta(seconds=5)  # 有被推迟且已到期的指令
+    idle = rt.run_once()
+    assert idle > 0
