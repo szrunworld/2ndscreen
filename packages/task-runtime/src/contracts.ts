@@ -1222,6 +1222,11 @@ export interface ExplorationRequest {
   budget: { maxRounds: number; maxTokens?: number; timeoutMs: number };
   /** Always false in the first version; the bridge must refuse external-submit actions. */
   submitAllowed: false;
+  /**
+   * Why the runtime is exploring, copied onto every `model_usage` event.
+   * Without it the bridge reports purpose `ui`, reason `missing_procedure`.
+   */
+  usageContext?: { purpose: ModelPurpose; reason: ModelCallReason };
 }
 
 interface BridgeEventBase {
@@ -1694,6 +1699,9 @@ export function validateExplorationRequest(raw: unknown): Validated<ExplorationR
   if (!isObject(b) || !isInt(b.maxRounds, 1) || !isInt(b.timeoutMs, 1) || (b.maxTokens !== undefined && !isInt(b.maxTokens, 1)))
     errors.push('budget needs maxRounds and timeoutMs >= 1');
   if (raw.submitAllowed !== false) errors.push('submitAllowed must be false');
+  const c = raw.usageContext;
+  if (c !== undefined && (!isObject(c) || !oneOf(c.purpose, ['ui', 'repair', 'analysis']) || !oneOf(c.reason, ['missing_procedure', 'replay_failed', 'postcondition_failed', 'recovery_exhausted', 'analysis'])))
+    errors.push('usageContext needs a model purpose and call reason');
   return ok(raw as unknown as ExplorationRequest, errors);
 }
 

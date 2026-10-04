@@ -297,7 +297,7 @@ export function createLocalVision(options: {
 2. Bridge 向 stdout 每行输出一个 `BridgeEvent`，stderr 仅用于日志。每个事件带 `v`、`taskId`、`unitAttemptId`、`at`，与步骤相关的带 `stepId`。
    - `observed`：快照 ID、窗口几何、可选页面类别。
    - `action_started` / `action_finished`：同一 `stepId` 成对出现；动作必须在单元 `allowedEffects` 内，external-submit 一律拒绝。
-   - `model_usage`：每次模型调用一条，含 purpose、reason、token（不可知为 `"unknown"`）。
+   - `model_usage`：每次模型调用一条，含 purpose、reason、token（不可知为 `"unknown"`）。purpose/reason 取自请求的可选字段 `usageContext`（Runtime 发起修复时应填 `repair` 与对应原因）；请求未带时兼容默认为 `ui` / `missing_procedure`。
    - 最后一行必须是 `unit_finished`（含步骤数、可选流程提案）或 `unit_failed`（budget_exhausted、model_unavailable、cancelled、timeout、forbidden_effect、error）。
 3. 退出码：0 finished，1 failed，2 请求无效。
 4. Runtime 用 `parseBridgeEvent(line, { taskId, unitAttemptId })` 解析每行；不合法的行使本次探索失败（`error`），并终止子进程。
