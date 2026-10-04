@@ -214,6 +214,36 @@ test('lines for another attempt, out of order, or after the last line are refuse
   }
 });
 
+test('an end that describes another action keeps the started one as sent, unknown, and fails', async () => {
+  const other = { kind: 'click', target: { kind: 'relative', point: { x: 0.1, y: 0.1 } }, effect: 'navigation' };
+  for (const end of [finished('st1', other), finished('st1').replace('"actionId":"st1"', '"actionId":"st9"')]) {
+    const child = new FakeChild((c) => c.emit(started('st1'), end, unitFinished(1)));
+    const outcome = await bridgeWith(child).bridge.explore(request(), grant());
+    assert.equal(outcome.failure, 'error');
+    assert.deepEqual(outcome.executed.map((s) => [s.stepId, s.result.status]), [['st1', 'unknown']]);
+    assert.deepEqual(outcome.executed[0]?.action, click, 'the action as it started, not the untrusted end');
+  }
+});
+
+test('a last line cut off before its newline is not trusted', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'agent-bridge-'));
+  try {
+    const cli = await script(dir, 'cut.mjs', `${PRELUDE}\nprocess.stdin.on('end', () => process.stdout.write(JSON.stringify({ v: 1, taskId: 't1', unitAttemptId: 'u1', at: new Date().toISOString(), type: 'unit_finished', steps: 0 }), () => process.exit(0)));`);
+    const outcome = await createAgentBridge({ cli, spawn: createLineProcessSpawner() }).explore(request(), grant());
+    assert.equal(outcome.status, 'failed');
+    assert.equal(outcome.failure, 'error');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('an observation of another window is refused', async () => {
+  const child = new FakeChild((c) => c.emit(line('observed', { snapshotId: 's1', window: { ...WINDOW, windowId: 78 } })));
+  const outcome = await bridgeWith(child).bridge.explore(request(), grant());
+  assert.equal(outcome.failure, 'error');
+  assert.deepEqual(child.signals, ['SIGTERM']);
+});
+
 test('a step that started and never finished counts as executed with an unknown result', async () => {
   const child = new FakeChild((c) => {
     c.emit(observed('s1'), started('st1'), started('st2', { kind: 'type', value: '张三', effect: 'navigation' }), finished('st1'));
@@ -454,6 +484,51 @@ test('real children: a missing program or an endless line fail without hanging',
     const cli = await script(dir, 'flood.mjs', `${PRELUDE}\nprocess.stdout.write('x'.repeat(5 * 1024 * 1024), () => process.exit(0));`);
     const flood = await createAgentBridge({ cli, spawn: createLineProcessSpawner() }).explore(request(), grant());
     assert.equal(flood.failure, 'error');
+
+    // A complete, newline-terminated line over the cap, even one that would parse, is refused.
+    const padded = await script(
+      dir,
+      'padded.mjs',
+      `${PRELUDE}
+process.stdin.on('end', () => {
+  process.stdout.write(JSON.stringify({ v: 1, taskId: 't1', unitAttemptId: 'u1', at: new Date().toISOString(), type: 'model_usage', purpose: 'ui', reason: 'missing_procedure', inputTokens: 1, outputTokens: 1 }) + ' '.repeat(5 * 1024 * 1024) + '\\n');
+  ev('unit_finished', { steps: 0 });
+  process.stdout.write('', () => process.exit(0));
+});`,
+    );
+    const big = await createAgentBridge({ cli: padded, spawn: createLineProcessSpawner() }).explore(request(), grant());
+    assert.equal(big.failure, 'error');
+    assert.equal(big.modelCalls, 0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('real children: a descendant holding stdout open is killed, and explore still resolves', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'agent-bridge-'));
+  try {
+    const pidFile = join(dir, 'grandchild.pid');
+    const cli = await script(
+      dir,
+      'parent.mjs',
+      `${PRELUDE}
+import { spawn } from 'node:child_process';
+import { writeFileSync } from 'node:fs';
+process.stdin.on('end', () => {
+  // Inherits stdout, so the pipe stays open after this process exits.
+  const grandchild = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: ['ignore', 'inherit', 'ignore'] });
+  writeFileSync(${JSON.stringify(pidFile)}, String(grandchild.pid));
+  ev('unit_finished', { steps: 0 });
+  process.exit(0);
+});`,
+    );
+    const t0 = Date.now();
+    const outcome = await createAgentBridge({ cli, spawn: createLineProcessSpawner() }).explore(request(), grant());
+    const { readFile } = await import('node:fs/promises');
+    const grandchild = Number(await readFile(pidFile, 'utf8'));
+    assert.equal(outcome.status, 'finished', JSON.stringify(outcome));
+    assert.ok(Date.now() - t0 < 4000, 'bounded');
+    assert.equal(alive(grandchild), false, 'the descendant is gone when explore resolves');
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

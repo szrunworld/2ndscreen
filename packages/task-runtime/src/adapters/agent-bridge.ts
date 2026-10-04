@@ -12,6 +12,7 @@
 // back from a process that can no longer act on it.
 
 import { spawn as spawnChild } from 'node:child_process';
+import { isDeepStrictEqual } from 'node:util';
 import {
   RuntimeError,
   addTokens,
@@ -36,6 +37,14 @@ import {
 const DEFAULT_KILL_GRACE_MS = 3000;
 /** A line longer than this is cut and fails to parse, so a runaway child cannot fill memory. */
 const MAX_LINE_BYTES = 4 * 1024 * 1024;
+/** Stand in for an oversized or cut-off line; never valid JSON. */
+const OVERSIZED_LINE = '\u0000oversized bridge line';
+const TRUNCATED_LINE = '\u0000bridge line without its newline';
+/** How long lines may keep arriving after the child exited. */
+const DRAIN_MS = 1000;
+/** How long the spawner waits for stdout to close, then for the process group to die. */
+const STDOUT_CLOSE_MS = 500;
+const GROUP_GONE_MS = 5000;
 
 type FailureReason = NonNullable<ExplorationOutcome['failure']>;
 
@@ -57,54 +66,65 @@ export function createAgentBridge(options: {
     if (grant.signal.aborted) return run.outcome('cancelled');
 
     const child = options.spawn(options.cli, ['agent-bridge'], { ...options.env, SECONDSCREEN_SOCKET: request.session.socket });
+    let gone = false;
     let stopping: FailureReason | undefined;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
     const stop = (reason: FailureReason): void => {
       if (stopping) return;
       stopping = reason;
       run.stoppedBy(reason);
+      // Never signal after the exit: the pid may belong to someone else by then.
+      if (gone) return;
       signal(child, 'SIGTERM');
-      killTimer = setTimeout(() => signal(child, 'SIGKILL'), killGraceMs);
+      killTimer = setTimeout(() => !gone && signal(child, 'SIGKILL'), killGraceMs);
     };
     const onAbort = (): void => stop('cancelled');
     grant.signal.addEventListener('abort', onAbort, { once: true });
     const deadline = setTimeout(() => stop('timeout'), request.budget.timeoutMs);
 
     try {
+      child.write(encodeJsonLine(request));
+      child.closeInput();
+    } catch {
+      // The child died at once; its exit and its missing events tell the rest.
+    }
+    const reading = (async () => {
       try {
-        child.write(encodeJsonLine(request));
-        child.closeInput();
-      } catch {
-        // The child died at once; its exit and its missing events tell the rest.
-      }
-      for await (const line of child.lines()) {
-        // Keep reading after a failure, so the child never blocks on a full pipe.
-        if (run.broken) continue;
-        const event = run.take(line);
-        if (!event) {
-          stop('error');
-          continue;
-        }
-        if (run.forbidden) stop('forbidden_effect');
-        if (onEvent) {
-          try {
-            onEvent(event);
-          } catch {
-            // An observer's failure must not cost the session its confirmed exit.
+        for await (const line of child.lines()) {
+          // Keep reading after a failure, so the child never blocks on a full pipe.
+          if (run.broken || gone) continue;
+          const event = run.take(line);
+          if (!event) {
+            stop('error');
+            continue;
+          }
+          if (run.forbidden) stop('forbidden_effect');
+          if (onEvent) {
+            try {
+              onEvent(event);
+            } catch {
+              // An observer's failure must not cost the session its confirmed exit.
+            }
           }
         }
+      } catch {
+        run.fail('error');
+        stop('error');
       }
-    } catch {
-      run.fail('error');
-      stop('error');
-    } finally {
-      // Confirm the exit even when reading broke: only then may the session act again.
-      const exit = await child.exited();
-      clearTimeout(deadline);
-      clearTimeout(killTimer);
-      grant.signal.removeEventListener('abort', onAbort);
-      run.exited(exit.code);
-    }
+    })();
+
+    // The exit, not the end of stdout, releases the window: a descendant
+    // holding stdout open must not keep the session waiting forever.
+    const exit = await child.exited();
+    // Lines already written still count; give them a bounded moment to arrive.
+    let drained: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([reading, new Promise<void>((resolve) => (drained = setTimeout(resolve, DRAIN_MS)))]);
+    gone = true;
+    clearTimeout(drained);
+    clearTimeout(deadline);
+    clearTimeout(killTimer);
+    grant.signal.removeEventListener('abort', onAbort);
+    run.exited(exit.code);
     return run.outcome();
   }
 
@@ -168,6 +188,9 @@ class Run {
     if (this.terminal) return this.fail('error');
     switch (event.type) {
       case 'observed': {
+        // Only the bound window may be described; anything else is not this session's.
+        if (event.window.pid !== undefined && event.window.pid !== this.request.session.pid) return this.fail('error');
+        if (event.window.windowId !== undefined && event.window.windowId !== this.request.session.windowId) return this.fail('error');
         this.lastObserved = { snapshotId: event.snapshotId, ...(event.pageClass !== undefined && { pageClass: event.pageClass }) };
         for (const step of this.awaitingAfter) step.after = this.lastObserved;
         this.awaitingAfter = [];
@@ -182,6 +205,9 @@ class Run {
       case 'action_finished': {
         const start = this.started.get(event.stepId);
         if (!start) return this.fail('error');
+        // The end must describe the same action it began with; otherwise the
+        // started action stays as sent with an unknown result.
+        if (!isDeepStrictEqual(start.action, event.action) || event.result.actionId !== event.stepId) return this.fail('error');
         this.started.delete(event.stepId);
         this.seen.add(event.stepId);
         const step: ExecutedStep = {
@@ -279,43 +305,91 @@ class Run {
 
 type Snapshot = Pick<Observation, 'snapshotId' | 'pageClass'>;
 
-/** Children through node:child_process; stderr is drained and dropped, stdout is read as lines. */
+/**
+ * Children through node:child_process, each leading its own process group,
+ * so a signal reaches anything it started. stderr is drained and dropped.
+ * `exited()` resolves once the child has exited and its whole group is
+ * gone: descendants left holding stdout are killed, and stdout is closed.
+ */
 export function createLineProcessSpawner(): LineProcessSpawner {
   return (file, args, env) => {
-    const child = spawnChild(file, [...args], { env: env ? { ...process.env, ...env } : process.env, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawnChild(file, [...args], {
+      env: env ? { ...process.env, ...env } : process.env,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      detached: true,
+    });
+    const pid = child.pid;
+    const group = (name: NodeJS.Signals | 0): boolean => {
+      if (pid === undefined) return false;
+      try {
+        process.kill(-pid, name);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const stdoutClosed = new Promise<void>((resolve) => child.stdout.once('close', () => resolve()));
     const exited = new Promise<{ code: number | null; signal: string | null }>((resolve) => {
-      child.once('exit', (code, signal) => resolve({ code, signal }));
+      child.once('exit', (code, signal) => {
+        void (async () => {
+          await Promise.race([stdoutClosed, sleep(STDOUT_CLOSE_MS)]);
+          // Whatever of the group is left, it must not keep acting or holding the pipe.
+          const until = Date.now() + GROUP_GONE_MS;
+          while (group(0) && Date.now() < until) {
+            group('SIGKILL');
+            await sleep(20);
+          }
+          child.stdout.destroy();
+          child.stderr.destroy();
+          resolve({ code, signal });
+        })();
+      });
       // Never started (missing file, no permission): there is nothing to wait for.
       child.on('error', () => {
-        if (child.pid === undefined) resolve({ code: null, signal: null });
+        if (child.pid === undefined) {
+          child.stdout.destroy();
+          resolve({ code: null, signal: null });
+        }
       });
     });
     child.stdin.on('error', () => {});
     child.stderr.resume();
     return {
-      pid: child.pid,
+      pid,
       write: (line) => void child.stdin.write(line),
       closeInput: () => void child.stdin.end(),
       lines: () => readLines(child.stdout),
       exited: () => exited,
-      kill: (name = 'SIGTERM') => void child.kill(name),
+      kill: (name = 'SIGTERM') => {
+        if (!group(name)) child.kill(name);
+      },
     };
   };
 }
 
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
 async function* readLines(stream: AsyncIterable<Buffer | string>): AsyncGenerator<string> {
   let pending = Buffer.alloc(0);
-  for await (const chunk of stream) {
-    pending = Buffer.concat([pending, typeof chunk === 'string' ? Buffer.from(chunk) : chunk]);
-    let newline: number;
-    while ((newline = pending.indexOf(0x0a)) >= 0) {
-      yield pending.subarray(0, newline).toString('utf8');
-      pending = pending.subarray(newline + 1);
+  let oversized = false;
+  try {
+    for await (const chunk of stream) {
+      pending = Buffer.concat([pending, typeof chunk === 'string' ? Buffer.from(chunk) : chunk]);
+      let newline: number;
+      while ((newline = pending.indexOf(0x0a)) >= 0) {
+        // A line over the cap is replaced whole, never cut into something that might parse.
+        yield oversized || newline > MAX_LINE_BYTES ? OVERSIZED_LINE : pending.subarray(0, newline).toString('utf8');
+        oversized = false;
+        pending = pending.subarray(newline + 1);
+      }
+      if (pending.length > MAX_LINE_BYTES) {
+        oversized = true;
+        pending = Buffer.alloc(0);
+      }
     }
-    if (pending.length > MAX_LINE_BYTES) {
-      yield pending.subarray(0, MAX_LINE_BYTES).toString('utf8');
-      pending = Buffer.alloc(0);
-    }
+  } catch {
+    // stdout destroyed after the exit: whatever arrived has been read.
   }
-  if (pending.length > 0) yield pending.toString('utf8');
+  // Every event ends with a newline; trailing bytes without one were cut off.
+  if (oversized || pending.length > 0) yield TRUNCATED_LINE;
 }
