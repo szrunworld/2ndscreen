@@ -116,6 +116,17 @@ final class AgentScreens {
                 + " on its long side and 525 on its short side; use --no-hidpi or a larger --size")
         }
         let hiDPI = requestedHiDPI ?? (defaultHiDPI && hiDPIAllowed)
+        // Not while a configuration WindowServer has not finished is outstanding,
+        // nor while the user's displays sleep; the displays are kept awake meanwhile.
+        return await displayWork.run("2ndscreen: creating agent screen \(name)", refused: { .failure($0.message()) }) {
+            await createDisplay(name: name, mode: mode, hiDPI: hiDPI, requestedHiDPI: requestedHiDPI,
+                                defaultHiDPI: defaultHiDPI, ttl: ttl, idleTimeout: idleTimeout, ownerPID: ownerPID)
+        }
+    }
+
+    private func createDisplay(name: String, mode: VirtualDisplay.Mode, hiDPI: Bool, requestedHiDPI: Bool?,
+                               defaultHiDPI: Bool, ttl: TimeInterval?, idleTimeout: TimeInterval?,
+                               ownerPID: pid_t?) async -> ControlResponse {
         let arrangement = DisplayLayout.origins()
         let windowsBefore = WindowMover.allWindows()
         // A serial whose remembered unit number is already taken gives a
@@ -158,8 +169,12 @@ final class AgentScreens {
         guard display.isSettled else {
             let actual = CGDisplayCopyDisplayMode(display.displayID)
                 .map { "\($0.width)×\($0.height)\($0.pixelWidth > $0.width ? " HiDPI" : "")" } ?? "no mode"
+            let pending = DisplayConfigurator.shared.pending.map {
+                "; a display configuration (\($0.label)) has been waiting on WindowServer for"
+                    + " \(Int(-$0.since.timeIntervalSinceNow)) s and cannot be cancelled"
+            } ?? ""
             remove(named: name)
-            return .failure("macOS ran the screen at \(actual) instead of \(mode)\(hiDPI ? " HiDPI" : "")")
+            return .failure("macOS ran the screen at \(actual) instead of \(mode)\(hiDPI ? " HiDPI" : "")\(pending)")
         }
         await keepArrangement(arrangement, adding: display.displayID, windows: windowsBefore)
         var response = ControlResponse()
@@ -500,12 +515,14 @@ final class AgentScreens {
             return .failure("this screen can be resized between 320x240 and \(largest.width)x\(largest.height)"
                 + " points; create a new one for a larger size")
         }
-        guard await apply(VirtualDisplay.Mode(width: width, height: height), to: screen) else {
-            return .failure("macOS did not switch the screen to \(width)×\(height)")
+        return await displayWork.run("2ndscreen: resizing agent screen \(name)", refused: { .failure($0.message()) }) {
+            guard await apply(VirtualDisplay.Mode(width: width, height: height), to: screen) else {
+                return .failure("macOS did not switch the screen to \(width)×\(height)")
+            }
+            var response = ControlResponse()
+            response.screen = info(screen)
+            return response
         }
-        var response = ControlResponse()
-        response.screen = info(screen)
-        return response
     }
 
     /// The smallest screen that holds a window of `size` below a menu bar of
@@ -553,7 +570,9 @@ final class AgentScreens {
         }
         screen.resizing = true
         Task { @MainActor in
-            _ = await self.apply(wanted, to: screen)
+            _ = await self.displayWork.run("2ndscreen: fitting agent screen \(screen.name)", refused: { _ in false }) {
+                await self.apply(wanted, to: screen)
+            }
             let visible = WindowMover.visibleFrame(of: screen.display.displayID)
             if let current = WindowMover.windows(ofPID: pid).first(where: { $0.windowID == window.windowID }) {
                 WindowMover.restore(current, to: Self.topCentered(current.frame.size, in: visible))
@@ -568,6 +587,7 @@ final class AgentScreens {
     }
 
     /// Switch the display's mode and wait for macOS to settle on it.
+    /// Callers hold `displayWork` around it.
     private func apply(_ mode: VirtualDisplay.Mode, to screen: Screen) async -> Bool {
         let hiDPI = screen.prefersHiDPI && VirtualDisplay.supportsHiDPI(mode)
         guard screen.display.apply(mode, hiDPI: hiDPI) else { return false }
@@ -661,6 +681,9 @@ final class AgentScreens {
         UserDefaults.standard.set(Int(following(serial)), forKey: key)
         return serial
     }
+
+    /// Preconditions and the display-sleep hold for creating and resizing screens.
+    private let displayWork = DisplayWork()
 
     /// The window list lags a move by a few frames. Wait until one of the
     /// app's windows shows up on `target` (at most a second), then report.

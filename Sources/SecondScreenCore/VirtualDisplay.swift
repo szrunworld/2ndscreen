@@ -47,6 +47,9 @@ public final class VirtualDisplay {
     public var displayID: CGDirectDisplayID { display.displayID }
 
     private let display: CGVirtualDisplay
+    /// Bumped by each `apply` and on release, so mode selection for an older request stops.
+    private let generation = Generation()
+    private let configurator: DisplayConfigurator
 
     /// - Parameters:
     ///   - reserving: further modes `apply` must be able to switch to, such as
@@ -56,9 +59,12 @@ public final class VirtualDisplay {
     ///     each concurrent display its own value.
     ///   - onTerminate: called on the main queue if macOS tears the display
     ///     down on its own (for example after a WindowServer restart).
+    ///   - configurator: where the system mode is chosen, off the main thread.
     public init?(name: String, mode: Mode, hiDPI: Bool, refreshRate: Double = 60,
                  reserving: [Mode] = [], serialNumber: UInt32 = 1,
+                 configurator: DisplayConfigurator = .shared,
                  onTerminate: @escaping () -> Void = {}) {
+        self.configurator = configurator
         let candidates = Self.presets + reserving + [mode]
         let widest = candidates.map(\.width).max()!
         let tallest = candidates.map(\.height).max()!
@@ -83,6 +89,11 @@ public final class VirtualDisplay {
         self.hiDPI = hiDPI
         self.refreshRate = refreshRate
         guard apply(mode, hiDPI: hiDPI) else { return nil }
+    }
+
+    deinit {
+        // Pending attempts only hold the display's id; they stop instead of configuring a released display.
+        generation.bump()
     }
 
     /// Switch resolution and/or HiDPI in place. Returns false if macOS
@@ -110,28 +121,36 @@ public final class VirtualDisplay {
     /// the wrong one current. Pick the variant matching `mode` and `hiDPI`.
     /// The list can lag behind `apply`, by seconds when several displays
     /// appear at once, and a switch can fail to take; keep checking until
-    /// the right variant is current.
-    private func selectSystemMode(attemptsLeft: Int = 30) {
+    /// the right variant is current. The checks and the switch run on the
+    /// display configurator, never on the caller's thread: completing the
+    /// switch waits for WindowServer, which can hang (see DisplayConfigurator).
+    private func selectSystemMode(attempts: Int = 30) {
+        let id = displayID
+        let generation = self.generation
+        let request = generation.bump()
         let options = [kCGDisplayShowDuplicateLowResolutionModes: kCFBooleanTrue] as CFDictionary
-        let modes = CGDisplayCopyAllDisplayModes(displayID, options) as? [CGDisplayMode] ?? []
-        let pixelWidth = hiDPI ? mode.width * 2 : mode.width
-        let wanted = modes.first {
-            $0.width == mode.width && $0.height == mode.height && $0.pixelWidth == pixelWidth
-        }
-        if let wanted, CGDisplayCopyDisplayMode(displayID)?.ioDisplayModeID == wanted.ioDisplayModeID {
-            return
-        }
-        if let wanted {
-            var config: CGDisplayConfigRef?
-            if CGBeginDisplayConfiguration(&config) == .success {
-                CGConfigureDisplayWithDisplayMode(config, displayID, wanted, nil)
-                CGCompleteDisplayConfiguration(config, .forSession)
-            }
-        }
-        guard attemptsLeft > 0 else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-            self?.selectSystemMode(attemptsLeft: attemptsLeft - 1)
-        }
+        ModeSelection(
+            label: "mode \(mode)\(hiDPI ? " HiDPI" : "") for display \(id)",
+            width: mode.width, height: mode.height, hiDPI: hiDPI,
+            generation: request, configurator: configurator,
+            read: {
+                let modes = CGDisplayCopyAllDisplayModes(id, options) as? [CGDisplayMode] ?? []
+                return (modes.map { ModeSelection.Variant(width: $0.width, height: $0.height,
+                                                           pixelWidth: $0.pixelWidth, id: $0.ioDisplayModeID) },
+                        CGDisplayCopyDisplayMode(id)?.ioDisplayModeID)
+            },
+            select: { [weak display = self.display] wanted in
+                let modes = CGDisplayCopyAllDisplayModes(id, options) as? [CGDisplayMode] ?? []
+                // Checked again right before the transaction: a display released meanwhile is not configured.
+                // A transaction already begun is not undone by a later release; instead the display is kept
+                // alive until the transaction returns, and its last reference is dropped on the main queue.
+                guard generation.is(request), let held = display,
+                      let mode = modes.first(where: { $0.ioDisplayModeID == wanted }) else { return }
+                DisplayConfigurator.transaction { CGConfigureDisplayWithDisplayMode($0, id, mode, nil) }
+                DispatchQueue.main.async { withExtendedLifetime(held) {} }
+            },
+            isCurrent: { generation.is($0) }
+        ).start(attempts: attempts)
     }
 
     /// Whether the current system mode matches the requested size and scale.
@@ -155,4 +174,25 @@ public final class VirtualDisplay {
 
     /// The display's frame in global points, once macOS has placed it.
     public var bounds: CGRect { CGDisplayBounds(displayID) }
+}
+
+/// A counter shared with background mode selection; thread-safe.
+final class Generation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+
+    /// Start a new generation and return it.
+    @discardableResult
+    func bump() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        value += 1
+        return value
+    }
+
+    func `is`(_ candidate: Int) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return value == candidate
+    }
 }
