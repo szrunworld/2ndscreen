@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "heartbeat_ack",
+  "description": "POST /devices/{device_id}/heartbeat 的 200 响应体（0.3.3 起纳入契约）。设备以其中的 account_binding 为准更新本机绑定。",
+  "type": "object",
+  "required": [
+    "server_time",
+    "paused",
+    "policy_version",
+    "cancellations",
+    "account_binding"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "server_time": {
+      "$ref": "common.json#/$defs/timestamp"
+    },
+    "paused": {
+      "type": "boolean",
+      "description": "服务端要求的暂停状态（控制台暂停）。"
+    },
+    "policy_version": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 1,
+      "description": "绑定账户的当前策略版本，与本地不同时 Monitor 重新 GET 策略。account_confirmed=false 时为 null。"
+    },
+    "cancellations": {
+      "type": "array",
+      "description": "已领取但被控制台取消的指令。",
+      "items": {
+        "$ref": "common.json#/$defs/uuid"
+      }
+    },
+    "account_confirmed": {
+      "type": "boolean",
+      "description": "心跳里的 account_id 是否等于服务端记录的绑定账户。服务端总是给出；为 true 时 account_binding 必然非空。"
+    },
+    "account_binding": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "account_id",
+            "bound_at",
+            "confirmed_by"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "account_id": {
+              "$ref": "common.json#/$defs/account_id"
+            },
+            "bound_at": {
+              "$ref": "common.json#/$defs/timestamp",
+              "description": "控制台确认（或最近一次变更）绑定的时间。"
+            },
+            "confirmed_by": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "description": "确认绑定的控制台操作者。"
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "0.3.3：服务端记录的、经控制台确认的绑定账户；没有确认的绑定时为 null。与心跳里的 account_id 无关地如实返回（绑定变更后返回新账户），Monitor 以它为准写入本机绑定，此后心跳上报这个 account_id。"
+    }
+  }
+}

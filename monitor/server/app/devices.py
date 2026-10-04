@@ -21,6 +21,7 @@ from .main import (
     ConsoleActor,
     Ctx,
     DeviceAuth,
+    HeartbeatAckJson,
     HeartbeatJson,
     IdempotencyKeyHeader,
     NoteBody,
@@ -38,7 +39,6 @@ if TYPE_CHECKING:
 
 Mode = Literal["local", "remote"]
 DateTimeStr = Annotated[str, Field(json_schema_extra={"format": "date-time"})]
-UuidStr = Annotated[str, Field(json_schema_extra={"format": "uuid"})]
 
 # ---------------------------------------------------------------------------
 # HTTP 形状
@@ -93,14 +93,6 @@ class Device(BaseModel):
 
 class DeviceList(BaseModel):
     items: list[Device]
-
-
-class HeartbeatAck(BaseModel):
-    server_time: DateTimeStr
-    paused: bool
-    policy_version: int | None
-    cancellations: list[UuidStr]
-    account_confirmed: bool | SkipJsonSchema[None] = None
 
 
 # ---------------------------------------------------------------------------
@@ -285,12 +277,19 @@ class DeviceService:
         binding = self.ctx.store.get_binding(device.device_id)
         confirmed = binding is not None and binding.account_id == body["account_id"]
         current = self.ctx.store.get_device(device.device_id) or device
+        # 契约 0.3.3（M-1）：如实返回服务端记录的确认绑定，与心跳里的 account_id 无关；设备以它为准写入本机绑定
+        account_binding = (
+            None
+            if binding is None
+            else {"account_id": binding.account_id, "bound_at": wire_time(binding.bound_at), "confirmed_by": binding.confirmed_by}
+        )
         return {
             "server_time": wire_time(now),
             "paused": current.paused,
             "policy_version": self.ctx.policy_version(binding.account_id) if confirmed and binding else None,
             "cancellations": self.ctx.store.cancellations_for(device.device_id),
             "account_confirmed": confirmed,
+            "account_binding": account_binding,
         }
 
 
@@ -466,7 +465,7 @@ router.add_api_route(
     "/devices/{device_id}/heartbeat",
     operation_id="postHeartbeat",
     summary="设备心跳（默认 30 秒）",
-    response_model=HeartbeatAck,
+    response_model=HeartbeatAckJson,
     responses=problem_responses(401, 403, 422),
 )
 def post_heartbeat(

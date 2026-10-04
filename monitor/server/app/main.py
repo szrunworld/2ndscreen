@@ -5,13 +5,14 @@
 
 命令行：
     uv run python -m app.main export-openapi [输出路径]   # 从代码导出 openapi.json
-    uv run python -m app.main serve --db monitor.db       # 本地启动（uvicorn）
+    uv run python -m app.main serve --db monitor.db       # 启动（uvicorn）；令牌等配置见 app/serve.py
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sys
 import threading
 from collections.abc import Callable, Iterator
@@ -81,6 +82,7 @@ CommandJson = Annotated[ContractJson, contract_ref("./schemas/command.json")]
 CommandResultJson = Annotated[ContractJson, contract_ref("./schemas/command_result.json")]
 EventJson = Annotated[ContractJson, contract_ref("./schemas/event.json")]
 HeartbeatJson = Annotated[ContractJson, contract_ref("./schemas/device_heartbeat.json")]
+HeartbeatAckJson = Annotated[ContractJson, contract_ref("./schemas/heartbeat_ack.json")]
 RegistrationJson = Annotated[ContractJson, contract_ref("./schemas/device_registration.json")]
 AccountIdStr = Annotated[
     str, StringConstraints(min_length=1, max_length=128), contract_ref("./schemas/common.json#/$defs/account_id")
@@ -557,7 +559,7 @@ def _cached_openapi(app: FastAPI) -> dict[str, Any]:
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if not args or args[0] not in ("export-openapi", "serve"):
-        print("用法: python -m app.main export-openapi [输出路径] | serve [--db 路径] [--port 端口]", file=sys.stderr)
+        print("用法: python -m app.main export-openapi [输出路径] | serve [--db 路径] [--port 端口] ...", file=sys.stderr)
         return 2
     if args[0] == "export-openapi":
         text = json.dumps(export_openapi(create_app()), ensure_ascii=False, indent=2)
@@ -567,12 +569,10 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(text)
         return 0
-    import uvicorn  # 只有 serve 需要
+    # 令牌与 Webhook 配置见 app/serve.py（M-4）
+    from . import serve
 
-    db = args[args.index("--db") + 1] if "--db" in args else "monitor_server.db"
-    port = int(args[args.index("--port") + 1]) if "--port" in args else 8000
-    uvicorn.run(create_app(store=SqliteStore(db)), host="127.0.0.1", port=port)
-    return 0
+    return serve.main(args[1:], os.environ)
 
 
 if __name__ == "__main__":
@@ -592,6 +592,7 @@ __all__ = [
     "Ctx",
     "DeviceAuth",
     "EventJson",
+    "HeartbeatAckJson",
     "HeartbeatJson",
     "IdempotencyKeyHeader",
     "NoteBody",

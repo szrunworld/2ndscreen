@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.3.2"
+__version__ = "0.3.3"
 
 from .driver import (
     DRIVER_ERROR_CODES,
@@ -48,6 +48,7 @@ from .idempotency import (
 from .mail_id import MAIL_MESSAGE_ID_PATTERN, MAIL_PROVIDER, compute_mail_message_id, normalize_mailbox, normalize_message_id
 from .models import (
     ACTIONS,
+    CLIENT_STATES,
     CONVERSATION_ACTIONS,
     CONVERSATION_EVENT_KINDS,
     EVENT_KINDS,
@@ -63,6 +64,7 @@ from .models import (
     CommandModel,
     CommandResult,
     CardField,
+    ClientState,
     ContactOutput,
     Conversation,
     ConversationTarget,
@@ -74,6 +76,8 @@ from .models import (
     EvidenceItem,
     Fact,
     Frame,
+    HeartbeatAccountBinding,
+    HeartbeatAck,
     LoginQr,
     MailCheck,
     MailMessage,
@@ -130,6 +134,7 @@ from .validate import (
     validate_device_heartbeat,
     validate_device_registration,
     validate_event,
+    validate_heartbeat_ack,
     validate_login_qr,
     validate_mail_message,
     validate_mail_verification,

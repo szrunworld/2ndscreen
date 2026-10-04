@@ -50,8 +50,9 @@ def test_register_with_enrollment_code_then_console_binding(w: World):
 
 @pytest.mark.xfail(
     strict=True,
-    reason="缺陷 M-1：Monitor 得不到控制台确认的绑定账户（HeartbeatAck 只有 account_confirmed，"
-    "install/bootstrap 也不询问或拉取 account_id），没有代码调用 runtime.bind_account；等待契约 + core 补上",
+    reason="缺陷 M-1：Monitor 得不到控制台确认的绑定账户。契约与服务端部分已由 F5 补上（契约 0.3.3："
+    "HeartbeatAck.account_binding 返回服务端确认的绑定，未确认为 null）；还差客户端部分（D2d）："
+    "core 读取心跳回执的 account_binding 并调用 runtime.bind_account 写入本机绑定。D2d 完成后本用例应 XPASS，届时删除标记",
 )
 def test_monitor_learns_binding_from_server_without_manual_step(w: World):
     ident = w.register("local")
