@@ -68,6 +68,26 @@ P0 的采样显示它阻塞在 `SLSCompleteDisplayConfigurationWithOption`。主
 
 模式切换事务开始前会检查代数；同时以弱引用取得 `CGVirtualDisplay` 并在事务期间持有，事务返回后，最后一个引用在主队列上释放。这样，事务进行中即使 `VirtualDisplay` 被释放，被配置的显示器也不会在事务中途消失，`CGVirtualDisplay` 也不会在后台线程上析构。代价是：事务卡住时，被移除的屏幕要等事务返回才真正消失。
 
+### 4. 等待引入的重入：创建、调整大小只作用于同一个屏幕对象
+
+评审指出：`DisplayWork` 最多会等 2 秒，期间主 actor 可以处理别的请求。原先 `create` 在等待前检查数量和名字，`createDisplay` 在等待后直接构造显示器，于是两个同名请求（或争最后一个名额的两个请求）都能通过检查。修正（只在 `AgentScreens` 里加重入保护，另有一个纯函数）：
+
+- 新增 `AgentScreenAdmission.failure`（Core），统一检查数量上限、名字（空、重名、`2ndscreen`）和 owner 进程是否存活。`create` 在等待前查一次；`createDisplay` 在等待后、构造显示器前**再查一次**。从这次复查到 `screens.append` 之间没有任何挂起点：构造和换序列号都是同步的。
+- 屏幕按**对象身份**而不是名字处理：
+  - 新增 `remove(_ screen:)`，只移除这个对象。它已经不在了就什么都不做，即使有别的屏幕用了同一个名字。
+  - 创建失败时的清理和显示器的 `onTerminate` 都改为按身份移除。`onTerminate` 通过一个弱引用盒子指向本次创建的屏幕；换序列号时被丢弃的显示器不会移除任何屏幕。
+  - `remove(named:)` 只保留给按名字的 `destroy`，以及过期回收（它拿到的是当前列表里的对象）。
+- 每次 await 之后都确认屏幕仍在登记中（`isRegistered`，身份比较）：
+  - **创建**：稳定循环之后、`keepArrangement` 之后各查一次。屏幕已被销毁（名字可能已被新屏幕占用）时，返回 “the screen … was destroyed while it was being created”，不会报告成功，也不会返回新屏幕的信息。
+  - **`screen resize`**：等待之后，调用 `apply` 之前查一次，不在就返回 “… was destroyed or replaced before the resize finished”；`apply` 失败时也区分是被销毁还是 macOS 没切换。
+  - **按窗口自动调整大小**：等待之后不在登记中就不调用 `apply`；结束后不在就不再摆放窗口；`resizing` 标志始终会复位。
+  - **`apply`**：稳定循环之后不在登记中就返回 false，也不触发 `onResize`。
+
+限制：
+- 这些保护只针对 `AgentScreens` 自己的 await 点。
+- `launch`、`moveWindows` 等其他异步路径没有改：它们拿到的是 `ScreenInfo`（显示器 ID），并不持有 `Screen` 对象。
+- App target 没有测试 target。重入回归是用 Core 中的模型（`AgentScreenAdmissionTests`）证明的：它使用真实的 `DisplayWork` 等待和真实的 `AgentScreenAdmission`，结构与 `create` 相同。`AgentScreens` 本身的行为需要主线做并发实测。
+
 ## 保证与限制
 
 保证：
@@ -90,7 +110,7 @@ P0 的采样显示它阻塞在 `SLSCompleteDisplayConfigurationWithOption`。主
 
 ## 测试（合成，无显示器）
 
-`swift build` 通过；`swift test` 130 个全部通过，其中新增 12 个，连跑多次稳定。所有临时变异都已还原（源码中没有残留）。测试里卡住的信号量都用 `defer` 释放，断言失败也不会把队列留在阻塞状态。
+`swift build` 通过；`swift test` 135 个全部通过，其中本任务新增 17 个（第 4 节的重入回归占 5 个），完整测试连跑 3 次都稳定。所有临时变异都已还原（源码中没有残留）。测试里卡住的信号量都用 `defer` 释放，断言失败也不会把队列留在阻塞状态。
 
 `DisplayConfiguratorTests`：
 - 卡住的事务（信号量模拟）不阻塞提交者。
@@ -112,6 +132,13 @@ P0 的采样显示它阻塞在 `SLSCompleteDisplayConfigurationWithOption`。主
 - 断言在执行期间持有，正常返回和抛错后都释放；两个并发运行各持各放。
 - 变异检查：去掉持有后的复查，或者去掉等待，对应测试都会失败。
 
+`AgentScreenAdmissionTests`（确定性：先让一个配置事务保持未完成，等两个请求都通过第一次检查、都在等待中，再放行）：
+- 同名的两个并发创建：两个都通过了第一次检查，最终只创建一个，另一个得到 “already exists”。
+- 争最后一个名额：只有一个成功，另一个得到 “at most 1 …”。
+- owner 在等待期间退出：复查时拒绝，不创建。
+- 对照：去掉复查时两个请求都会被加入，证明第一次检查本身不够。
+- 准入规则本身：空名、`2ndscreen`、重名、上限、owner 已退出、当前进程存活。
+
 ## 主线安全探测步骤（只读或可逆，由主线执行）
 
 1. 只读确认状态：
@@ -122,4 +149,5 @@ P0 的采样显示它阻塞在 `SLSCompleteDisplayConfigurationWithOption`。主
 3. 由操作者显式唤醒并保持：`caffeinate -u -d -t 600`（可逆，到时自动结束）。再次创建，预期成功。创建期间 `pmset -g assertions` 能看到 “2ndscreen: creating agent screen …”，返回后消失。
 4. 若再次出现卡住：创建在 6 秒稳定循环后失败，消息带 “a display configuration … has been waiting on WindowServer … cannot be cancelled”；其间 `screen list` 等请求仍能返回。之后的创建和调整大小最多等 2 秒，然后以 “WindowServer has not finished a display configuration …” 拒绝。此时只需保持唤醒，等待事务返回，不要杀进程或删除显示器。
    - 注意：卡住发生在构造函数或 `CGVirtualDisplay.apply`（仍在主线程）里时，app 仍会整体无响应，属于已知限制。
-5. 结束后 `screen destroy` 清理，再用 `pmset -g assertions` 确认断言已释放。
+5. 并发创建：在显示器醒着时，同时发两个同名的 `screen create --name X`，预期一个成功，另一个得到 “already exists”。再在第一个创建进行中 `screen destroy X`，预期那个创建返回 “was destroyed while it was being created”，不会报告成功。
+6. 结束后 `screen destroy` 清理，再用 `pmset -g assertions` 确认断言已释放。
