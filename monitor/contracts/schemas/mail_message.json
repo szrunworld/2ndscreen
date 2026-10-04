@@ -1,0 +1,191 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "mail_message",
+  "description": "公司邮箱里的一封邮件（方案 8.2）。邮件接入（G）先把原始 .eml 落盘，再以 status=pending 写入（PUT /mail-messages/{mail_message_id}），处理后更新状态。状态迁移见 monitor_contracts.states.MAIL_TRANSITIONS。mail_message_id 是记录主键，不是邮件头 Message-ID。",
+  "type": "object",
+  "required": [
+    "mail_message_id",
+    "mailbox",
+    "message_id",
+    "uidvalidity",
+    "uid",
+    "received_at",
+    "sha256",
+    "status",
+    "updated_at"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "mail_message_id": {
+      "type": "string",
+      "pattern": "^mail:[0-9a-f]{32}$",
+      "description": "确定性主键：compute_mail_message_id(mailbox, message_id, uidvalidity, uid)。有 Message-ID 时只用它，否则用 (mailbox, UIDVALIDITY, UID) 兜底。"
+    },
+    "mailbox": {
+      "type": "string",
+      "format": "email",
+      "maxLength": 254,
+      "description": "收件邮箱（公司预留邮箱）。"
+    },
+    "message_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 998,
+      "description": "邮件头 Message-ID 原文；缺失时为 null，此时必须给出 uidvalidity 与 uid。"
+    },
+    "uidvalidity": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 1,
+      "description": "IMAP UIDVALIDITY；企业邮箱 API 没有时为 null（须与 uid 同时为 null）。"
+    },
+    "uid": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 1,
+      "description": "IMAP UID；与 uidvalidity 同时给出或同时为 null。"
+    },
+    "received_at": {
+      "$ref": "common.json#/$defs/timestamp"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "原始 .eml 的 sha256，用于核对原件完整性。只用于去重与核对，不是候选人身份。"
+    },
+    "raw_storage_uri": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 1024,
+      "default": null,
+      "description": "原始 .eml 的存储位置（本地路径或对象存储 URI）。"
+    },
+    "from_address": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 254,
+      "default": null
+    },
+    "subject": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 500,
+      "default": null
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "processed",
+        "needs_review",
+        "failed",
+        "ignored"
+      ],
+      "description": "pending 已落盘待消费；processed 已提交并移到 Monitor/Processed；needs_review 关联歧义或找不到流程，移到 Monitor/NeedsReview；failed 连续失败达到上限，移到 Monitor/Failed；ignored 非 BOSS 发件人，移到 Monitor/Ignored。"
+    },
+    "attempts": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 0,
+      "description": "消费失败次数。"
+    },
+    "error": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 500,
+      "default": null,
+      "description": "status=failed 时必填；needs_review / ignored 可写原因；pending / processed 必须为 null。"
+    },
+    "updated_at": {
+      "$ref": "common.json#/$defs/timestamp"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "failed"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string",
+            "x-message": "status=failed 时必须给出 error"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "enum": [
+              "pending",
+              "processed"
+            ]
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "error": {
+            "type": "null",
+            "x-message": "status 为 pending / processed 时 error 必须为 null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "message_id": {
+            "type": "null"
+          }
+        },
+        "required": [
+          "message_id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "uidvalidity": {
+            "type": "integer"
+          },
+          "uid": {
+            "type": "integer",
+            "x-message": "没有 Message-ID 时必须给出 uidvalidity 与 uid"
+          }
+        }
+      }
+    }
+  ]
+}

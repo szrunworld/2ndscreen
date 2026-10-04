@@ -74,11 +74,11 @@
     },
     "outbound_action_performed": {
       "type": "boolean",
-      "description": "本次执行是否发生过对候选人或第三方可见的动作：发送消息、点击确认、提交转发、点击求简历/换电话等。verify_only 时必须为 false；为 true 时 externally_visible_side_effect 必须为 true。"
+      "description": "本次执行是否发生过对候选人或第三方可见的动作：发送消息、点击确认、点击求简历/换微信、代填并提交等。verify_only 时必须为 false；为 true 时 externally_visible_side_effect 必须为 true。"
     },
     "externally_visible_side_effect": {
       "type": "boolean",
-      "description": "本次执行是否可能产生了对方可见的副作用。对外动作一定算；没有对外动作也可能为 true，例如打开未读会话产生已读回执。"
+      "description": "本次执行是否可能产生了对方可见的副作用。对外动作一定算；没有对外动作也可能为 true，例如打开未读会话产生已读回执。用户已接受打开会话产生的已读回执（2026-10-04），它是可接受的副作用，如实记录为 true 即可。"
     },
     "executed_at": {
       "oneOf": [
@@ -101,9 +101,6 @@
         },
         {
           "$ref": "#/$defs/contact_output"
-        },
-        {
-          "$ref": "#/$defs/forward_output"
         },
         {
           "type": "null"
@@ -372,58 +369,6 @@
       "if": {
         "properties": {
           "action": {
-            "const": "forward_resume"
-          }
-        },
-        "required": [
-          "action"
-        ]
-      },
-      "then": {
-        "properties": {
-          "output": {
-            "oneOf": [
-              {
-                "$ref": "#/$defs/forward_output"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "action": {
-            "const": "forward_resume"
-          },
-          "status": {
-            "const": "succeeded"
-          }
-        },
-        "required": [
-          "action",
-          "status"
-        ]
-      },
-      "then": {
-        "required": [
-          "output"
-        ],
-        "properties": {
-          "output": {
-            "$ref": "#/$defs/forward_output"
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "action": {
             "enum": [
               "send_greeting",
               "request_resume",
@@ -493,24 +438,6 @@
         },
         "exchange_state": {
           "$ref": "common.json#/$defs/exchange_state"
-        }
-      }
-    },
-    "forward_output": {
-      "type": "object",
-      "required": [
-        "destination",
-        "forwarded_at"
-      ],
-      "additionalProperties": false,
-      "properties": {
-        "destination": {
-          "type": "string",
-          "format": "email",
-          "maxLength": 254
-        },
-        "forwarded_at": {
-          "$ref": "common.json#/$defs/timestamp"
         }
       }
     }

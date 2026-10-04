@@ -1,6 +1,6 @@
 # 招聘 Monitor 服务端 HTTP 接口
 
-版本 0.2.0，与 `monitor_contracts` 0.2.0 对应。机器可读的定义在 [`monitor/contracts/openapi.yaml`](../../monitor/contracts/openapi.yaml)（OpenAPI 3.1，已通过 `openapi-spec-validator` 校验）。本文写给实现者（F1–F3、G、I1/I2、D2）看，冲突时以 openapi.yaml 为准。消息体的字段含义见 [contracts.md](contracts.md)。
+版本 0.3.0，与 `monitor_contracts` 0.3.0 对应。机器可读的定义在 [`monitor/contracts/openapi.yaml`](../../monitor/contracts/openapi.yaml)（OpenAPI 3.1，已通过 `openapi-spec-validator` 校验）。本文写给实现者（F1–F3、G、I1/I2、D2）看，冲突时以 openapi.yaml 为准。消息体的字段含义见 [contracts.md](contracts.md)。
 
 ## 一、通用规则
 
@@ -12,16 +12,16 @@
 | --- | --- | --- |
 | `deviceToken` | Monitor | `POST /devices` 返回，只出现一次；服务端只存哈希；可吊销，吊销后返回 401。路径里的 `device_id` 必须与令牌所属设备一致，否则 403 |
 | `consoleSession` | 控制台 | 服务端从中取得 actor，写入人工处理记录和二维码查看记录 |
-| `serviceToken` | 邮件接入（G） | 写简历文档、查询转发记录 |
+| `serviceToken` | 邮件接入（G） | 写简历文档与邮件记录、提交核对结果、查询求简历记录 |
 
 **幂等**：所有写接口（POST / PUT）必须带 `Idempotency-Key` 头，格式为 `^[A-Za-z0-9._:-]{8,128}$`。
 
 - 服务端按（principal, 方法, 路径, 键）保存首次响应 24 小时，同一个键重放时原样返回。
 - 同一个键配不同请求体，返回 422 `idempotency_key_reused`。
 - Monitor 的键由业务标识确定性地生成（见 contracts.md 第九节），断网重试复用同一个键。控制台每次用户点击生成一个 UUID。
-- 业务层另有一层幂等，即使换了键也成立：结果按 `command_id`，事件按 `event_id`，简历按（message_id, sha256），指令领取按租约。
+- 业务层另有一层幂等，即使换了键也成立：结果按 `command_id`，事件按 `event_id`，简历原件按（mail_message_id, sha256）、品牌化版本按（derived_from, sha256），邮件记录按 `mail_message_id`，核对结果按 `verification_id`，指令领取按租约。
 
-**错误**：响应类型为 `application/problem+json`，结构为 `{code, message, errors?[], existing?}`。`errors[]` 是字段级错误 `{path, message, code}`，路径格式与 `monitor_contracts.FieldError` 一致，服务端可以直接用 `check(name, body)` 的结果填充。常用错误码：`validation_failed`、`idempotency_key_reused`、`result_conflict`、`not_found`、`qr_expired`、`contracts_version_unsupported`。
+**错误**：响应类型为 `application/problem+json`，结构为 `{code, message, errors?[], existing?}`。未认证或令牌已吊销返回 401，令牌与路径资源不符返回 403，请求体、路径参数、查询参数或 Idempotency-Key 不合法返回 422；openapi.yaml 0.3.0 已为每个接口列出它实际会返回的这些响应码。`errors[]` 是字段级错误 `{path, message, code}`，路径格式与 `monitor_contracts.FieldError` 一致，服务端可以直接用 `check(name, body)` 的结果填充。常用错误码：`validation_failed`、`idempotency_key_reused`、`result_conflict`、`not_found`、`qr_expired`、`contracts_version_unsupported`、`device_mismatch`、`command_not_owned`、`mail_message_conflict`、`illegal_mail_transition`。
 
 **分页**：列表接口统一用 `cursor` + `limit`（1–200，默认 50）作参数，返回 `{items, next_cursor}`，`next_cursor` 为 null 表示没有下一页。
 
@@ -39,7 +39,7 @@
 | `POST /devices/{id}/commands:claim` | Monitor | 长轮询领取指令 |
 | `POST /commands/{id}/ack` | Monitor | 确认已写入本地账本 |
 | `POST /commands/{id}/result` | Monitor | 回报最终结果 |
-| `GET /commands`、`GET /commands/{id}` | 控制台、G | 执行记录；G 用 `action=forward_resume&status=succeeded&executed_after=` 查询转发记录 |
+| `GET /commands`、`GET /commands/{id}` | 控制台、G | 执行记录；G 用 `action=request_resume&status=succeeded&executed_after=` 查询求简历记录，按执行时间窗关联邮件 |
 | `POST /commands/{id}:cancel` | 控制台 | 取消指令 |
 | `POST /commands/{id}:confirm-sent` | 控制台 | 人工确认已发送（只用于 unknown） |
 | `POST /commands/{id}:recheck` | 控制台 | 重新检查界面状态（生成 verify_only 指令） |
@@ -47,9 +47,13 @@
 | `POST /resume-documents`、`GET /resume-documents`、`GET /resume-documents/{id}` | G / 控制台 | 写入简历附件；列表与待人工关联队列 |
 | `POST /resume-documents/{id}/parse-result` | G | 回报解析结果 |
 | `POST /resume-documents/{id}:link` | 控制台 | 人工关联到流程 |
+| `PUT /mail-messages/{mail_message_id}` | G | 写入或更新一封邮件的记录（幂等 upsert，状态按迁移表前进） |
+| `GET /mail-messages` | 控制台、G | 邮件记录列表：按 status（可重复）、mailbox、message_id、收件时间过滤 |
+| `POST /mail-verifications`、`GET /mail-verifications` | G / 控制台、G | 提交核对结果 / 最近的核对结果 |
 | `POST /search-runs`、`GET /search-runs`、`GET /search-runs/{id}` | 控制台 | 提交搜索，查看快照 |
 | `GET /cases`、`GET /cases/{id}` | 控制台 | 流程列表与详情 |
 | `POST /cases/{id}:stop` | 控制台 | 停止流程 |
+| `POST /cases/{id}:request-wechat` | 控制台 | 人工触发换微信，生成 request_contact_exchange 指令（0.3.0） |
 | `POST /login-qr` | Monitor（仅 remote） | 上传登录二维码内容 |
 | `GET /devices/{id}/login-qr` | 控制台 | 读取二维码（记录查看者；过期返回 410） |
 | `POST /devices/{id}/login-qr:withdraw` | Monitor / 控制台 | 撤下二维码 |
@@ -120,11 +124,22 @@ Monitor 把 `accepted` 和 `duplicate` 的事件都标记为 delivered。`reject
 ## 四、控制台与服务端内部
 
 - **流程**：`GET /cases` 每行是一个 recruitment_case，可以按 stage、needs_human、job_title、关键字过滤。`GET /cases/{id}` 返回时间线、简历文件、相关指令和人工处理记录。
-- **人工处理**：`confirm-sent`、`resume-documents/{id}:link`、`cases/{id}:stop` 都要求填写说明（`note`），服务端记录 actor、时间和说明，返回 `ManualAction`，不覆盖原始执行结果与证据。结果待确认（unknown）的指令只提供重新检查、人工确认、停止三种处理，没有"重试"接口。
-- **重新检查**：`POST /commands/{id}:recheck` 为同一动作和目标创建一条 `execution_mode=verify_only` 的新指令，允许导航、不做对外动作（可能产生已读回执），不受白名单和限额约束。对 search_candidates 和 provide_input 调用返回 409。
-- **搜索**：`POST /search-runs` 的请求体为 `{account_id, query, max_results, ttl_seconds=600}`。服务端检查策略白名单、暂停状态和上限后，创建 `search_candidates` 指令。`SearchRun.outcome` 由快照的 coverage 得出（results / no_results / unreadable），控制台对三者分别展示。
-- **简历文档**（G 调用）：`POST /resume-documents` 按（message_id, sha256）去重，重复时返回 200 并带 `duplicate=true`。`link.method` 按优先级依次为 reliable_id → forward_record（带 `command_id`）→ name_match → none；为 none 时进入人工关联队列，并列出 `candidate_case_ids`。同一流程下的多份简历按 `version` 保留，不覆盖。解析结果可以随创建请求一起提交，也可以之后用 `POST /resume-documents/{id}/parse-result` 提交。
-- **策略**：`PUT` 必须带 `If-Match: <policy_version>`，版本不一致返回 412。`policy_version`、`updated_at`、`updated_by` 以服务端为准，保存后版本 +1。`pause_on_anomaly` 只能为 true。
+- **人工处理**：`confirm-sent`、`resume-documents/{id}:link`、`cases/{id}:stop`、`cases/{id}:request-wechat` 都要求填写说明（`note`），服务端记录 actor、时间和说明，返回 `ManualAction`，不覆盖原始执行结果与证据。结果待确认（unknown）的指令只提供重新检查、人工确认、停止三种处理，没有"重试"接口。
+- **换微信**（0.3.0，用户确认）：交换联系方式只换微信、只能人工触发。控制台调用 `POST /cases/{id}:request-wechat`（带 note），服务端记录 `manual_action(type=request_wechat)`，生成 `request_contact_exchange` 指令（`payload.exchange_type=wechat`），流程进入 `contact_requested`，响应 201 `{manual_action, command}`。只在流程处于 `resume_linked` 或 `needs_human` 时可调用，否则 409 `stage_not_allowed`；白名单未开启、暂停或超上限 409 `policy_blocked`；已有未完成的换微信指令 409 `already_requested`。服务端不得在任何自动流程中生成该指令。`contact_exchange_updated` 只报状态，不带微信号原文。
+- **重新检查**：`POST /commands/{id}:recheck` 为同一动作和目标创建一条 `execution_mode=verify_only` 的新指令，允许导航、不做对外动作（可能产生已读回执；用户已接受这一副作用），不受白名单和限额约束。对 search_candidates 和 provide_input 调用返回 409。
+- **搜索**：`POST /search-runs` 的请求体为 `{account_id, query, max_results, ttl_seconds=600}`。服务端检查策略白名单、暂停状态和上限后，创建 `search_candidates` 指令。`SearchRun.outcome` 由快照的 coverage 得出（results / no_results / unreadable），控制台对三者分别展示。快照卡片只有界面上的原样文本（`fields[]`、`masked_name`、`prop_card_texts[]`），不识别身份（0.3.0）。v1 不能从搜索结果发起问候或其他动作：会话类指令的目标只能是会话，契约里没有"搜索结果"目标。
+- **简历文档**（G 与 R 调用）：简历由 BOSS 在候选人同意后自动发到公司邮箱，Monitor 不转发（0.3.0 移除 forward_resume）。`POST /resume-documents` 分两种：
+  - 原件 `variant=original`（默认）：必须带 `mail_message_id`、`mail`、`link`，按（mail_message_id, 附件 sha256）去重，重复时返回 200 并带 `duplicate=true`。`link.method` 按优先级依次为 reliable_id → resume_request（在该账户 request_resume 已成功的流程里按执行时间窗结合账户 + 岗位 + 姓名唯一命中，带 `command_id` 指向那条 request_resume）→ name_match → none；为 none 时进入人工关联队列，并列出 `candidate_case_ids`。同一流程下的多份原件按 `version` 保留，不覆盖。
+  - 品牌化版本 `variant=branded`（任务 R）：必须带 `derived_from`（原件 doc_id），不带 `mail` 与 `link`，流程与 `mail_message_id` 继承原件；按（derived_from, sha256）去重。原件始终保留。
+  - 解析结果可以随创建请求一起提交，也可以之后用 `POST /resume-documents/{id}/parse-result` 提交。`GET /resume-documents` 可按 `variant`、`mail_message_id` 过滤。
+- **邮件记录**（G 调用）：邮件接入先把原始 .eml 落盘，再 `PUT /mail-messages/{mail_message_id}`（请求体 `mail_message`，`status=pending`）；消费后再 PUT 更新状态。`mail_message_id` 由 `compute_mail_message_id` 确定性生成（有 Message-ID 时用 邮箱 + Message-ID，否则用 邮箱 + UIDVALIDITY + UID），路径与请求体必须一致。规则：
+  - 状态只按 `MAIL_TRANSITIONS` 前进：pending → processed / needs_review / failed / ignored；needs_review → processed（人工关联后）；failed → pending（人工重试）。其他变化返回 409 `illegal_mail_transition`。
+  - 同状态写入（未达上限的失败仍为 pending、attempts +1）是更新。
+  - mailbox、message_id、uidvalidity、uid、received_at、sha256 写入后不可变，不一致返回 409 `mail_message_conflict`。两种 409 都在 `existing` 中附上当前记录。
+  - 首次写入返回 201，之后返回 200。Idempotency-Key 用 `mail_message_key(mail_message_id, status, attempts)`。
+  - 控制台用 `GET /mail-messages?status=needs_review` 显示人工关联队列，`status=failed` 显示失败队列。
+- **邮箱核对**（G 调用）：核对任务完成后 `POST /mail-verifications`（请求体 `mail_verification`），按 `verification_id` 幂等，内容不同返回 409；响应是 `{verification, received_at}`。`outcome=issues_found / failed` 时服务端在总览与告警中展示。`overdue_resume_requests` 只是提醒；流程是否转 `needs_human`（`needs_human_reason=resume_mail_timeout`）由服务端按 `policy.resume_mail_timeout_days` 判定。控制台用 `GET /mail-verifications` 看最近的核对结果。
+- **策略**：`PUT` 必须带 `If-Match: <policy_version>`，版本不一致返回 412。`policy_version`、`updated_at`、`updated_by`、`company_mailbox` 以服务端为准，保存后版本 +1。`company_mailbox` 是 BOSS 账户预留的公司邮箱，只读展示，PUT 时忽略请求中的值。`after_resume_received.action` 只能为 none（收到简历后不做自动动作，换微信只能人工触发），`resume_mail_timeout_days` 默认 3。`pause_on_anomaly` 只能为 true。
 - **总览**：`GET /overview` 分别返回今日新投递、已请求简历、收到简历、解析完成、待人工处理和 unknown 结果的计数，不合并成"成功数"。
 
 ## 五、服务端视角的指令状态

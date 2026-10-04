@@ -1,11 +1,11 @@
 {
   "contract": "command",
-  "description": "转发简历到指定邮箱",
+  "description": "v1 搜索结果不能作为问候目标（result_ref 已删除）",
   "data": {
-    "command_id": "00000000-0000-4000-8000-000000000005",
+    "command_id": "00000000-0000-4000-8000-000000000001",
     "workflow_id": "case_001",
     "account_id": "acct_demo",
-    "action": "forward_resume",
+    "action": "send_greeting",
     "target": {
       "conversation": {
         "candidate_name": "候选人A",
@@ -14,14 +14,18 @@
           "本科",
           "上海"
         ]
-      }
+      },
+      "candidate_ref": "cand_9",
+      "result_ref": "s_42:item_1"
     },
     "payload": {
-      "destination": "resumes@example.com",
-      "attachment_hint": "候选人A.pdf"
+      "text": "你好，方便聊聊吗？"
     },
     "issued_at": "2026-10-04T09:30:00+08:00",
     "expires_at": "2026-10-04T09:40:00+08:00",
     "depends_on": null
-  }
+  },
+  "expected_error_paths": [
+    "target.result_ref"
+  ]
 }

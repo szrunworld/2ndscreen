@@ -9,15 +9,69 @@
     "items": [
       {
         "result_ref": "s_99:item_1",
-        "display_name": "候选人C",
-        "summary": "5年 Go 经验",
-        "stable_candidate_id": null
+        "position": 1,
+        "masked_name": "王**",
+        "fields": [
+          {
+            "label": null,
+            "text": "王**"
+          },
+          {
+            "label": null,
+            "text": "5年"
+          },
+          {
+            "label": null,
+            "text": "本科"
+          },
+          {
+            "label": null,
+            "text": "28岁"
+          },
+          {
+            "label": null,
+            "text": "刚刚活跃"
+          },
+          {
+            "label": "期望",
+            "text": "北京 · Go 开发 · 25-35K"
+          },
+          {
+            "label": null,
+            "text": "Go"
+          },
+          {
+            "label": null,
+            "text": "微服务"
+          }
+        ],
+        "prop_card_texts": [
+          "使用道具查看"
+        ]
       },
       {
         "result_ref": "s_42:item_2",
-        "display_name": "候选人D",
-        "summary": "3年",
-        "stable_candidate_id": null
+        "position": 2,
+        "masked_name": "李**",
+        "fields": [
+          {
+            "label": null,
+            "text": "李**"
+          },
+          {
+            "label": null,
+            "text": "3年"
+          },
+          {
+            "label": null,
+            "text": "硕士"
+          },
+          {
+            "label": null,
+            "text": "3日内活跃"
+          }
+        ],
+        "prop_card_texts": []
       }
     ],
     "captured_at": "2026-10-04T09:31:05+08:00"

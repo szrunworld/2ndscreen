@@ -183,7 +183,7 @@ def test_require_transition():
     assert info.value.layer == "delivery"
     assert info.value.src == "delivered"
     with pytest.raises(ValueError):
-        require_transition("mail", "a", "b")
+        require_transition("nope", "a", "b")
 
 
 def test_enum_members_accepted():

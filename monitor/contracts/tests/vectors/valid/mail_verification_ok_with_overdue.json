@@ -1,0 +1,57 @@
+{
+  "contract": "mail_verification",
+  "description": "邮箱一致；有一个求简历超时提醒（不影响 outcome）",
+  "data": {
+    "verification_id": "verify-20261004T1100",
+    "mailbox": "hr@example.com",
+    "started_at": "2026-10-04T11:00:00+08:00",
+    "finished_at": "2026-10-04T11:00:12+08:00",
+    "outcome": "ok",
+    "error": null,
+    "checks": [
+      {
+        "code": "inbox_backlog",
+        "count": 0,
+        "refs": []
+      },
+      {
+        "code": "processed_without_record",
+        "count": 0,
+        "refs": []
+      },
+      {
+        "code": "original_missing",
+        "count": 0,
+        "refs": []
+      },
+      {
+        "code": "hash_mismatch",
+        "count": 0,
+        "refs": []
+      },
+      {
+        "code": "document_without_original",
+        "count": 0,
+        "refs": []
+      },
+      {
+        "code": "needs_review_mismatch",
+        "count": 0,
+        "refs": []
+      },
+      {
+        "code": "failed_mismatch",
+        "count": 0,
+        "refs": []
+      }
+    ],
+    "overdue_resume_requests": [
+      {
+        "case_id": "case_007",
+        "command_id": "00000000-0000-4000-8000-000000000031",
+        "requested_at": "2026-10-01T09:30:00+08:00",
+        "days_waiting": 3
+      }
+    ]
+  }
+}

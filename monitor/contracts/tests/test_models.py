@@ -103,7 +103,7 @@ def test_action_result_to_command_result():
         navigation_performed=True,
         outbound_action_performed=True,
         externally_visible_side_effect=True,
-        output=ContactOutput(exchange_type="phone", exchange_state="requested"),
+        output=ContactOutput(exchange_type="wechat", exchange_state="requested"),
     )
     result = ar.to_command_result(cmd, reported_at=NOW)
     assert isinstance(result, CommandResult)

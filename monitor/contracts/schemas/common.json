@@ -51,17 +51,16 @@
         "request_resume",
         "request_contact_exchange",
         "search_candidates",
-        "forward_resume",
         "provide_input"
       ],
-      "description": "指令动作。"
+      "description": "指令动作。forward_resume 自 0.3.0 移除（简历由 BOSS 自动发到公司邮箱，Monitor 不转发），名字保留，以后需要时再加回。"
     },
     "exchange_type": {
       "type": "string",
       "enum": [
-        "phone"
+        "wechat"
       ],
-      "description": "联系方式类型。第一版只支持电话；微信留作后续（届时契约版本 +1）。"
+      "description": "联系方式类型。0.3.0 起只支持微信（用户确认；B 在真机观察到系统提示『请求交换微信已发送』）；电话不再支持。"
     },
     "exchange_state": {
       "type": "string",

@@ -1,0 +1,20 @@
+{
+  "contract": "mail_message",
+  "description": "缺 Message-ID 用 UIDVALIDITY+UID 兜底；连续失败 3 次",
+  "data": {
+    "mail_message_id": "mail:b5071b0f709ed9b8fa7cd0508abb3411",
+    "mailbox": "hr@example.com",
+    "message_id": null,
+    "uidvalidity": 1700000000,
+    "uid": 4212,
+    "received_at": "2026-10-04T10:02:00+08:00",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "raw_storage_uri": "file:///var/monitor/mail/2026/10/04/4211.eml",
+    "from_address": "noreply@zhipin.example",
+    "subject": null,
+    "status": "failed",
+    "attempts": 3,
+    "error": "attachment_unreadable: PDF 损坏",
+    "updated_at": "2026-10-04T10:02:05+08:00"
+  }
+}

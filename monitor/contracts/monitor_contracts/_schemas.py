@@ -25,6 +25,8 @@ CONTRACT_SCHEMAS: dict[str, str] = {
     "device_registration": "device_registration.json",
     "device_heartbeat": "device_heartbeat.json",
     "login_qr": "login_qr.json",
+    "mail_message": "mail_message.json",
+    "mail_verification": "mail_verification.json",
 }
 
 AX_FIXTURE_SCHEMA = "ax-fixture.schema.json"

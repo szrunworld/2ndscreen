@@ -1,0 +1,55 @@
+{
+  "contract": "search_snapshot",
+  "description": "当前页仅一张卡片，带道具卡文案",
+  "data": {
+    "search_id": "s_42",
+    "query": "golang 后端",
+    "scope": "current_page",
+    "coverage": "complete",
+    "items": [
+      {
+        "result_ref": "s_42:item_1",
+        "position": 1,
+        "masked_name": "王**",
+        "fields": [
+          {
+            "label": null,
+            "text": "王**"
+          },
+          {
+            "label": null,
+            "text": "5年"
+          },
+          {
+            "label": null,
+            "text": "本科"
+          },
+          {
+            "label": null,
+            "text": "28岁"
+          },
+          {
+            "label": null,
+            "text": "刚刚活跃"
+          },
+          {
+            "label": "期望",
+            "text": "北京 · Go 开发 · 25-35K"
+          },
+          {
+            "label": null,
+            "text": "Go"
+          },
+          {
+            "label": null,
+            "text": "微服务"
+          }
+        ],
+        "prop_card_texts": [
+          "使用道具查看"
+        ]
+      }
+    ],
+    "captured_at": "2026-10-04T09:31:05+08:00"
+  }
+}

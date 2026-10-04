@@ -63,6 +63,23 @@ def login_qr_key(device_id: str, qr_seq: int) -> str:
     return _key("qr", device_id, str(qr_seq))
 
 
-def resume_document_key(message_id: str, sha256: str) -> str:
-    """POST /resume-documents：邮件标识 + 附件内容哈希。"""
-    return _key("doc", _digest(f"{message_id}\n{sha256}"))
+def resume_document_key(source_id: str, sha256: str) -> str:
+    """POST /resume-documents：来源标识 + 文件内容哈希。
+
+    原件（variant=original）的 source_id 是 mail_message_id；品牌化版本（variant=branded）
+    的 source_id 是 ``"branded:" + derived_from``（原件 doc_id）。
+    """
+    return _key("doc", _digest(f"{source_id}\n{sha256}"))
+
+
+def mail_message_key(mail_message_id: str, status: str, attempts: int) -> str:
+    """PUT /mail-messages/{id}：同一封邮件的同一次写入（状态 + 失败次数）复用同一个键。
+
+    未达上限的失败仍为 pending、attempts +1，所以键里要带 attempts，否则两次写入撞键。
+    """
+    return _key("mail", mail_message_id.removeprefix("mail:"), status, str(attempts))
+
+
+def mail_verification_key(verification_id: str) -> str:
+    """POST /mail-verifications：一次核对一个键。"""
+    return _key("verify", verification_id)

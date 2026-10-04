@@ -26,6 +26,8 @@ from .models import (
     Event,
     EventModel,
     LoginQr,
+    MailMessage,
+    MailVerification,
     Policy,
     SearchSnapshot,
 )
@@ -39,6 +41,8 @@ _ADAPTERS: dict[str, TypeAdapter[Any]] = {
     "device_registration": TypeAdapter(DeviceRegistration),
     "device_heartbeat": TypeAdapter(DeviceHeartbeat),
     "login_qr": TypeAdapter(LoginQr),
+    "mail_message": TypeAdapter(MailMessage),
+    "mail_verification": TypeAdapter(MailVerification),
     "ax_fixture": TypeAdapter(AxFixture),
 }
 
@@ -205,6 +209,14 @@ def validate_device_heartbeat(data: Any) -> DeviceHeartbeat:
 
 def validate_login_qr(data: Any) -> LoginQr:
     return validate("login_qr", data)
+
+
+def validate_mail_message(data: Any) -> MailMessage:
+    return validate("mail_message", data)
+
+
+def validate_mail_verification(data: Any) -> MailVerification:
+    return validate("mail_verification", data)
 
 
 def validate_ax_fixture(data: Any) -> AxFixture:

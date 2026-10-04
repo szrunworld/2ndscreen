@@ -11,6 +11,8 @@
     "greeting",
     "auto_request_resume",
     "after_resume_received",
+    "resume_mail_timeout_days",
+    "company_mailbox",
     "work_hours",
     "daily_limits",
     "min_interval_seconds",
@@ -38,7 +40,6 @@
           "send_greeting",
           "request_resume",
           "request_contact_exchange",
-          "forward_resume",
           "search_candidates"
         ]
       },
@@ -140,15 +141,44 @@
         "action": {
           "type": "string",
           "enum": [
-            "none",
-            "request_contact_exchange"
-          ]
+            "none"
+          ],
+          "default": "none",
+          "description": "简历关联后的自动动作。0.3.0 起只能是 none：交换联系方式（换微信）只能由人工在控制台触发（POST /cases/{case_id}:request-wechat），服务端不得在任何自动流程中生成 request_contact_exchange。"
         },
         "wait_for_parse": {
           "type": "boolean",
-          "description": "是否等 PDF 解析完成再发起后续动作。"
+          "description": "保留字段，当前没有自动后续动作，不起作用。",
+          "default": true
         }
-      }
+      },
+      "default": {
+        "action": "none",
+        "wait_for_parse": true
+      },
+      "description": "保留对象以便以后扩展；0.3.0 起不产生任何自动动作。"
+    },
+    "resume_mail_timeout_days": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 30,
+      "default": 3,
+      "description": "求简历成功后超过该天数仍未收到并关联简历邮件，流程进入 needs_human（超时提醒）。默认 3。"
+    },
+    "company_mailbox": {
+      "oneOf": [
+        {
+          "type": "string",
+          "format": "email",
+          "maxLength": 254
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "readOnly": true,
+      "description": "BOSS 账户设置里预留的公司邮箱（候选人同意后 BOSS 把附件简历自动发到这里）。只读展示：以服务端配置为准，PUT 时忽略请求中的值；未配置为 null。"
     },
     "work_hours": {
       "type": "object",
@@ -231,7 +261,6 @@
         "send_greeting",
         "request_resume",
         "request_contact_exchange",
-        "forward_resume",
         "search_candidates"
       ],
       "additionalProperties": false,
@@ -247,11 +276,6 @@
           "maximum": 86400
         },
         "request_contact_exchange": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 86400
-        },
-        "forward_resume": {
           "type": "integer",
           "minimum": 0,
           "maximum": 86400

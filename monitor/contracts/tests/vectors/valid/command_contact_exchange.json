@@ -17,7 +17,7 @@
       }
     },
     "payload": {
-      "exchange_type": "phone"
+      "exchange_type": "wechat"
     },
     "issued_at": "2026-10-04T09:30:00+08:00",
     "expires_at": "2026-10-04T09:40:00+08:00",

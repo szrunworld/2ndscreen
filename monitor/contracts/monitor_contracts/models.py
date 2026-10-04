@@ -8,6 +8,7 @@ event_id 必须等于 compute_event_id 的结果）。语义错误统一用 ``_f
 
 from __future__ import annotations
 
+import re
 from typing import Annotated, Any, Literal, Union
 from uuid import UUID
 
@@ -21,6 +22,8 @@ from pydantic import (
 )
 from pydantic_core import PydanticCustomError
 
+from .mail_id import MAIL_MESSAGE_ID_PATTERN, compute_mail_message_id
+
 # ---------------------------------------------------------------------------
 # 基础类型
 # ---------------------------------------------------------------------------
@@ -30,15 +33,13 @@ Action = Literal[
     "request_resume",
     "request_contact_exchange",
     "search_candidates",
-    "forward_resume",
     "provide_input",
 ]
 ACTIONS: tuple[str, ...] = Action.__args__  # type: ignore[attr-defined]
 
-# 会话类动作：需要 workflow_id 与 conversation 目标
-CONVERSATION_ACTIONS: frozenset[str] = frozenset(
-    {"send_greeting", "request_resume", "request_contact_exchange", "forward_resume"}
-)
+# 会话类动作：需要 workflow_id 与 conversation 目标。
+# forward_resume 自 0.3.0 移除：简历由 BOSS 在候选人同意后自动发到公司邮箱，Monitor 不转发。
+CONVERSATION_ACTIONS: frozenset[str] = frozenset({"send_greeting", "request_resume", "request_contact_exchange"})
 # 对外动作：受策略白名单、每日上限与最小间隔约束（provide_input 是人工代填，不在其列）
 OUTWARD_ACTIONS: frozenset[str] = frozenset(CONVERSATION_ACTIONS | {"search_candidates"})
 
@@ -85,7 +86,7 @@ CONVERSATION_EVENT_KINDS: frozenset[str] = frozenset(
 
 Mode = Literal["local", "remote"]
 ExecutionMode = Literal["execute", "verify_only"]
-ExchangeType = Literal["phone"]
+ExchangeType = Literal["wechat"]  # 0.3.0 起只换微信
 ExchangeState = Literal["requested", "pending_acceptance", "available", "refused", "unknown"]
 Coverage = Literal["partial", "complete", "unreadable", "empty_confirmed"]
 PauseReason = Literal["user_request", "login_required", "account_switched", "anomaly", "server_request", "rebaseline"]
@@ -173,9 +174,10 @@ class Observed(ContractModel):
 
 
 class ConversationTarget(ContractModel):
+    """会话目标。v1 只能以会话为目标，搜索结果不能作为任何动作的目标（0.3.0 删除 result_ref）。"""
+
     conversation: Conversation
     candidate_ref: Annotated[str, StringConstraints(max_length=128)] | None = None
-    result_ref: ResultRef | None = None
 
 
 class SearchTarget(ContractModel):
@@ -196,11 +198,6 @@ class SendGreetingPayload(ContractModel):
 
 class RequestContactExchangePayload(ContractModel):
     exchange_type: ExchangeType
-
-
-class ForwardResumePayload(ContractModel):
-    destination: Email
-    attachment_hint: Annotated[str, StringConstraints(max_length=200)] | None = None
 
 
 class SearchCandidatesPayload(ContractModel):
@@ -256,13 +253,6 @@ class RequestContactExchangeCommand(_CommandBase):
     payload: RequestContactExchangePayload
 
 
-class ForwardResumeCommand(_CommandBase):
-    action: Literal["forward_resume"]
-    workflow_id: WorkflowId
-    target: ConversationTarget
-    payload: ForwardResumePayload
-
-
 class SearchCandidatesCommand(_CommandBase):
     action: Literal["search_candidates"]
     workflow_id: None
@@ -284,7 +274,6 @@ Command = Annotated[
         SendGreetingCommand,
         RequestResumeCommand,
         RequestContactExchangeCommand,
-        ForwardResumeCommand,
         SearchCandidatesCommand,
         ProvideInputCommand,
     ],
@@ -294,7 +283,6 @@ CommandModel = Union[
     SendGreetingCommand,
     RequestResumeCommand,
     RequestContactExchangeCommand,
-    ForwardResumeCommand,
     SearchCandidatesCommand,
     ProvideInputCommand,
 ]
@@ -304,11 +292,45 @@ CommandModel = Union[
 # ---------------------------------------------------------------------------
 
 
+# 卡片文本原文：不得含中国大陆手机号样式的 11 位数字（与 schema 的 not.pattern 一致）
+_PHONE_LIKE = re.compile(r"1[3-9][0-9]{9}")
+CardText = Annotated[str, StringConstraints(min_length=1, max_length=500)]
+
+
+def _check_card_text(path: str, text: str) -> None:
+    if _PHONE_LIKE.search(text):
+        raise _fail(path, "疑似手机号：搜索快照只放卡片上的可读文本，不得含联系方式")
+
+
+class CardField(ContractModel):
+    """卡片上的一段可读文本。label 只在界面上确有可见标签时填写，不要自行命名。"""
+
+    label: Annotated[str, StringConstraints(min_length=1, max_length=64)] | None = None
+    text: CardText
+
+
 class SearchItem(ContractModel):
+    """一张结果卡片。只原样转述界面已有的文本，不识别身份（0.3.0）。"""
+
     result_ref: ResultRef
-    display_name: Annotated[str, StringConstraints(min_length=1, max_length=64)]
-    summary: Annotated[str, StringConstraints(max_length=500)]
-    stable_candidate_id: Annotated[str, StringConstraints(max_length=128)] | None = None
+    position: Annotated[int, Field(ge=1, le=100)]
+    fields: Annotated[list[CardField], Field(min_length=1, max_length=60)]
+    masked_name: Annotated[str, StringConstraints(min_length=1, max_length=64)] | None = None
+    prop_card_texts: Annotated[
+        list[Annotated[str, StringConstraints(min_length=1, max_length=200)]], Field(max_length=20)
+    ]
+
+    @model_validator(mode="after")
+    def _check(self) -> SearchItem:
+        if not self.result_ref.endswith(f":item_{self.position}"):
+            raise _fail("result_ref", f"result_ref 末尾的序号必须等于 position（应为 :item_{self.position}）")
+        for i, f in enumerate(self.fields):
+            _check_card_text(f"fields[{i}].text", f.text)
+        if self.masked_name is not None:
+            _check_card_text("masked_name", self.masked_name)
+        for i, t in enumerate(self.prop_card_texts):
+            _check_card_text(f"prop_card_texts[{i}]", t)
+        return self
 
 
 class SearchSnapshot(ContractModel):
@@ -368,17 +390,11 @@ class ContactOutput(ContractModel):
     exchange_state: ExchangeState
 
 
-class ForwardOutput(ContractModel):
-    destination: Email
-    forwarded_at: AwareDatetime
-
-
-ActionOutput = Union[SearchOutput, ContactOutput, ForwardOutput]
+ActionOutput = Union[SearchOutput, ContactOutput]
 
 _OUTPUT_FOR_ACTION: dict[str, type[ContractModel] | None] = {
     "search_candidates": SearchOutput,
     "request_contact_exchange": ContactOutput,
-    "forward_resume": ForwardOutput,
     "send_greeting": None,
     "request_resume": None,
     "provide_input": None,
@@ -441,8 +457,6 @@ def check_result_rules(
             )
     if action == "request_contact_exchange" and status in ("succeeded", "skipped_precondition") and output is None:
         raise _fail("output", f"request_contact_exchange 在 status={status} 时必须带 output.exchange_state")
-    if action == "forward_resume" and status == "succeeded" and output is None:
-        raise _fail("output", "forward_resume 成功时必须带 output")
 
 
 class CommandResult(ContractModel):
@@ -669,7 +683,7 @@ Event = Annotated[EventModel, Field(discriminator="kind")]
 # 策略 policy
 # ---------------------------------------------------------------------------
 
-OutwardAction = Literal["send_greeting", "request_resume", "request_contact_exchange", "forward_resume", "search_candidates"]
+OutwardAction = Literal["send_greeting", "request_resume", "request_contact_exchange", "search_candidates"]
 
 
 class JobScope(ContractModel):
@@ -699,8 +713,11 @@ class GreetingPolicy(ContractModel):
 
 
 class AfterResumeReceived(ContractModel):
-    action: Literal["none", "request_contact_exchange"]
-    wait_for_parse: bool
+    """简历关联（resume_linked）后的自动动作。0.3.0 起只能是 none：换微信只能由人工在控制台触发，
+    服务端不得在任何自动流程中生成 request_contact_exchange。wait_for_parse 保留，当前不起作用。"""
+
+    action: Literal["none"] = "none"
+    wait_for_parse: bool = True
 
 
 class WorkWindow(ContractModel):
@@ -724,7 +741,6 @@ class PerActionCounts(ContractModel):
     send_greeting: Annotated[int, Field(ge=0, le=86400)]
     request_resume: Annotated[int, Field(ge=0, le=86400)]
     request_contact_exchange: Annotated[int, Field(ge=0, le=86400)]
-    forward_resume: Annotated[int, Field(ge=0, le=86400)]
     search_candidates: Annotated[int, Field(ge=0, le=86400)]
 
 
@@ -735,7 +751,11 @@ class Policy(ContractModel):
     job_scope: JobScope
     greeting: GreetingPolicy
     auto_request_resume: bool
-    after_resume_received: AfterResumeReceived
+    after_resume_received: AfterResumeReceived = Field(default_factory=AfterResumeReceived)
+    # 求简历成功后超过该天数仍未收到并关联简历邮件，流程进入 needs_human
+    resume_mail_timeout_days: Annotated[int, Field(ge=1, le=30)] = 3
+    # 只读展示：BOSS 账户预留的公司邮箱，以服务端配置为准，PUT 时忽略请求中的值
+    company_mailbox: Email | None = None
     work_hours: WorkHours
     daily_limits: PerActionCounts
     min_interval_seconds: PerActionCounts
@@ -761,7 +781,6 @@ Capability = Literal[
     "request_resume",
     "request_contact_exchange",
     "search_candidates",
-    "forward_resume",
     "provide_input",
     "login_relay",
 ]
@@ -850,4 +869,117 @@ class LoginQr(ContractModel):
     def _check(self) -> LoginQr:
         if self.expires_at <= self.captured_at:
             raise _fail("expires_at", "expires_at 必须晚于 captured_at")
+        return self
+
+
+# ---------------------------------------------------------------------------
+# 公司邮箱 mail_message / mail_verification（0.3.0，邮件接入 G 写入，控制台展示）
+# ---------------------------------------------------------------------------
+
+MailStatus = Literal["pending", "processed", "needs_review", "failed", "ignored"]
+MAIL_STATUSES: tuple[str, ...] = MailStatus.__args__  # type: ignore[attr-defined]
+MailMessageId = Annotated[str, StringConstraints(pattern=MAIL_MESSAGE_ID_PATTERN)]
+Sha256Hex = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
+
+
+class MailMessage(ContractModel):
+    """公司邮箱里的一封邮件（方案 8.2）。先落盘原件再以 pending 写入，状态按 states.MAIL_TRANSITIONS 前进。"""
+
+    mail_message_id: MailMessageId
+    mailbox: Email
+    message_id: Annotated[str, StringConstraints(min_length=1, max_length=998)] | None
+    uidvalidity: Annotated[int, Field(ge=1)] | None
+    uid: Annotated[int, Field(ge=1)] | None
+    received_at: AwareDatetime
+    sha256: Sha256Hex
+    raw_storage_uri: Annotated[str, StringConstraints(min_length=1, max_length=1024)] | None = None
+    from_address: Annotated[str, StringConstraints(max_length=254)] | None = None
+    subject: Annotated[str, StringConstraints(max_length=500)] | None = None
+    status: MailStatus
+    attempts: Annotated[int, Field(ge=0)] = 0
+    error: Annotated[str, StringConstraints(min_length=1, max_length=500)] | None = None
+    updated_at: AwareDatetime
+
+    @model_validator(mode="after")
+    def _check(self) -> MailMessage:
+        if (self.uidvalidity is None) != (self.uid is None):
+            raise _fail("uid", "uidvalidity 与 uid 必须同时给出或同时为 null")
+        if self.message_id is None and self.uid is None:
+            raise _fail("message_id", "没有 Message-ID 时必须给出 uidvalidity 与 uid")
+        expected = compute_mail_message_id(
+            self.mailbox, self.message_id, uidvalidity=self.uidvalidity, uid=self.uid
+        )
+        if self.mail_message_id != expected:
+            raise _fail("mail_message_id", "mail_message_id 与 compute_mail_message_id(mailbox, message_id, uidvalidity, uid) 不一致")
+        if self.status == "failed" and self.error is None:
+            raise _fail("error", "status=failed 时必须给出 error")
+        if self.status in ("pending", "processed") and self.error is not None:
+            raise _fail("error", f"status={self.status} 时 error 必须为 null")
+        if self.updated_at < self.received_at:
+            raise _fail("updated_at", "updated_at 不能早于 received_at")
+        return self
+
+
+MailCheckCode = Literal[
+    "inbox_backlog",
+    "processed_without_record",
+    "original_missing",
+    "hash_mismatch",
+    "document_without_original",
+    "needs_review_mismatch",
+    "failed_mismatch",
+]
+MAIL_CHECK_CODES: tuple[str, ...] = MailCheckCode.__args__  # type: ignore[attr-defined]
+
+
+class MailCheck(ContractModel):
+    code: MailCheckCode
+    count: Annotated[int, Field(ge=0)]
+    refs: Annotated[list[Annotated[str, StringConstraints(min_length=1, max_length=128)]], Field(max_length=20)] = (
+        Field(default_factory=list)
+    )
+
+
+class OverdueResumeRequest(ContractModel):
+    case_id: WorkflowId
+    command_id: UUID
+    requested_at: AwareDatetime
+    days_waiting: Annotated[int, Field(ge=0)]
+
+
+class MailVerification(ContractModel):
+    """核对任务的一次结果（方案 8.2 第 5 条）。outcome 只反映邮箱完整性检查；超时提醒单列。"""
+
+    verification_id: Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9._:-]{8,128}$")]
+    mailbox: Email
+    started_at: AwareDatetime
+    finished_at: AwareDatetime
+    outcome: Literal["ok", "issues_found", "failed"]
+    error: Annotated[str, StringConstraints(min_length=1, max_length=500)] | None = None
+    checks: Annotated[list[MailCheck], Field(max_length=len(MAIL_CHECK_CODES))]
+    overdue_resume_requests: Annotated[list[OverdueResumeRequest], Field(max_length=200)] = Field(
+        default_factory=list
+    )
+
+    @model_validator(mode="after")
+    def _check(self) -> MailVerification:
+        if self.finished_at < self.started_at:
+            raise _fail("finished_at", "finished_at 不能早于 started_at")
+        codes = [c.code for c in self.checks]
+        if len(set(codes)) != len(codes):
+            raise _fail("checks", "检查项重复")
+        if self.outcome == "failed":
+            if self.error is None:
+                raise _fail("error", "outcome=failed 时必须给出 error")
+            return self
+        if self.error is not None:
+            raise _fail("error", "只有 outcome=failed 时才能填写 error")
+        missing = [c for c in MAIL_CHECK_CODES if c not in codes]
+        if missing:
+            raise _fail("checks", f"outcome={self.outcome} 时必须包含全部检查项，缺少 {', '.join(missing)}")
+        any_issue = any(c.count > 0 for c in self.checks)
+        if self.outcome == "ok" and any_issue:
+            raise _fail("outcome", "有检查项 count>0 时 outcome 不能是 ok")
+        if self.outcome == "issues_found" and not any_issue:
+            raise _fail("outcome", "所有检查项 count=0 时 outcome 应为 ok")
         return self
