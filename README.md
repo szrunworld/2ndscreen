@@ -335,7 +335,12 @@ and its records live in `~/Library/Application Support/2ndscreen/tasks`
 (`$SECONDSCREEN_TASKS_DIR`), readable by the user only. MCP has the same
 commands as `task_run`, `task_status`, `task_pause`, `task_resume`,
 `task_cancel`, `task_artifacts`, `task_inspect_procedure` and
-`task_bind_account`.
+`task_bind_account`. A successful task tool call also links the task as MCP
+resources, `2ndscreen://tasks/TASK_ID` (its status report) and
+`2ndscreen://tasks/TASK_ID/artifacts` (its artifact index), both JSON and
+read with `resources/read` through the same `task status` and `task artifacts`
+commands; any other URI is refused. Clients on a protocol before 2025-06-18
+get the two URIs as a line of text instead of `resource_link` content.
 
 The runtime (`packages/task-runtime`) ships inside the app with its own
 Node, pinned by SHA-256 in `scripts/fetch-node.sh`; nothing comes from npx,
