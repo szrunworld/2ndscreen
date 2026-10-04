@@ -42,21 +42,7 @@ IMPLEMENTED = {
 # 已知的 yaml 缺口：代码如实声明、运行时会返回，但 contracts/openapi.yaml 0.2.0 还没列出的响应码。
 # 由下一版契约任务统一补（清单见 agent-reports/F1.md「0.2.0 适配」）；补上后从这里删除对应条目，
 # 测试会因白名单条目已不再是差异而失败（KNOWN_YAML_GAPS 必须与实际差异完全一致）。
-KNOWN_YAML_GAPS: dict[str, set[str]] = {
-    # 控制台接口未认证返回 401（yaml 只靠全局 security，没列 401）
-    "getDevice": {"401", "422"},
-    "revokeDeviceToken": {"401", "422"},
-    "confirmAccountBinding": {"401"},
-    "pauseDevice": {"401", "422"},
-    "resumeDevice": {"401", "422"},
-    "getCommand": {"401", "422"},
-    "cancelCommand": {"401", "422"},
-    "listEvents": {"401", "422"},
-    # 缺少/格式错误的 Idempotency-Key、路径或查询参数格式错误由框架返回 422
-    "listCommands": {"422"},
-    # 请求体 device_id 与令牌不符返回 403（协调者裁决，与 api.md 认证规则一致）
-    "ackCommand": {"403", "422"},
-}
+KNOWN_YAML_GAPS: dict[str, set[str]] = {}  # 契约 0.3.0 已补齐 401/403/422
 
 _KEEP = (
     "format",
