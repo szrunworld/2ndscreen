@@ -105,3 +105,11 @@ A4 的 `8011998` 修复已由协调者审查并复跑采集测试 54/54，通过
 Session 随后停在 BOSS 窗口移动，尚未执行岗位选择。当前 BOSS 可见窗口与截图正常，进程采样主线程在事件循环；但 `AXWindows` 的唯一元素与应用自身 `CFEqual=true`，角色为 `AXApplication`，位置、大小属性不可读。独立 Orca Computer Use 也无法取得有效的辅助功能窗口。`AXManualAccessibility` 返回 attribute unsupported，`AXEnhancedUserInterface` 写入返回 not implemented，未能恢复。此时没有重启 BOSS，已向用户确认是否允许正常退出并重开。
 
 显示器故障处理交由 A9 Opus worker 实现，协调者负责审查与真实屏幕复测。原始 BOSS 截图、AX 诊断和采样仅保存在本机私有 P0 目录；没有发给 worker。实时完整简历采集、归档和计数仍未通过。
+
+## A9 最终实机验收（2026-10-04 13:46–13:54）
+
+自然休眠后补采到更准确的系统状态：外接屏 active=0/asleep=1，内置屏 active=0/asleep=0，两者均属于镜像集合。因此“所有物理屏都报告 asleep”不足以检测这台机器的休眠。A9 后续改为：存在活跃且醒着的物理屏才证明 awake；否则存在 asleep 证据则拒绝；物理屏全部不活跃且没有休眠证据则 unknown，不能误当无头环境。
+
+协调者对 `e37ced4` 最终打包应用实测：上述混合休眠状态下创建在 56 毫秒返回 displays are asleep，查询在 7 毫秒返回空列表，前后在线显示器完全相同。显式短暂唤醒后，创建、调整、查询和销毁通过；两个同名并发请求只有一个成功，列表只有一个屏幕。此前同一生命周期代码还通过创建途中销毁测试，原创建请求正确报告失败。Swift 全量 135/135、打包与签名校验通过。
+
+清理后仅剩物理屏 1、2，没有本轮测试屏幕或 2ndscreen 电源断言；测试专用实例与临时唤醒进程均已退出。BOSS 的 AXChildren / AXMainWindow / AXFocusedWindow 也与 AXWindows 一样返回应用自身，尚未恢复；未获正常重启确认前没有退出它。完整岗位筛选、实时简历归档与计数仍未通过。详细交付、已知原生调用限制见 [协调者验收记录](agent-reports/Coordinator-review.md)。
