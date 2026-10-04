@@ -1,0 +1,401 @@
+{
+  "note": "Calculator 完整 state（网格按钮，适合同行定位）",
+  "argv": [
+    "state",
+    "--screen",
+    "monitor-c",
+    "--pid",
+    "59225"
+  ],
+  "exit_code": 0,
+  "stdout": {
+    "app": "Calculator",
+    "elements": [
+      {
+        "actions": [
+          "AXRaise"
+        ],
+        "frame": {
+          "height": 350,
+          "width": 198,
+          "x": 5483,
+          "y": 144
+        },
+        "index": 0,
+        "label": "Calculator",
+        "role": "AXWindow/AXStandardWindow"
+      },
+      {
+        "actions": [
+          "AXScrollLeftByPage",
+          "AXScrollRightByPage",
+          "AXScrollUpByPage",
+          "AXScrollDownByPage"
+        ],
+        "frame": {
+          "height": 42,
+          "width": 178,
+          "x": 5493,
+          "y": 214
+        },
+        "index": 1,
+        "label": "Input",
+        "role": "AXScrollArea"
+      },
+      {
+        "frame": {
+          "height": 36,
+          "width": 19,
+          "x": 5652,
+          "y": 217
+        },
+        "index": 2,
+        "role": "AXStaticText",
+        "value": "‎0"
+      },
+      {
+        "actions": [
+          "AXPress"
+        ],
+        "frame": {
+          "height": 40,
+          "width": 40,
+          "x": 5493,
+          "y": 261
+        },
+        "index": 3,
+        "label": "All Clear",
+        "role": "AXButton"
+      },
+      {
+        "actions": [
+          "AXPress"
+        ],
+        "frame": {
+          "height": 40,
+          "width": 40,
+          "x": 5539,
+          "y": 261
+        },
+        "index": 4,
+        "label": "Change Sign",
+        "role": "AXButton"
+      },
+      {
+        "actions": [
+          "AXPress"
+        ],
+        "frame": {
+          "height": 40,
+          "width": 40,
+          "x": 5585,
+          "y": 261
+        },
+        "index": 5,
+        "label": "Percent",
+        "role": "AXButton"
+      },
+      {
+        "actions": [
+          "AXPress"
+        ],
+        "frame": {
+          "height": 40,
+          "width": 40,
+          "x": 5631,
+          "y": 261
+        },
+        "index": 6,
+        "label": "Divide",
+        "role": "AXButton"
+      },
+      {
+        "actions": [
+          "AXPress"
+        ],
+        "frame": {
+          "height": 40,
+          "width": 40,
+          "x": 5493,
+          "y": 307
+        },
+        "index": 7,
+        "label": "7",
+        "role": "AXButton"
+      },
+      {
+        "actions": [
+          "AXPress"
+        ],
+        "frame": {
+          "height": 40,
+          "width": 40,
+          "x": 5539,
+          "y": 307
+        },
+        "index": 8,
+        "label": "8",
+        "role": "AXButton"
+      },
+      {
+        "actions": [
+          "AXPress"
+        ],
+        "frame": {
+          "height": 40,
+          "width": 40,
+          "x": 5585,
+          "y": 307
+        },
+        "index": 9,
+        "label": "9",
+        "role": "AXButton"
+      },
+      {
+        "actions": [
+          "AXPress"
+        ],
+        "frame": {
+          "height": 40,
+          "width": 40,
+          "x": 5631,
+          "y": 307
+        },
+        "index": 10,
+        "label": "Multiply",
+        "role": "AXButton"
+      },
+      {
+        "actions": [
+          "AXPress"
+        ],
+        "frame": {
+          "height": 40,
+          "width": 40,
+          "x": 5493,
+          "y": 353
+        },
+        "index": 11,
+        "label": "4",
+        "role": "AXButton"
+      },
+      {
+        "actions": [
+          "AXPress"
+        ],
+        "frame": {
+          "height": 40,
+          "width": 40,
+          "x": 5539,
+          "y": 353
+        },
+        "index": 12,
+        "label": "5",
+        "role": "AXButton"
+      },
+      {
+        "actions": [
+          "AXPress"
+        ],
+        "frame": {
+          "height": 40,
+          "width": 40,
+          "x": 5585,
+          "y": 353
+        },
+        "index": 13,
+        "label": "6",
+        "role": "AXButton"
+      },
+      {
+        "actions": [
+          "AXPress"
+        ],
+        "frame": {
+          "height": 40,
+          "width": 40,
+          "x": 5631,
+          "y": 353
+        },
+        "index": 14,
+        "label": "Subtract",
+        "role": "AXButton"
+      },
+      {
+        "actions": [
+          "AXPress"
+        ],
+        "frame": {
+          "height": 40,
+          "width": 40,
+          "x": 5493,
+          "y": 399
+        },
+        "index": 15,
+        "label": "1",
+        "role": "AXButton"
+      },
+      {
+        "actions": [
+          "AXPress"
+        ],
+        "frame": {
+          "height": 40,
+          "width": 40,
+          "x": 5539,
+          "y": 399
+        },
+        "index": 16,
+        "label": "2",
+        "role": "AXButton"
+      },
+      {
+        "actions": [
+          "AXPress"
+        ],
+        "frame": {
+          "height": 40,
+          "width": 40,
+          "x": 5585,
+          "y": 399
+        },
+        "index": 17,
+        "label": "3",
+        "role": "AXButton"
+      },
+      {
+        "actions": [
+          "AXPress"
+        ],
+        "frame": {
+          "height": 40,
+          "width": 40,
+          "x": 5631,
+          "y": 399
+        },
+        "index": 18,
+        "label": "Add",
+        "role": "AXButton"
+      },
+      {
+        "actions": [
+          "AXPress"
+        ],
+        "frame": {
+          "height": 40,
+          "width": 40,
+          "x": 5539,
+          "y": 445
+        },
+        "index": 19,
+        "label": "0",
+        "role": "AXButton"
+      },
+      {
+        "actions": [
+          "AXPress"
+        ],
+        "frame": {
+          "height": 40,
+          "width": 40,
+          "x": 5585,
+          "y": 445
+        },
+        "index": 20,
+        "label": "Point",
+        "role": "AXButton"
+      },
+      {
+        "actions": [
+          "AXPress"
+        ],
+        "frame": {
+          "height": 40,
+          "width": 40,
+          "x": 5631,
+          "y": 445
+        },
+        "index": 21,
+        "label": "Equals",
+        "role": "AXButton"
+      },
+      {
+        "frame": {
+          "height": 40,
+          "width": 40,
+          "x": 5493,
+          "y": 445
+        },
+        "index": 22,
+        "label": "Change Mode",
+        "role": "AXGroup"
+      },
+      {
+        "actions": [
+          "AXShowMenu"
+        ],
+        "frame": {
+          "height": 40,
+          "width": 40,
+          "x": 5493,
+          "y": 445
+        },
+        "index": 23,
+        "label": "calculator.fill",
+        "role": "AXMenuButton"
+      },
+      {
+        "actions": [
+          "AXPress"
+        ],
+        "frame": {
+          "height": 16,
+          "width": 16,
+          "x": 5494,
+          "y": 155
+        },
+        "index": 24,
+        "role": "AXButton/AXCloseButton"
+      },
+      {
+        "actions": [
+          "AXPress",
+          "AXShowMenu"
+        ],
+        "frame": {
+          "height": 16,
+          "width": 16,
+          "x": 5534,
+          "y": 155
+        },
+        "index": 25,
+        "role": "AXButton/AXZoomButton"
+      },
+      {
+        "actions": [
+          "AXPress"
+        ],
+        "frame": {
+          "height": 16,
+          "width": 16,
+          "x": 5514,
+          "y": 155
+        },
+        "index": 26,
+        "role": "AXButton/AXMinimizeButton"
+      }
+    ],
+    "ok": true,
+    "pid": 59225,
+    "screen": "monitor-c",
+    "tree": "- [0] AXWindow/AXStandardWindow \"Calculator\"\n    - AXSplitGroup\n      - AXSplitter = \"-1\"\n          - [1] AXScrollArea \"Input\"\n            - [2] AXStaticText = \"‎0\"\n          - [3] AXButton \"All Clear\"\n          - [4] AXButton \"Change Sign\"\n          - [5] AXButton \"Percent\"\n          - [6] AXButton \"Divide\"\n          - [7] AXButton \"7\"\n          - [8] AXButton \"8\"\n          - [9] AXButton \"9\"\n          - [10] AXButton \"Multiply\"\n          - [11] AXButton \"4\"\n          - [12] AXButton \"5\"\n          - [13] AXButton \"6\"\n          - [14] AXButton \"Subtract\"\n          - [15] AXButton \"1\"\n          - [16] AXButton \"2\"\n          - [17] AXButton \"3\"\n          - [18] AXButton \"Add\"\n          - [19] AXButton \"0\"\n          - [20] AXButton \"Point\"\n          - [21] AXButton \"Equals\"\n          - [22] AXGroup \"Change Mode\"\n            - [23] AXMenuButton \"calculator.fill\"\n  - AXToolbar\n  - [24] AXButton/AXCloseButton\n  - [25] AXButton/AXZoomButton\n  - [26] AXButton/AXMinimizeButton",
+    "windowFrame": {
+      "height": 350,
+      "width": 198,
+      "x": 5483,
+      "y": 144
+    },
+    "windowID": 131508
+  },
+  "stderr": ""
+}

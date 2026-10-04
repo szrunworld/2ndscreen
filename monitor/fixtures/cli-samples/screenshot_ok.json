@@ -1,0 +1,16 @@
+{
+  "note": "整屏截图；HiDPI 屏 1280x800 点 → 2560x1600 像素",
+  "argv": [
+    "screenshot",
+    "--screen",
+    "monitor-c",
+    "--output",
+    "<SCRATCH>/shot.png"
+  ],
+  "exit_code": 0,
+  "stdout": {
+    "ok": true,
+    "output": "<SCRATCH>/shot.png"
+  },
+  "stderr": ""
+}

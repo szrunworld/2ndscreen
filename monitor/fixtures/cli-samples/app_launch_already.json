@@ -1,0 +1,17 @@
+{
+  "note": "应用已在运行且未给 --new-instance",
+  "argv": [
+    "app",
+    "launch",
+    "--screen",
+    "monitor-c",
+    "--bundle",
+    "com.apple.calculator"
+  ],
+  "exit_code": 1,
+  "stdout": {
+    "error": "com.apple.calculator is already running; pass --new-instance, or use window move",
+    "ok": false
+  },
+  "stderr": ""
+}

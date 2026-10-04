@@ -1,0 +1,60 @@
+{
+  "note": "屏幕列表（含主屏与其他 agent 屏）",
+  "argv": [
+    "screen",
+    "list"
+  ],
+  "exit_code": 0,
+  "stdout": {
+    "ok": true,
+    "screens": [
+      {
+        "displayID": 377,
+        "frame": {
+          "height": 900,
+          "width": 1440,
+          "x": 1920,
+          "y": 0
+        },
+        "height": 900,
+        "hiDPI": true,
+        "kind": "primary",
+        "name": "2ndscreen",
+        "width": 1440
+      },
+      {
+        "displayID": 393,
+        "expiresIn": 27998,
+        "frame": {
+          "height": 900,
+          "width": 1440,
+          "x": 3360,
+          "y": 0
+        },
+        "height": 900,
+        "hiDPI": true,
+        "idleTimeout": 3600,
+        "kind": "agent",
+        "name": "monitor-b",
+        "width": 1440
+      },
+      {
+        "displayID": 394,
+        "expiresIn": 6943,
+        "frame": {
+          "height": 800,
+          "width": 1280,
+          "x": 4800,
+          "y": 0
+        },
+        "height": 800,
+        "hiDPI": true,
+        "idleTimeout": 3600,
+        "kind": "agent",
+        "name": "monitor-c",
+        "width": 1280
+      }
+    ]
+  },
+  "stderr": ""
+}

@@ -1,0 +1,42 @@
+{
+  "note": "Calculator 按文本点击",
+  "argv": [
+    "click",
+    "--screen",
+    "monitor-c",
+    "--pid",
+    "59225",
+    "--text",
+    "7"
+  ],
+  "exit_code": 0,
+  "stdout": {
+    "app": "Calculator",
+    "element": {
+      "actions": [
+        "AXPress"
+      ],
+      "frame": {
+        "height": 40,
+        "width": 40,
+        "x": 5493,
+        "y": 307
+      },
+      "index": 7,
+      "label": "7",
+      "role": "AXButton"
+    },
+    "ok": true,
+    "pid": 59225,
+    "route": "ax.press",
+    "screen": "monitor-c",
+    "windowFrame": {
+      "height": 350,
+      "width": 198,
+      "x": 5483,
+      "y": 144
+    },
+    "windowID": 131508
+  },
+  "stderr": ""
+}

@@ -1,0 +1,20 @@
+{
+  "note": "坐标在窗口外",
+  "argv": [
+    "click",
+    "--screen",
+    "monitor-c",
+    "--pid",
+    "52468",
+    "--x",
+    "10",
+    "--y",
+    "10"
+  ],
+  "exit_code": 1,
+  "stdout": {
+    "error": "(10.0, 10.0) is outside the window (4800, 25, 1280x775)",
+    "ok": false
+  },
+  "stderr": ""
+}

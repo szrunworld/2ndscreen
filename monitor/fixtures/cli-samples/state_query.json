@@ -1,0 +1,45 @@
+{
+  "note": "--query 过滤",
+  "argv": [
+    "state",
+    "--screen",
+    "monitor-c",
+    "--pid",
+    "52468",
+    "--query",
+    "bold"
+  ],
+  "exit_code": 0,
+  "stdout": {
+    "app": "TextEdit",
+    "elements": [
+      {
+        "actions": [
+          "AXPress"
+        ],
+        "frame": {
+          "height": 21,
+          "width": 22,
+          "x": 5166,
+          "y": 57
+        },
+        "index": 13,
+        "label": "bold",
+        "role": "AXCheckBox/AXSegment",
+        "value": "0"
+      }
+    ],
+    "ok": true,
+    "pid": 52468,
+    "screen": "monitor-c",
+    "tree": "      - [13] AXCheckBox/AXSegment \"bold\" = \"0\"",
+    "windowFrame": {
+      "height": 775,
+      "width": 1280,
+      "x": 4800,
+      "y": 25
+    },
+    "windowID": 131479
+  },
+  "stderr": ""
+}

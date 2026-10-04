@@ -1,0 +1,20 @@
+{
+  "note": "参数越界",
+  "argv": [
+    "scroll",
+    "--screen",
+    "monitor-c",
+    "--pid",
+    "52468",
+    "--direction",
+    "down",
+    "--amount",
+    "99"
+  ],
+  "exit_code": 1,
+  "stdout": {
+    "error": "--amount takes a number from 1 to 50",
+    "ok": false
+  },
+  "stderr": ""
+}

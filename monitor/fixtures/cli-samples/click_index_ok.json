@@ -1,0 +1,42 @@
+{
+  "note": "按 index 点击",
+  "argv": [
+    "click",
+    "--screen",
+    "monitor-c",
+    "--pid",
+    "52468",
+    "--index",
+    "1"
+  ],
+  "exit_code": 0,
+  "stdout": {
+    "app": "TextEdit",
+    "element": {
+      "actions": [
+        "AXShowMenu"
+      ],
+      "frame": {
+        "height": 687,
+        "width": 1280,
+        "x": 4800,
+        "y": 113
+      },
+      "index": 1,
+      "role": "AXTextArea",
+      "value": "HefreshHello from agent screen 你好llo from agent screen 你好"
+    },
+    "ok": true,
+    "pid": 52468,
+    "route": "event.click",
+    "screen": "monitor-c",
+    "windowFrame": {
+      "height": 775,
+      "width": 1280,
+      "x": 4800,
+      "y": 25
+    },
+    "windowID": 131479
+  },
+  "stderr": ""
+}

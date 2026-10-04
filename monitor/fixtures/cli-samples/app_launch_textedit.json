@@ -1,0 +1,50 @@
+{
+  "note": "ok=false 但窗口已在屏上：TextEdit 拒绝 --fill 调整尺寸",
+  "argv": [
+    "app",
+    "launch",
+    "--screen",
+    "monitor-c",
+    "--bundle",
+    "com.apple.TextEdit",
+    "--new-instance",
+    "--fill"
+  ],
+  "exit_code": 1,
+  "stdout": {
+    "error": "the app refused to move its window",
+    "ok": false,
+    "pid": 52468,
+    "screen": {
+      "displayID": 394,
+      "expiresIn": 7197,
+      "frame": {
+        "height": 800,
+        "width": 1280,
+        "x": 4800,
+        "y": 0
+      },
+      "height": 800,
+      "hiDPI": true,
+      "idleTimeout": 3600,
+      "kind": "agent",
+      "name": "monitor-c",
+      "width": 1280
+    },
+    "windows": [
+      {
+        "app": "TextEdit",
+        "frame": {
+          "height": 775,
+          "width": 1280,
+          "x": 4800,
+          "y": 25
+        },
+        "pid": 52468,
+        "title": "Untitled 2",
+        "windowID": 131479
+      }
+    ]
+  },
+  "stderr": ""
+}

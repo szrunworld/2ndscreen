@@ -1,0 +1,18 @@
+{
+  "note": "不存在的窗口号",
+  "argv": [
+    "state",
+    "--screen",
+    "monitor-c",
+    "--pid",
+    "52468",
+    "--window-id",
+    "1"
+  ],
+  "exit_code": 1,
+  "stdout": {
+    "error": "pid 52468 has no on-screen window 1",
+    "ok": false
+  },
+  "stderr": ""
+}

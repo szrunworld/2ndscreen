@@ -1,0 +1,30 @@
+{
+  "note": "按坐标点击，无 element",
+  "argv": [
+    "click",
+    "--screen",
+    "monitor-c",
+    "--pid",
+    "52468",
+    "--x",
+    "5000",
+    "--y",
+    "400"
+  ],
+  "exit_code": 0,
+  "stdout": {
+    "app": "TextEdit",
+    "ok": true,
+    "pid": 52468,
+    "route": "event.click",
+    "screen": "monitor-c",
+    "windowFrame": {
+      "height": 775,
+      "width": 1280,
+      "x": 4800,
+      "y": 25
+    },
+    "windowID": 131479
+  },
+  "stderr": ""
+}
