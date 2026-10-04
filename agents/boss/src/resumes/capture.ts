@@ -208,11 +208,11 @@ const isUnfold = (l: OcrLine) => normalize(l.text) === '收起';
 
 /**
  * The listed name shown as a text beside the resume, in the overlay's side
- * column: right of the pane and inside the overlay group. Without a reported
- * group nothing scopes the text to the overlay, so it does not count. Text
- * over the pane never counts either: the conversation behind the overlay
- * keeps its header name there, occluded but still in the tree (P0).
- * BOSS 1.7.4 shows no name in that column; the resume header is read instead.
+ * column: right of the pane and inside the overlay group. Recorded in the
+ * metadata only, never taken as identity: the tree gives no ancestry, and
+ * the conversation behind the overlay stays in it, occluded (P0), so text
+ * at that place is not proven to be the overlay's. BOSS 1.7.4 shows no name
+ * there anyway; identity comes from the resume image's header.
  */
 export function overlayShowsName(observation: Observation, overlay: ResumeOverlay, name: string): boolean {
   const want = normalize(name);
@@ -262,13 +262,14 @@ export async function readResumeHeader(
 }
 
 export type ResumeIdentity =
-  | { ok: true; observation: Observation; by: 'overlay_text' | 'resume_header' }
+  | { ok: true; observation: Observation }
   | { ok: false; observation: Observation; reason: string };
 
 /**
- * Whether the open, loaded resume is `name`'s: the overlay's side column
- * names them, or else the resume image's own header does, read by local OCR
- * from a screenshot of this pane. `observation` is used first when it
+ * Whether the open, loaded resume is `name`'s: the resume image's own
+ * header names them, read by local OCR from a screenshot of this pane.
+ * Accessibility text never decides it (see overlayShowsName), even where it
+ * reads the name. `observation` is used first when it
  * carries a fitting screenshot; otherwise, or while the header is not there
  * yet, fresh pane screenshots are read until `timeoutMs` passes (a resume
  * may draw its image a moment after the overlay reports loaded). A header
@@ -286,13 +287,12 @@ export async function confirmResumeIdentity(
   const limits = { ...DEFAULT_CAPTURE_LIMITS, ...options.limits };
   const first = resumeOverlay(observation);
   if (!first || first.loading) return { ok: false, observation, reason: 'resume_not_open' };
-  if (overlayShowsName(observation, first, name)) return { ok: true, observation, by: 'overlay_text' };
   const vision = env.vision;
-  if (!vision) return { ok: false, observation, reason: 'resume_identity_unconfirmed: local_vision_missing: the overlay does not name the candidate and the resume header needs local OCR' };
+  if (!vision) return { ok: false, observation, reason: 'resume_identity_unconfirmed: local_vision_missing: the resume header is an image and needs local OCR' };
   let last: HeaderReading = 'no_screenshot';
   if (observation.screenshot) {
     last = await readResumeHeader(vision, observation, name, limits, signal, env);
-    if (last === 'match') return { ok: true, observation, by: 'resume_header' };
+    if (last === 'match') return { ok: true, observation };
     if (last === 'other') return { ok: false, observation, reason: 'resume_identity_unconfirmed: the resume header does not show the listed name' };
   }
   let pane = first.pane;
@@ -313,9 +313,8 @@ export async function confirmResumeIdentity(
       pane = overlay.pane;
       continue;
     }
-    if (overlayShowsName(latest, overlay, name)) return { ok: true, observation: latest, by: 'overlay_text' };
     last = await readResumeHeader(vision, latest, name, limits, signal, env);
-    if (last === 'match') return { ok: true, observation: latest, by: 'resume_header' };
+    if (last === 'match') return { ok: true, observation: latest };
   }
   const why = last === 'other' ? 'the resume header does not show the listed name' : `no readable resume header (${last})`;
   return { ok: false, observation: latest, reason: `resume_identity_unconfirmed: ${why}` };
@@ -455,8 +454,9 @@ export async function captureOnlineResume(input: CaptureInput): Promise<Acquisit
     headerName = headerShowsName(page.ocr, input.candidateName, band!);
     ({ page, frame } = await expand(page, frame));
     topConfirmed = upNoChange && topProbeOk && headerName;
-    if (!axName && !headerName)
-      return { status: 'failed', reason: 'resume_identity_unconfirmed: neither the overlay nor the resume header shows the listed name' };
+    // Identity is the header alone; side-column text is recorded, not trusted.
+    if (!headerName)
+      return { status: 'failed', reason: 'resume_identity_unconfirmed: the resume header does not show the listed name' };
 
     let progressed = false;
     let downNoChange = 0;

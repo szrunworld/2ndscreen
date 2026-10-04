@@ -285,7 +285,7 @@ export function createBossResumesWorkflowWith(options: BossResumesOptions): Boss
     if (!name) throw new RuntimeError('invalid_input', 'open_resume needs a candidate');
     let o = await look(session, env, signal);
     const open = resumeOverlay(o);
-    // Already open: kept only if it is this candidate's, checked like a freshly opened one but without waiting.
+    // Already open: kept only if its header, read now without waiting, names this candidate; otherwise reopened at its top.
     if (open && !open.loading) {
       const mine = await confirmResumeIdentity(session, env, signal, o, name, { timeoutMs: 0, limits: options.capture });
       if (mine.ok) return result(true, trace, mine.observation);
@@ -372,6 +372,8 @@ export function createBossResumesWorkflowWith(options: BossResumesOptions): Boss
       // available: the online resume stands in for a missing attachment.
     }
 
+    // The online resume is an image: without local OCR neither its identity nor its text can be read.
+    if (!env.vision) return { status: 'failed', reason: 'local_vision_missing: the online resume is an image and needs local OCR' };
     let o = await look(session, env, signal);
     if (requestDialog(o)) {
       const dismissed = await dismissRequestDialog(session, env, o, trace, signal);

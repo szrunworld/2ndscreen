@@ -13,7 +13,7 @@ import type {
 } from '../../../../packages/task-runtime/src/contracts.ts';
 import { identify, listCandidates, listEnded, normalize } from './candidates.ts';
 import { look, type Env } from './actions.ts';
-import { DEFAULT_CAPTURE_LIMITS, overlayShowsName, readResumeHeader, type CaptureLimits, type HeaderReading } from './capture.ts';
+import { DEFAULT_CAPTURE_LIMITS, readResumeHeader, type CaptureLimits, type HeaderReading } from './capture.ts';
 import { ALL_JOBS, classifyPage, jobFilter, listRows, requestDialog, resumeOverlay, text } from './pages.ts';
 
 const verdict = (ok: boolean, observation: Observation | undefined, ...evidence: string[]): CheckResult => ({
@@ -84,7 +84,7 @@ const HEADER_EVIDENCE: Record<Exclude<HeaderReading, 'match'>, string> = {
 async function resumeHeaderVerdict(context: UnitContext, observation: Observation, name: string, verify: VerifyEnv | undefined): Promise<CheckResult> {
   const vision = verify?.env.vision;
   if (!verify || !vision)
-    return verdict(false, observation, 'online resume is open but the overlay does not name the candidate; local OCR is not available to read the resume header (capability missing)');
+    return verdict(false, observation, 'online resume is open but local OCR is not available to read its header (capability missing)');
   const limits = { ...DEFAULT_CAPTURE_LIMITS, ...verify.limits };
   let seen = observation;
   let reading: HeaderReading = observation.screenshot
@@ -94,7 +94,6 @@ async function resumeHeaderVerdict(context: UnitContext, observation: Observatio
     const pane = resumeOverlay(observation)!.pane;
     seen = await look(context.session, verify.env, context.signal, { screenshot: true, region: pane });
     if (seen.pageClass !== 'online_resume') return verdict(false, seen, `page is ${seen.pageClass}, not a resume`);
-    if (overlayShowsName(seen, resumeOverlay(seen)!, name)) return verdict(true, seen, 'online resume is open beside the listed name');
     reading = await readResumeHeader(vision, seen, name, limits, context.signal, verify.env);
   }
   return reading === 'match'
@@ -142,9 +141,8 @@ export async function verifyUnit(unit: BossUnitName, context: UnitContext, obser
       const name = context.candidate?.name ?? context.item?.ref.name;
       if (page === 'attachment_preview') return verdict(true, observation, 'attachment preview is open');
       if (page !== 'online_resume') return verdict(false, observation, `page is ${page}, not a resume`);
-      const overlay = resumeOverlay(observation)!;
       if (!name) return verdict(false, observation, 'no candidate to check the resume against');
-      if (overlayShowsName(observation, overlay, name)) return verdict(true, observation, 'online resume is open beside the listed name');
+      // Side-column text is not proven to be the overlay's; only the image header decides.
       return resumeHeaderVerdict(context, observation, name, verify);
     }
     case 'acquire_resume': {

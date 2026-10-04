@@ -451,7 +451,7 @@ class FakeBoss implements Session {
     return done('failed');
   }
 
-  private click(tag: string): void {
+  click(tag: string): void {
     if (tag === 'filter') this.dropdown = !this.dropdown;
     else if (tag.startsWith('option:')) {
       this.filter = tag.slice('option:'.length);
@@ -1129,7 +1129,7 @@ test('text that changes under the capture is still caught as a gap', async () =>
     const { ctx } = await openPerson(r, '陈一');
     let shots = 0;
     r.app.beforeObserve = (app) => {
-      if (app.overlay === 'resume' && ++shots === 9) app.version = 1;
+      if (app.overlay === 'resume' && ++shots === 10) app.version = 1;
     };
     const result = await r.workflow.acquireResume({ ...ctx, staging: await stagingFor(r) }, 'available');
     assert.equal(result.status, 'acquired');
@@ -1327,6 +1327,28 @@ test('a resume whose image header names someone else fails, even with the expect
   }
 });
 
+test('a matching name in the side column never outweighs an image header that names someone else', async () => {
+  // The tree has 林二 right of the pane inside the overlay group (it may be the occluded conversation
+  // behind it; the tree cannot say), while the resume image is 吴四's.
+  const persons = people().map((p) => (p.name === '林二' ? { ...p, headerName: '吴四' } : p));
+  const r = await rig({ people: persons });
+  try {
+    const { ctx } = await openPerson(r, '林二');
+    const opened = await r.workflow.runScripted('open_resume', ctx)!;
+    assert.equal(opened.ok, false);
+    assert.match(opened.reason!, /^resume_identity_unconfirmed: the resume header does not show the listed name/);
+    const o = await r.app.observe({ screenshot: true, region: PANE });
+    assert.equal(overlayShowsName(o, resumeOverlay(o)!, '林二'), true, 'the side column does read the name');
+    assert.equal((await r.workflow.verifyUnit('open_resume', ctx, o)).ok, false);
+    assert.equal((await r.workflow.verifyUnit('open_resume', ctx, await r.app.observe())).ok, false, 'nor from a tree-only observation');
+    const result = await r.workflow.acquireResume({ ...ctx, staging: await stagingFor(r) }, 'available');
+    assert.equal(result.status, 'failed');
+    assertNothingSent(r.app);
+  } finally {
+    await r.cleanup();
+  }
+});
+
 test('the header check waits a bounded time for the image to draw, and never accepts the blank pane', async () => {
   const late = await rig({ ...REAL_OVERLAY, headerBlankReads: 3 });
   try {
@@ -1410,7 +1432,7 @@ test('opening the next candidate reads its own header again; an earlier match is
   }
 });
 
-test('side-column text names the candidate only when scoped to the overlay group, right of the pane', async () => {
+test('side-column text is recorded as naming the candidate only when scoped to the overlay group, right of the pane', async () => {
   const r = await rig();
   try {
     const { ctx } = await openPerson(r, '陈一');
@@ -1441,13 +1463,14 @@ test('without local OCR the header cannot be read: open_resume and its verdict s
   } finally {
     await r.cleanup();
   }
-  // With a side column that does name the candidate (scoped to the overlay group), the tree alone still suffices.
+  // Even a side column reading the name does not stand in for the header: its ownership is not proven.
   const named = await rig({}, { vision: false });
   try {
     const { ctx } = await openPerson(named, '陈一');
     const opened = await named.workflow.runScripted('open_resume', ctx)!;
-    assert.equal(opened.ok, true, opened.reason);
-    assert.equal((await named.workflow.verifyUnit('open_resume', ctx, opened.observation)).ok, true);
+    assert.equal(opened.ok, false);
+    assert.match(opened.reason!, /^resume_identity_unconfirmed: local_vision_missing/);
+    assert.equal((await named.workflow.verifyUnit('open_resume', ctx, await named.app.observe())).ok, false);
   } finally {
     await named.cleanup();
   }
@@ -1522,31 +1545,23 @@ test('the top header is the listed name as the first text row near the top, neve
 });
 
 test('a real-shaped resume without a logo is complete only from the header name, the start probe and the end', async () => {
-  // The listed name under the header on the first screen does not confirm the top.
+  // The listed name under another person's header on the first screen confirms nothing, even
+  // with the name in the side column: the workflow refuses to open it as this candidate's.
   const mention = people().map((p, i) => (i === 0 ? { ...p, headerName: '林二', bodyMention: true } : p));
   const other = await rig({ people: mention }, { compose: true });
   try {
-    const { result, staging } = await captured(other);
-    assert.equal(result.status, 'acquired', 'the overlay names the candidate, so the capture runs');
-    if (result.status !== 'acquired') return;
-    const evidence = evidenceOf(result.artifacts);
-    assert.equal(evidence.topConfirmed, false);
-    assert.equal(captureCompleteness(evidence), 'partial_capture');
-    const metadata = JSON.parse(await readFile(join(staging.dir, 'metadata.json'), 'utf8'));
-    assert.equal(metadata.top.headerName, false);
-    assert.equal(metadata.identity.resumeHeaderName, false);
-    assert.ok(metadata.problems.some((p: string) => p.startsWith('top_unconfirmed') && p.includes('header_name_not_first_row')));
+    const { result } = await captured(other);
+    assert.equal(result.status, 'failed');
+    if (result.status === 'failed') assert.match(result.reason, /^resume_identity_unconfirmed/);
   } finally {
     await other.cleanup();
   }
-  // Without the overlay's name text (the workflow's open_resume refuses that), capture itself
-  // falls back to the header only: a body mention is no identity, the header name is.
+  // Capture itself, run on an already open resume, also goes by the header only: a body mention
+  // or a side-column name is no identity, the header name is.
   const direct = async (persons: Person[]) => {
     const r = await rig({ people: persons }, { compose: true });
     const { ctx } = await openPerson(r, '陈一');
-    const shown = await r.workflow.runScripted('open_resume', ctx)!;
-    assert.equal(shown.ok, true, shown.reason);
-    r.app.opts.overlayName = false;
+    r.app.click('link:online');
     const result = await captureOnlineResume({
       session: r.app, env: { clock: systemClock, vision: r.vision.vision, pollMs: 1 }, staging: await stagingFor(r), itemId: 'item-1',
       candidateName: '陈一', trace: new Trace(), signal: new AbortController().signal, limits: { settleMs: 0, loadTimeoutMs: 200 },
@@ -1579,10 +1594,20 @@ test('the top is not confirmed when the up scroll stalled short of the start, ev
   } finally {
     await r.cleanup();
   }
-  // Opened mid-page with scrolling working: the capture finds the start and is complete.
+  // Opened mid-page with scrolling working: the header is out of view, so open_resume cannot confirm
+  // whose resume it is and says so; capture run on it directly finds the start and is complete.
   const mid = await rig({ startOffset: 600 }, { compose: true });
   try {
-    const { result } = await captured(mid);
+    const { ctx } = await openPerson(mid, '陈一');
+    const opened = await mid.workflow.runScripted('open_resume', ctx)!;
+    assert.equal(opened.ok, false);
+    assert.match(opened.reason!, /^resume_identity_unconfirmed/);
+    mid.app.overlay = 'none';
+    mid.app.click('link:online');
+    const result = await captureOnlineResume({
+      session: mid.app, env: { clock: systemClock, vision: mid.vision.vision, pollMs: 1 }, staging: await stagingFor(mid), itemId: 'item-1',
+      candidateName: '陈一', trace: new Trace(), signal: new AbortController().signal, limits: { settleMs: 0, loadTimeoutMs: 200 },
+    });
     assert.equal(result.status, 'acquired');
     if (result.status === 'acquired') {
       assert.equal(evidenceOf(result.artifacts).topConfirmed, true);
