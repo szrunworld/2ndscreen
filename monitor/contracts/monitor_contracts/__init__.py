@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.3.1"
+__version__ = "0.3.2"
 
 from .driver import (
     DRIVER_ERROR_CODES,
@@ -51,6 +51,7 @@ from .models import (
     CONVERSATION_ACTIONS,
     CONVERSATION_EVENT_KINDS,
     EVENT_KINDS,
+    INPUT_REQUEST_TTL_SECONDS,
     MAIL_CHECK_CODES,
     MAIL_STATUSES,
     OUTWARD_ACTIONS,

@@ -171,3 +171,48 @@ def test_action_not_allowed_without_driver_has_all_flags_false():
         False,
         False,
     )
+
+
+# --- 搜索算对外动作（0.3.2） ---------------------------------------------------------
+
+
+@pytest.mark.parametrize("base", ["result_search_complete", "result_search_empty_confirmed"])
+def test_search_success_has_all_flags_true(base):
+    # 用户 2026-10-04：在搜索框输入并提交关键词算对外动作，成功的搜索三个标志都为 true
+    validate_command_result(_result(base, **_flags(True, True, True)))
+
+
+@pytest.mark.parametrize("flag", FLAGS)
+def test_search_success_rejects_any_false_flag(flag):
+    flags = _flags(True, True, True)
+    flags[flag] = False
+    data = _result("result_search_complete", **flags)
+    assert flag in {e.path for e in check("command_result", data)}
+    assert _layers(data) == {"schema"}
+    with pytest.raises(ValidationError) as exc:
+        CommandResult.model_validate(data)
+    assert flag in {e["ctx"]["path"] for e in exc.value.errors()}
+
+
+def test_search_failed_flags_reported_as_is():
+    # 失败（例如读不出结果）时如实填写：已输入关键词就是 true，白名单关闭则全 false
+    validate_command_result(_result("result_search_unreadable", **_flags(True, True, True)))
+    validate_command_result(_result("result_search_unreadable", **_flags(False, False, False)))
+
+
+def test_action_result_search_success():
+    cmd = validate_command(V["command_search"])
+    snap = validate_command_result(V["result_search_complete"]).output
+    ok = ActionResult(
+        status="succeeded",
+        executed_at=NOW,
+        navigation_performed=True,
+        outbound_action_performed=True,
+        externally_visible_side_effect=True,
+        output=snap,
+    )
+    assert ok.to_command_result(cmd, reported_at=NOW).outbound_action_performed is True
+    with pytest.raises(ValueError):
+        ActionResult(status="succeeded", executed_at=NOW, navigation_performed=True, output=snap).to_command_result(
+            cmd, reported_at=NOW
+        )

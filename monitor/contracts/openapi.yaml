@@ -1,10 +1,10 @@
 openapi: 3.1.0
 info:
   title: 招聘 Monitor 服务端 API
-  version: 0.3.1
+  version: 0.3.2
   summary: Monitor 设备、指令、事件、简历文档、搜索、人工处理、登录接力与策略接口
   description: |
-    与 monitor_contracts 0.3.1 对应（info.version 与契约版本同步）。说明见 docs/monitor/api.md。
+    与 monitor_contracts 0.3.2 对应（info.version 与契约版本同步）。说明见 docs/monitor/api.md。
 
     - 传输：只暴露 HTTPS。第一版用轮询，领取指令为长轮询（最长 30 秒），不使用 WebSocket。
     - 认证：设备接口用设备令牌（deviceToken）；控制台接口用控制台会话（consoleSession）；
@@ -317,6 +317,7 @@ paths:
       summary: 长轮询领取指令
       description: |
         原子领取：只返回该设备已绑定账户的、依赖已 succeeded、未过期、未取消的指令。
+        issued_at 晚于当前时间的指令在 issued_at 之前不下发（0.3.2 写明，例如工作时段外顺延的人工换微信）。
         没有可领取指令时最长等待 wait_seconds 秒后返回空列表。领取后指令进入租约
         （lease_seconds）；租约内未收到 ack 的指令可再次被领取（同一 command_id，
         Monitor 按 command_id 去重）。同一 Idempotency-Key 重放返回同一批指令。
@@ -569,6 +570,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ManualAction'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
@@ -577,6 +580,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
 
   /commands/{command_id}:recheck:
     parameters:
@@ -595,6 +600,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CommandRecord'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
@@ -603,6 +610,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
 
   /events:
     post:
@@ -722,6 +731,10 @@ paths:
       tags: [resume-documents]
       operationId: listResumeDocuments
       summary: 简历文档列表（含待人工关联队列）
+      description: 0.3.2：邮件接入（serviceToken）可只读调用，例如按 case_id 查已关联的简历（求简历超时提醒）。
+      security:
+        - consoleSession: []
+        - serviceToken: []
       parameters:
         - name: link_status
           in: query
@@ -756,6 +769,10 @@ paths:
                       $ref: '#/components/schemas/ResumeDocument'
                   next_cursor:
                     type: [string, 'null']
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
 
   /resume-documents/{doc_id}:
     parameters:
@@ -774,8 +791,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ResumeDocument'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
 
   /resume-documents/{doc_id}/parse-result:
     parameters:
@@ -801,6 +822,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ResumeDocument'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
         '422':
@@ -839,6 +862,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ManualAction'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
@@ -847,6 +872,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
 
   /mail-messages:
     get:
@@ -1048,6 +1075,9 @@ paths:
       tags: [search]
       operationId: createSearchRun
       summary: 控制台提交搜索（创建 search_candidates 指令）
+      description: |
+        0.3.2：搜索算对外动作（用户 2026-10-04），与问候、求简历一样受 policy.work_hours 约束：
+        不在工作时段内返回 409 policy_blocked（outside_work_hours），不顺延。
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
@@ -1063,8 +1093,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SearchRun'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '409':
-          description: 策略未开启搜索、设备暂停或超出每日上限
+          description: 策略未开启搜索、设备暂停、超出每日上限或不在工作时段内（policy_blocked）
           content:
             application/problem+json:
               schema:
@@ -1097,6 +1129,10 @@ paths:
                       $ref: '#/components/schemas/SearchRun'
                   next_cursor:
                     type: [string, 'null']
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
 
   /search-runs/{search_id}:
     parameters:
@@ -1117,8 +1153,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SearchRun'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
 
   /cases:
     get:
@@ -1171,6 +1211,8 @@ paths:
                     type: [string, 'null']
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
 
   /cases/{case_id}:
     parameters:
@@ -1189,8 +1231,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CaseDetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
 
   /cases/{case_id}:stop:
     parameters:
@@ -1215,8 +1261,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ManualAction'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
 
   /cases/{case_id}:request-wechat:
     parameters:
@@ -1234,6 +1284,9 @@ paths:
         contact_requested / contact_available 时阶段不变（例如上一次请求失败后再次请求）。
         换微信之后简历邮件才到达时，关联照常成功但阶段不回退（见 contracts.md 8.1）。策略白名单未开启
         request_contact_exchange、账户或设备暂停、超出每日上限时返回 409（policy_blocked）。
+        0.3.2：不在工作时段内时仍返回 201，指令的 issued_at 设为下一个工作时段的开始时间（expires_at 相应顺延），
+        响应的 scheduled_for 等于它；issued_at 未到的指令领取接口不下发。策略里没有任何工作时段时返回 409
+        policy_blocked（outside_work_hours）。
         已有未完成的换微信指令时返回 409 already_requested，existing 中附上该指令。
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -1314,6 +1367,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/LoginQrView'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
         '410':
@@ -1322,6 +1377,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
 
   /devices/{device_id}/login-qr:withdraw:
     parameters:
@@ -1339,8 +1396,14 @@ paths:
       responses:
         '204':
           description: 已撤下（重复调用同样返回 204）
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
 
   /devices/{device_id}/login-qr/views:
     parameters:
@@ -1362,6 +1425,12 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/LoginQrViewRecord'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
 
   /input-requests/{input_request_id}/response:
     parameters:
@@ -1375,7 +1444,10 @@ paths:
       tags: [login]
       operationId: respondInputRequest
       summary: 控制台提交人工输入（生成 provide_input 指令）
-      description: 只能用于 human_input_required 中 can_fill=true 的请求；值不写入日志与事件。
+      description: |
+        只能用于 human_input_required 中 can_fill=true 的请求；值不写入日志与事件。
+        0.3.2：请求有效期为事件 payload.expires_at，为 null 时取 observed_at + 600 秒（INPUT_REQUEST_TTL_SECONDS）；
+        生成的 provide_input 指令 expires_at 等于该有效期。过期后提交返回 409。
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
@@ -1399,6 +1471,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CommandRecord'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
@@ -1407,6 +1481,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
 
   /accounts/{account_id}/policy:
     parameters:
@@ -1418,10 +1494,14 @@ paths:
     get:
       tags: [policy]
       operationId: getPolicy
-      summary: 读取策略（控制台与设备均可）
+      summary: 读取策略（控制台、设备与邮件接入均可）
+      description: |
+        0.3.2：serviceToken 只读，供邮件接入读取 mail_retention_days 与 resume_mail_timeout_days。
+        服务令牌不属于某个账户，可以读任何账户的策略；多账户时取哪个账户的值由邮件接入的装配方决定。
       security:
         - consoleSession: []
         - deviceToken: []
+        - serviceToken: []
       responses:
         '200':
           description: 当前策略
@@ -1434,8 +1514,12 @@ paths:
             application/json:
               schema:
                 $ref: './schemas/policy.json'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
     put:
       tags: [policy]
       operationId: putPolicy
@@ -1464,6 +1548,10 @@ paths:
             application/json:
               schema:
                 $ref: './schemas/policy.json'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
         '412':
           description: 版本冲突
           content:
@@ -1496,6 +1584,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Overview'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
 
 components:
   securitySchemes:
@@ -2082,6 +2174,14 @@ components:
           format: date-time
         duplicate:
           type: boolean
+        candidate_case_ids:
+          type: array
+          items:
+            type: string
+          default: []
+          description: |
+            0.3.2：人工关联队列的候选流程（link_method=none 时由邮件接入给出，例如唯一命中但证据不足的流程）。
+            只是提示，人工关联仍用 :link 指定 case_id；已关联的文档为空列表。
 
     SearchRunCreate:
       type: object
@@ -2260,6 +2360,13 @@ components:
           $ref: '#/components/schemas/ManualAction'
         command:
           $ref: '#/components/schemas/CommandRecord'
+        scheduled_for:
+          type: [string, 'null']
+          format: date-time
+          default: null
+          description: |
+            0.3.2：不在工作时段内人工换微信时，为下一个工作时段的开始时间（等于 command.issued_at），
+            控制台据此显示"将在工作时段内执行"；立即可下发时为 null。
 
     LoginQrAccepted:
       type: object

@@ -11,6 +11,7 @@ import hashlib
 import re
 from collections.abc import Iterable
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 IDEMPOTENCY_KEY_PATTERN = r"^[A-Za-z0-9._:-]{8,128}$"
@@ -72,11 +73,19 @@ def resume_document_key(source_id: str, sha256: str) -> str:
     return _key("doc", _digest(f"{source_id}\n{sha256}"))
 
 
-def mail_message_key(mail_message_id: str, status: str, attempts: int) -> str:
+def mail_message_key(
+    mail_message_id: str, status: str, attempts: int, revision: Literal["purged"] | None = None
+) -> str:
     """PUT /mail-messages/{id}：同一封邮件的同一次写入（状态 + 失败次数）复用同一个键。
 
     未达上限的失败仍为 pending、attempts +1，所以键里要带 attempts，否则两次写入撞键。
+    副本按保留期清理后要再 PUT 一次（填 copy_purged_at），此时 status 与 attempts 都没变，
+    用 revision="purged"，状态段变为 "<status>-purged"（0.3.2，与任务 G 的实现逐字节一致）。
     """
+    if revision is not None:
+        if revision != "purged":
+            raise ValueError(f"未知的 revision: {revision!r}")
+        status = f"{status}-purged"
     return _key("mail", mail_message_id.removeprefix("mail:"), status, str(attempts))
 
 

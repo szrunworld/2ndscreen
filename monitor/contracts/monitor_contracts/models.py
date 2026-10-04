@@ -455,6 +455,14 @@ def check_result_rules(
                 "output.snapshot.coverage",
                 "无法读取的快照不能回报为 succeeded；应为 status=failed, reason=unreadable",
             )
+        # 0.3.2：搜索算对外动作（用户 2026-10-04），成功的搜索一定输入并提交过关键词。
+        for name, flag in (
+            ("navigation_performed", navigation_performed),
+            ("outbound_action_performed", outbound_action_performed),
+            ("externally_visible_side_effect", externally_visible_side_effect),
+        ):
+            if not flag:
+                raise _fail(name, f"search_candidates 成功时 {name} 必须为 true（搜索算对外动作，0.3.2）")
     if action == "request_contact_exchange" and status in ("succeeded", "skipped_precondition") and output is None:
         raise _fail("output", f"request_contact_exchange 在 status={status} 时必须带 output.exchange_state")
 
@@ -546,11 +554,18 @@ class LoginOkPayload(ContractModel):
     account_display: Annotated[str, StringConstraints(max_length=64)] | None = None
 
 
+# 人工输入请求的默认有效期（0.3.2）：事件没给 expires_at 时，服务端按 observed_at + 该值计算。
+INPUT_REQUEST_TTL_SECONDS = 600
+
+
 class HumanInputRequiredPayload(ContractModel):
     input_request_id: UUID
     input_kind: Literal["sms_code", "text", "slider", "confirm_on_phone", "unknown"]
     prompt_text: Annotated[str, StringConstraints(max_length=200)]
     can_fill: bool
+    # 0.3.2：请求有效期。为 null 时服务端取 observed_at + INPUT_REQUEST_TTL_SECONDS；
+    # 控制台提交的 provide_input 指令 expires_at 等于它，过期后提交返回 409。
+    expires_at: AwareDatetime | None = None
 
     @model_validator(mode="after")
     def _check_fill(self) -> HumanInputRequiredPayload:
@@ -649,6 +664,12 @@ class HumanInputRequiredEvent(_EventBase):
     account_id: AccountId | None
     conversation: Conversation | None
     payload: HumanInputRequiredPayload
+
+    @model_validator(mode="after")
+    def _check_expiry(self) -> HumanInputRequiredEvent:
+        if self.payload.expires_at is not None and self.payload.expires_at <= self.observed_at:
+            raise _fail("payload.expires_at", "expires_at 必须晚于 observed_at")
+        return self
 
 
 class BlockedByDialogEvent(_EventBase):
