@@ -171,7 +171,10 @@ class Fault:
     kind：
     - "drop"：请求没到服务端，直接返回 status（默认 500）——服务端没有任何记录；
     - "lose_response"：服务端已经处理并落库，但返回给客户端的响应换成 status；
-    - "down"：连接失败（httpx.ConnectError）。
+    - "down"：连接失败（httpx.ConnectError）；
+    - "replay"：不发给服务端，原样返回上一次带指令的领取响应（网络层重复送达）。
+
+    only_with_commands=True 时只对"领到了指令"的领取响应生效（用于丢失领取响应）。
     """
 
     route: str
@@ -179,6 +182,7 @@ class Fault:
     status: int = 500
     times: int = 1
     method: str | None = None
+    only_with_commands: bool = False
     hits: int = 0
 
     def matches(self, request: httpx.Request) -> bool:
@@ -201,6 +205,10 @@ class Cluster(httpx.BaseTransport):
         self.down = False
         self.requests: list[tuple[str, str, int | None]] = []  # (method, path, 客户端看到的状态码)
         # 部署时编排有后台定时推进（uvicorn lifespan，默认 60 秒）；这里按可控时钟模拟
+        # 每个到达服务端的请求处理完后调用 hook(request, status, body)；body 为解析后的 JSON（或 None）
+        self.after_hooks: list[Callable[[httpx.Request, int, Any], None]] = []
+        self.claimed: list[dict[str, Any]] = []  # 服务端在领取响应里下发过的指令（含被丢掉的响应）
+        self._last_claim: bytes | None = None
         self.tick_interval = 60.0
         self._last_tick = clock.now()
 
@@ -213,8 +221,11 @@ class Cluster(httpx.BaseTransport):
 
     # -- 故障 ----------------------------------------------------------------
 
-    def fail(self, route: str, *, kind: str = "drop", status: int = 500, times: int = 1, method: str | None = None) -> Fault:
-        f = Fault(route=route, kind=kind, status=status, times=times, method=method)
+    def fail(
+        self, route: str, *, kind: str = "drop", status: int = 500, times: int = 1, method: str | None = None,
+        only_with_commands: bool = False,
+    ) -> Fault:
+        f = Fault(route=route, kind=kind, status=status, times=times, method=method, only_with_commands=only_with_commands)
         self.faults.append(f)
         return f
 
@@ -245,19 +256,25 @@ class Cluster(httpx.BaseTransport):
     # -- httpx.BaseTransport -------------------------------------------------
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
-        fault = next((f for f in self.faults if f.matches(request)), None)
+        path = request.url.path
+        is_claim = path.endswith("commands:claim")
+        fault = next((f for f in self.faults if f.matches(request) and not f.only_with_commands), None)
         if fault is not None:
             fault.times -= 1
             fault.hits += 1
         if self.down or self.server is None or (fault is not None and fault.kind == "down"):
-            self.requests.append((request.method, request.url.path, None))
+            self.requests.append((request.method, path, None))
             raise httpx.ConnectError("服务端不可达（集成测试注入）", request=request)
         if fault is not None and fault.kind == "drop":
-            self.requests.append((request.method, request.url.path, fault.status))
+            self.requests.append((request.method, path, fault.status))
             return _problem_response(fault.status)
+        if fault is not None and fault.kind == "replay":
+            assert self._last_claim is not None, "还没有可重放的领取响应"
+            self.requests.append((request.method, path, 200))
+            return httpx.Response(200, headers={"content-type": "application/json"}, content=self._last_claim)
         request.read()
         long_poll = 0
-        if request.url.path.endswith("commands:claim"):
+        if is_claim:
             # 长轮询：服务端按真实时间等待，这里改成 0 秒发给服务端，空手而归时把可控时钟推进
             # wait_seconds（等价于"等满了也没有指令"）。
             body = json.loads(request.content)
@@ -266,12 +283,29 @@ class Cluster(httpx.BaseTransport):
             request = httpx.Request(request.method, request.url, headers=request.headers, json=body)
         resp = self.server.http.send(request)
         content = resp.read()
-        if long_poll and resp.status_code == 200 and not json.loads(content).get("commands"):
+        data: Any = None
+        try:
+            data = json.loads(content) if content else None
+        except ValueError:
+            data = None
+        got_commands = bool(is_claim and resp.status_code == 200 and data and data.get("commands"))
+        if got_commands:
+            self.claimed.extend(data["commands"])
+            self._last_claim = content
+        for hook in list(self.after_hooks):
+            hook(request, resp.status_code, data)
+        if long_poll and resp.status_code == 200 and not got_commands:
             self.clock.advance(long_poll)
+        if got_commands:
+            late = next((f for f in self.faults if f.only_with_commands and f.matches(request)), None)
+            if late is not None:
+                late.times -= 1
+                late.hits += 1
+                fault = late
         if fault is not None and fault.kind == "lose_response":
-            self.requests.append((request.method, request.url.path, fault.status))
+            self.requests.append((request.method, path, fault.status))
             return _problem_response(fault.status)
-        self.requests.append((request.method, request.url.path, resp.status_code))
+        self.requests.append((request.method, path, resp.status_code))
         return httpx.Response(resp.status_code, headers=resp.headers, content=content)
 
     def count(self, route: str, method: str = "POST", status: int | None = None) -> int:
@@ -787,6 +821,7 @@ class Monitor:
         self._heartbeat_interval = heartbeat_interval
         self._handlers = handlers
         self._observer = observer
+        self.busy_spins = 0
         self.runtime = self._build()
 
     def _build(self) -> MonitorRuntime:
@@ -836,6 +871,14 @@ class Monitor:
         idle = self.runtime.run_once()
         if idle > 0:
             self.clock.sleep(idle)
+        else:
+            rt = self.runtime
+            nxt = rt.backoff.next_at
+            if nxt is not None and nxt > self.clock.now() and not rt.pipeline.has_pending_work():
+                # 缺陷 M-2：退避期间心跳到期时间停在过去，run_once 建议等待 0 秒，真实进程会空转到退避结束。
+                # 这里记一次空转，并把可控时钟拨到退避结束，让测试能继续推进时间。
+                self.busy_spins += 1
+                self.clock.advance((nxt - self.clock.now()).total_seconds())
         self.cluster.background_tick()
         return idle
 
@@ -968,7 +1011,11 @@ def reach_resume_requested(w: "World", **kw: Any) -> tuple["Monitor", FakeDriver
 
 
 def server_cmd(w: "World", action: str) -> dict[str, Any]:
-    [c] = [c for c in w.server.commands() if c["command"]["action"] == action]
+    """服务端上该动作的唯一一条指令；还没有时返回 server_status=None 的占位。"""
+    found = [c for c in w.server.commands() if c["command"]["action"] == action]
+    if not found:
+        return {"server_status": None, "result": None, "command": {}}
+    [c] = found
     return c
 
 
