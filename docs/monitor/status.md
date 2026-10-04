@@ -10,6 +10,7 @@
 | A3 | 契约 0.3.0：邮箱路线与搜索收敛 | 已释放 | monitor-A3 | 已合（fbf6f3a，contracts 266 tests）；A3b 补充中；client/server 适配由 X 处理 | 76e93e8 | — |
 | A3b | 契约 0.3.1（换微信阶段、mail 服务字段） | ctx_8843cb3ab30c / monitor-A3 | monitor-A3 | 进行 | — | — |
 | X | client/server 适配 0.3.0 | ctx_749e43c3477a / monitor-X | monitor-X | 进行 | — | — |
+| C2 | Driver 修复（CliFailure 冻结、window release 分类、PDF 子树过滤） | — | — | 派发中 | — | — |
 | R | 品牌化简历渲染 | — | — | 未派（待用户模板与 logo、N 邮件格式） | — | — |
 | B | 只读可行性验证与夹具 | ctx_1b25ee64eab9（已释放） | monitor-B | 已合（898edbd） | 201001d | 登录/二维码、新招呼首次打开、电话待同意/已交换/已拒绝、邮件转发内容、搜索输入后结果 → 留给 N/K |
 | C | Driver 适配器 | ctx_3dfbecec466d（已释放） | monitor-C | 已合（ecfe9da；client 入工作区 + relock，contracts+client 351 tests） | ec6aed9 | 定位器 text 同时匹配 label/value（比契约宽），0.2.0 契约里追认；CliDriver 未在 BOSS 上真机跑过 → N |
@@ -25,7 +26,7 @@
 | H3 | 换联系方式 + 转发简历 | — | — | 未派 | — | — |
 | I1 | 控制台骨架、总览、连接与策略 | — | — | 未派 | — | — |
 | I2 | 控制台候选人流程、执行记录、搜索 | — | — | 未派 | — | — |
-| J | 安装、模式、launchd、状态窗口 | ctx_42b5867d9b27 / monitor-J | monitor-J | 进行 | — | 含执行中取消的心跳线程 |
+| J | 安装、模式、launchd、状态窗口 | 已释放 | monitor-J | 已合（2420f09；其分支上 982 tests；合并后受 0.3.0 limits 影响由 X 修） | 3a33e4d | 真机验证步骤见 J.md 第七节；接口请求：CliFailure 冻结 bug、window release 分类（→ C2）、python -m monitor install 分发（→ X 之后） |
 | K | 登录接力 | — | — | 未派 | — | — |
 | M | 集成、混沌测试、运维手册 | — | — | 未派 | — | — |
 | N | 写操作验证与真机验收 | 监督者 | — | 未开始（待用户授权） | — | — |
