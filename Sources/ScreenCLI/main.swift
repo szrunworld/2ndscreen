@@ -31,6 +31,12 @@ usage:
   2ndscreen agent --android [--serial SERIAL] [--allow-submit] [--max-steps N] INSTRUCTION
   2ndscreen mcp      serve these commands as MCP tools over stdio
 
+  2ndscreen task run SKILL_ID --job TEXT --limit N --output DIR [...]   see 2ndscreen task --help
+  2ndscreen task status|pause|resume|cancel|artifacts TASK_ID
+  2ndscreen task inspect-procedure PROCEDURE_ID
+  2ndscreen vision          on-device OCR, compare and stitch: one JSON request on stdin
+  2ndscreen agent-bridge    one task-runtime unit with the UI-TARS agent, JSON lines (for the runtime)
+
   2ndscreen android devices
   2ndscreen android pair HOST:PORT CODE
   2ndscreen android connect HOST:PORT
@@ -157,6 +163,13 @@ if words == ["mcp"] {
 if words.first == "android", words.count > 1 {
     AndroidCommands.run(Array(words.dropFirst()))
 }
+// These take their own words and answer --help themselves.
+if words.first == "vision" {
+    runLocalVision(Array(words.dropFirst()))
+}
+if words.first == "task" {
+    TaskCommand.run(Array(words.dropFirst()))
+}
 guard words.count >= 1, !words.contains("--help"), !words.contains("-h") else {
     print(usage)
     exit(words.isEmpty ? 2 : 0)
@@ -167,6 +180,9 @@ if let first = args.positional.first, DriverCommands.verbs.contains(first) {
 }
 if args.positional.first == "agent" {
     AgentCommand.run(args)
+}
+if args.positional.first == "agent-bridge" {
+    AgentBridgeCommand.run(args)
 }
 if args.positional.first == "iphone" {
     IPhoneCommands.run(args)

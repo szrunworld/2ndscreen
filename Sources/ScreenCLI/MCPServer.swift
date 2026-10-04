@@ -41,7 +41,9 @@ enum MCPServer {
                     Private virtual screens for testing macOS apps without touching the user's \
                     screen, pointer, or focus. Create a screen, launch the app there, look with \
                     state or screenshot, act with click/type/key/scroll/drag, verify, then quit the app and \
-                    destroy the screen. Only act on apps you launched.
+                    destroy the screen. Only act on apps you launched. \
+                    The task_* tools run whole skill tasks (such as boss.collect-resumes) in the \
+                    background through the bundled task runtime; they are the same as `2ndscreen task`.
                     """,
             ])
         case "ping":
@@ -70,6 +72,9 @@ enum MCPServer {
         let words: ([String: Any]) -> [String]
         /// An argument naming a PNG to return as image content, if any.
         var image: (([String: Any]) -> String?)? = nil
+        /// For strict tools: a problem with the arguments' names or types,
+        /// reported without running anything. Values are left to the CLI.
+        var check: (([String: Any]) -> String?)? = nil
 
         var definition: [String: Any] {
             ["name": name, "description": description,
@@ -288,7 +293,7 @@ enum MCPServer {
                  if a["foreground"] as? Bool == true { w.append("--foreground") }
                  return w
              }),
-    ]
+    ] + taskTools
 
     private static func pointWords(_ a: [String: Any]) -> [String] {
         guard let x = doubleValue(a["x"]), let y = doubleValue(a["y"]) else { return [] }
@@ -331,7 +336,13 @@ enum MCPServer {
         }
         defer { if let scratch { try? FileManager.default.removeItem(atPath: scratch) } }
 
-        let (status, output) = runSelf(tool.words(arguments))
+        if let problem = tool.check?(arguments) {
+            let line: [String: Any] = ["ok": false, "command": NSNull(),
+                                       "error": ["code": "invalid_input", "message": problem]]
+            let data = (try? JSONSerialization.data(withJSONObject: line, options: [.withoutEscapingSlashes])) ?? Data()
+            return ["content": [["type": "text", "text": String(data: data, encoding: .utf8) ?? ""]], "isError": true]
+        }
+        let (status, output) = runSelf(tool.words(arguments), closeInput: tool.check != nil)
         var content: [[String: Any]] = [["type": "text", "text": output]]
         if status == 0, let path = tool.image?(arguments), let image = imageContent(path) {
             content.append(image)
@@ -340,10 +351,12 @@ enum MCPServer {
     }
 
     /// Run this executable with `words` and capture its output.
-    private static func runSelf(_ words: [String]) -> (Int32, String) {
+    /// `closeInput` keeps the child off this server's stdin, which carries the protocol.
+    private static func runSelf(_ words: [String], closeInput: Bool = false) -> (Int32, String) {
         let process = Process()
         process.executableURL = Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0])
         process.arguments = words
+        if closeInput { process.standardInput = FileHandle.nullDevice }
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
@@ -390,5 +403,113 @@ enum MCPServer {
         else { return }
         data.append(0x0A)
         FileHandle.standardOutput.write(data)
+    }
+}
+
+// MARK: Task tools
+
+/// The `2ndscreen task` commands as tools. Each builds exactly the words a
+/// person would type and runs them through the same CLI; the runtime's own
+/// parser checks the values. Here only names and JSON types are checked, so
+/// that nothing is guessed: an unknown argument, a string for a number, a
+/// fraction or a 1 for true is refused before anything runs.
+extension MCPServer {
+    enum ArgumentKind { case string, integer, boolean, budget }
+
+    static let taskTools: [Tool] = {
+        let id: [String: Any] = described(string, "Task ID returned by task_run")
+        let simple: [(String, String, String)] = [
+            ("task_status", "status", "A task's state: target and committed counts, phase, why it waits, model use and the output folder."),
+            ("task_pause", "pause", "Pause a task after the step under way."),
+            ("task_resume", "resume", "Resume a paused task, or one waiting for the user once they have logged in or solved a captcha."),
+            ("task_cancel", "cancel", "Cancel a task. It stops after the step under way; committed resumes stay."),
+            ("task_artifacts", "artifacts", "The files a task saved, with their completeness."),
+        ]
+        var tools = [Tool(
+            name: "task_run",
+            description: "Start a skill task in the background and return its taskId at once, e.g. skill_id boss.collect-resumes: save up to limit resumes of candidates already in BOSS直聘 conversations for job into output. Read-only: it never greets, requests resumes or sends anything. Follow it with task_status.",
+            properties: [
+                "skill_id": described(string, "Skill task ID, e.g. boss.collect-resumes"),
+                "job": described(string, "Job title to match in BOSS直聘's job filter; several matches stop the task to ask"),
+                "limit": described(integer, "How many resumes must be saved, 1 to 10000"),
+                "output": described(string, "Absolute folder; the task writes under output/TASK_ID"),
+                "source": ["type": "string", "enum": ["conversations", "recommend"], "description": "Default conversations, the only source supported now"],
+                "mode": ["type": "string", "enum": ["available", "original-only"], "description": "Default available: page captures count when no original file can be saved"],
+                "browse_limit": described(integer, "Candidates to look at before stopping; not below limit"),
+                "deadline": described(string, "ISO time with a zone after which no new candidate is started"),
+                "budget": ["type": "object", "additionalProperties": integer,
+                           "description": "Budget fields to whole numbers, e.g. {\"taskModelCalls\": 0}"],
+                "take_over": described(boolean, "Use a BOSS直聘 window the runtime did not launch"),
+                "keep_window": described(boolean, "Leave the window on the agent screen when the task ends"),
+                "analysis": ["type": "string", "enum": ["off", "on"]],
+            ],
+            required: ["skill_id", "job", "limit", "output"],
+            words: { a in
+                var w = ["task", "run"]
+                if let v = a["skill_id"] as? String { w.append(v) }
+                for (name, flag) in [("job", "--job"), ("output", "--output"), ("source", "--source"), ("mode", "--mode"),
+                                     ("deadline", "--deadline"), ("analysis", "--analysis")] {
+                    if let v = a[name] as? String { w += [flag, v] }
+                }
+                if let v = exactInteger(a["limit"]) { w += ["--limit", String(v)] }
+                if let v = exactInteger(a["browse_limit"]) { w += ["--browse-limit", String(v)] }
+                if let budget = a["budget"] as? [String: Any] {
+                    for field in budget.keys.sorted() {
+                        if let v = exactInteger(budget[field]) { w += ["--budget", "\(field)=\(v)"] }
+                    }
+                }
+                if a["take_over"] as? Bool == true, isBool(a["take_over"]) { w.append("--take-over") }
+                if a["keep_window"] as? Bool == true, isBool(a["keep_window"]) { w.append("--keep-window") }
+                return w
+            },
+            check: checker(["skill_id": .string, "job": .string, "limit": .integer, "output": .string, "source": .string,
+                            "mode": .string, "browse_limit": .integer, "deadline": .string, "budget": .budget,
+                            "take_over": .boolean, "keep_window": .boolean, "analysis": .string]))]
+        for (name, verb, text) in simple {
+            tools.append(Tool(name: name, description: text, properties: ["task_id": id], required: ["task_id"],
+                              words: { a in ["task", verb] + ((a["task_id"] as? String).map { [$0] } ?? []) },
+                              check: checker(["task_id": .string])))
+        }
+        tools.append(Tool(name: "task_inspect_procedure",
+                          description: "A learned or seeded procedure version by ID: its steps, status and success counters.",
+                          properties: ["procedure_id": described(string, "Procedure ID")], required: ["procedure_id"],
+                          words: { a in ["task", "inspect-procedure"] + ((a["procedure_id"] as? String).map { [$0] } ?? []) },
+                          check: checker(["procedure_id": .string])))
+        return tools
+    }()
+
+    static func checker(_ kinds: [String: ArgumentKind]) -> ([String: Any]) -> String? {
+        { arguments in
+            for name in arguments.keys.sorted() {
+                let value = arguments[name]!
+                guard let kind = kinds[name] else { return "unknown argument \(name)" }
+                switch kind {
+                case .string:
+                    guard value is String, !isBool(value), !(value is NSNumber) else { return "\(name) must be a string" }
+                case .integer:
+                    guard exactInteger(value) != nil else { return "\(name) must be a whole number" }
+                case .boolean:
+                    guard isBool(value) else { return "\(name) must be true or false" }
+                case .budget:
+                    guard let fields = value as? [String: Any], fields.values.allSatisfy({ exactInteger($0) != nil })
+                    else { return "\(name) must map budget fields to whole numbers" }
+                }
+            }
+            return nil
+        }
+    }
+
+    /// A JSON true or false, not a number that happens to be 0 or 1.
+    static func isBool(_ value: Any?) -> Bool {
+        guard let number = value as? NSNumber else { return false }
+        return CFGetTypeID(number) == CFBooleanGetTypeID()
+    }
+
+    /// A JSON number that is exactly a whole number; never a bool, string or fraction.
+    static func exactInteger(_ value: Any?) -> Int64? {
+        guard let number = value as? NSNumber, !isBool(number) else { return nil }
+        let double = number.doubleValue
+        guard double.isFinite, double.rounded() == double, abs(double) <= 9_007_199_254_740_991 else { return nil }
+        return number.int64Value
     }
 }
