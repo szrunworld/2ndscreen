@@ -8,8 +8,8 @@
 - 时间全部走同一个 ManualClock（服务端、运行时、观察器、动作处理器共用），不用 sleep。
 - 客户端与服务端之间的 HTTP 经过 ``Cluster.transport``：可以注入"请求没到服务端就 500 / 断网"
   "服务端处理了但响应变成 500"，也可以把服务端整个换成新进程（同一个 SQLite 文件）模拟重启。
-- 长轮询的等待时间设为 0（RuntimeConfig.claim_wait_seconds=0），服务端的长轮询用真实时间等待，
-  集成测试里不需要它。
+- 长轮询：服务端按真实时间等待，所以 ``Cluster`` 把领取请求的 wait_seconds 改成 0 再交给服务端，
+  没领到指令时把可控时钟推进原来的 wait_seconds（等价于"等满了也没有指令"）。
 - 编排的后台定时推进只在 uvicorn 的 lifespan 里启动，这里不进入 lifespan，需要时直接调
   ``server.ctx.orchestrator.tick()``。
 
@@ -200,6 +200,16 @@ class Cluster(httpx.BaseTransport):
         self.faults: list[Fault] = []
         self.down = False
         self.requests: list[tuple[str, str, int | None]] = []  # (method, path, 客户端看到的状态码)
+        # 部署时编排有后台定时推进（uvicorn lifespan，默认 60 秒）；这里按可控时钟模拟
+        self.tick_interval = 60.0
+        self._last_tick = clock.now()
+
+    def background_tick(self) -> None:
+        """到点就调用一次 orchestrator.tick()，与部署时的后台定时器等价（只是时间来自可控时钟）。"""
+        now = self.clock.now()
+        if self.server is not None and (now - self._last_tick).total_seconds() >= self.tick_interval:
+            self._last_tick = now
+            self.server.ctx.orchestrator.tick()
 
     # -- 故障 ----------------------------------------------------------------
 
@@ -246,8 +256,18 @@ class Cluster(httpx.BaseTransport):
             self.requests.append((request.method, request.url.path, fault.status))
             return _problem_response(fault.status)
         request.read()
+        long_poll = 0
+        if request.url.path.endswith("commands:claim"):
+            # 长轮询：服务端按真实时间等待，这里改成 0 秒发给服务端，空手而归时把可控时钟推进
+            # wait_seconds（等价于"等满了也没有指令"）。
+            body = json.loads(request.content)
+            long_poll = int(body.get("wait_seconds", 0))
+            body["wait_seconds"] = 0
+            request = httpx.Request(request.method, request.url, headers=request.headers, json=body)
         resp = self.server.http.send(request)
         content = resp.read()
+        if long_poll and resp.status_code == 200 and not json.loads(content).get("commands"):
+            self.clock.advance(long_poll)
         if fault is not None and fault.kind == "lose_response":
             self.requests.append((request.method, request.url.path, fault.status))
             return _problem_response(fault.status)
@@ -502,6 +522,19 @@ def notice(step: dict[str, Any], body: str, y: float = 660) -> dict:
     return text(step, body, (905, y, 84, 14))
 
 
+def enable_exchange_buttons(step: dict[str, Any], label: str) -> dict[str, Any]:
+    """招聘方回复后『换电话』『换微信』变为可用：文案外层多一个 57×24 的 AXGroup（形态取自
+    contact_exchange_state#0；"回复后即可用"是推断，见 capabilities.md 1.3 / 1.7）。"""
+    out: list[dict] = []
+    for e in step["elements"]:
+        if e["role"] == "AXStaticText" and e["value"] in ("换电话", "换微信") and e["frame"]["y"] > 700:
+            f = e["frame"]
+            out.append({"index": 0, "role": "AXGroup", "label": "", "value": "",
+                        "frame": {"x": f["x"] - 9, "y": f["y"] - 6, "w": 57, "h": 24}})
+        out.append(e)
+    return reindex(step, label, out)
+
+
 def _in_list_rows(e: dict) -> bool:
     f = e["frame"]
     return f["x"] >= 3480 and f["x"] + f["w"] <= 3864 and f["y"] >= 165
@@ -559,7 +592,7 @@ def boss_new_greeting(
     new["label"] = "list_new"
     detail = detail_for_new_greeting()
     detail["label"] = "detail"
-    greeted = derive(detail, "detail_greeted", add=own_message(detail, greeting))
+    greeted = derive(enable_exchange_buttons(detail, "tmp"), "detail_greeted", add=own_message(detail, greeting))
     requested = derive(greeted, "detail_requested", add=[notice(greeted, "简历请求已发送")])
     steps = [base, new, detail, greeted, requested]
     advances = [
@@ -592,7 +625,7 @@ def boss_wechat(clock: ManualClock) -> FakeDriver:
     """换微信场景：候选人L 已求过简历的会话 → 点『换微信』后出现『请求交换微信已发送』（H3 的判定文案，
     依据 capabilities.md 1.7；点击后的界面是派生假设）。"""
     detail = detail_for_new_greeting()
-    greeted = derive(detail, "detail_greeted", add=own_message(detail, greeting_text()))
+    greeted = derive(enable_exchange_buttons(detail, "tmp"), "detail_greeted", add=own_message(detail, greeting_text()))
     requested = derive(greeted, "detail_requested", add=[notice(greeted, "简历请求已发送")])
     wechat = derive(requested, "detail_wechat_sent", add=[notice(requested, "请求交换微信已发送", y=620)])
     advances = [Advance("click", on_step="detail_requested", when=_hits(WECHAT_TEXT), goto="detail_wechat_sent")]
@@ -649,6 +682,71 @@ def boss_search(clock: ManualClock, query: str, outcome: str) -> FakeDriver:
         Advance("click", on_step="search_typed", when=_hits(SEARCH_BUTTON), goto=after["label"]),
     ]
     return make_fake(steps, advances=advances, clock=clock, scene=f"m_search_{outcome}")
+
+
+# -- 登录页（没有真机夹具：B 录制时账户已登录、按约束不登出） -------------------------
+
+
+def login_page_step() -> dict[str, Any]:
+    """**假设的**登录页：只保留窗口元素，加上扫码登录的文案。只用于"登录失效"场景切换界面，
+    真机形态等 K / N 录制夹具。"""
+    base = raw_step("conversation_list", 0)
+    window = [e for e in base["elements"] if e["role"].startswith("AXWindow")]
+    add = [
+        text(base, "扫码登录", (640, 200, 80, 20)),
+        text(base, "密码登录", (740, 200, 80, 20)),
+        text(base, "请使用BOSS直聘APP扫码登录", (600, 560, 240, 16)),
+        el(base, "AXImage", (620, 260, 200, 200), label="二维码"),
+    ]
+    step = reindex(base, "login_page", window + add)
+    step["annotations"] = {"page": "other"}
+    return step
+
+
+class LoginStandIn:
+    """登录页识别的替身（K 尚未合并，E 把登录页归为 unknown）。
+
+    屏幕停在 ``login_page`` 步骤时产生 login_required（只发一次），离开登录页后产生 login_ok；
+    其余情况原样委托给真实观察器 E。事件用 core 的 make_event 构造，形状与 K 将来产生的相同。
+    """
+
+    def __init__(self, inner: Any, screen: "Screen", mode: str = "local"):
+        self.inner = inner
+        self.screen = screen
+        self.mode = mode
+        self.device_id: str | None = None
+        self.logged_out = False
+
+    def attach(self, *, device_id: str, report: Any) -> None:
+        self.device_id = device_id
+        attach = getattr(self.inner, "attach", None)
+        if callable(attach):
+            attach(device_id=device_id, report=report)
+
+    def observe(self, driver: Any, baseline: Any) -> list[Any]:
+        from monitor.core import make_event
+
+        now = self.screen.fake.clock()
+        on_login = self.screen.fake.step.label == "login_page"
+        if on_login and not self.logged_out:
+            self.logged_out = True
+            return [
+                make_event(
+                    "login_required", device_id=self.device_id, account_id=baseline.account_id,
+                    payload={"reason": "session_expired", "mode": self.mode}, observed_at=now,
+                )
+            ]
+        if on_login:
+            return []
+        if self.logged_out:
+            self.logged_out = False
+            return [
+                make_event(
+                    "login_ok", device_id=self.device_id, account_id=baseline.account_id,
+                    payload={"mode": self.mode, "account_display": None}, observed_at=now,
+                )
+            ]
+        return self.inner.observe(driver, baseline)
 
 
 # ---------------------------------------------------------------------------
@@ -710,7 +808,6 @@ class Monitor:
                 mode=self.identity.mode,  # type: ignore[arg-type]
                 heartbeat_interval=self._heartbeat_interval,
                 observe_interval=self._observe_interval,
-                claim_wait_seconds=0,
             ),
             ledger=self.ledger,
             driver=self.screen,
@@ -739,6 +836,7 @@ class Monitor:
         idle = self.runtime.run_once()
         if idle > 0:
             self.clock.sleep(idle)
+        self.cluster.background_tick()
         return idle
 
     def run(self, rounds: int) -> None:
@@ -844,6 +942,34 @@ def bind_locally(m: Monitor, account_id: str = ACCOUNT) -> None:
     集成测试在这里替它做这一步，端到端的期望写在 test_e2e_registration.py 的 strict xfail 里。
     """
     m.runtime.bind_account(account_id, confirmed_by=CONSOLE_ACTOR)
+
+
+def reach_new_greeting(w: "World", fake: FakeDriver, m: "Monitor") -> None:
+    """建基线（19:05），然后 19:12 让候选人L 出现在『新招呼』里。"""
+    m.run_until(lambda: m.runtime.state.baseline.established and not m.runtime.state.needs_baseline, what="建基线")
+    w.clock.advance(max(0.0, (at_local(19, 12) - w.clock.now()).total_seconds()))
+    fake.goto("list_new")
+
+
+def case_stage(w: "World") -> str | None:
+    cases = w.server.cases()
+    return cases[0]["stage"] if cases else None
+
+
+def reach_resume_requested(w: "World", **kw: Any) -> tuple["Monitor", FakeDriver, "Screen"]:
+    """主线跑到 resume_requested 并全部回传。"""
+    fake = boss_new_greeting(w.clock)
+    screen = Screen(fake)
+    m = w.bound_monitor(screen, **kw)
+    reach_new_greeting(w, fake, m)
+    m.run_until(lambda: case_stage(w) == "resume_requested", what="流程到 resume_requested")
+    m.run_until(lambda: m.results_pending() == 0 and m.events_pending() == 0, what="全部回传")
+    return m, fake, screen
+
+
+def server_cmd(w: "World", action: str) -> dict[str, Any]:
+    [c] = [c for c in w.server.commands() if c["command"]["action"] == action]
+    return c
 
 
 @contextmanager
