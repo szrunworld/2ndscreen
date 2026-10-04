@@ -113,3 +113,13 @@ Session 随后停在 BOSS 窗口移动，尚未执行岗位选择。当前 BOSS 
 协调者对 `e37ced4` 最终打包应用实测：上述混合休眠状态下创建在 56 毫秒返回 displays are asleep，查询在 7 毫秒返回空列表，前后在线显示器完全相同。显式短暂唤醒后，创建、调整、查询和销毁通过；两个同名并发请求只有一个成功，列表只有一个屏幕。此前同一生命周期代码还通过创建途中销毁测试，原创建请求正确报告失败。Swift 全量 135/135、打包与签名校验通过。
 
 清理后仅剩物理屏 1、2，没有本轮测试屏幕或 2ndscreen 电源断言；测试专用实例与临时唤醒进程均已退出。BOSS 的 AXChildren / AXMainWindow / AXFocusedWindow 也与 AXWindows 一样返回应用自身，尚未恢复；未获正常重启确认前没有退出它。完整岗位筛选、实时简历归档与计数仍未通过。详细交付、已知原生调用限制见 [协调者验收记录](agent-reports/Coordinator-review.md)。
+
+## 获准重启后的跨应用 AX 复核（2026-10-04）
+
+用户明确同意正常重启 BOSS 后，协调者用 NSRunningApplication.terminate 请求正常退出，确认旧进程 terminated，再重新打开。新进程仍在 AXWindows 返回 AXApplication，且与应用根元素 CFEqual=true。临时加 `--force-renderer-accessibility` 重开、尝试 AXManualAccessibility / AXEnhancedUserInterface，以及短暂激活窗口，都未恢复。最后再次正常退出并以普通参数重开，保留 BOSS 运行；临时唤醒进程已停止。
+
+辅助功能属性操作依据 [Electron 官方辅助功能说明](https://www.electronjs.org/docs/latest/tutorial/accessibility)。这里的 AXManualAccessibility 返回 attribute unsupported，不能因调用过就声称已经启用。
+
+仅检查窗口角色而不读取内容的跨应用对照显示：Finder 与 Chrome 也在 AXWindows 返回与应用根相同的 AXApplication。另编译最小 C 探针，直接调用 CFArrayGetValueAtIndex 与 AXUIElementCopyAttributeValue，仍复现，排除了只由 Swift 数组转换造成的解释。AXIsProcessTrusted=true；Orca Computer Use 查询辅助功能和截图权限均为 granted，但读取 BOSS 窗口仍返回 permission_denied，工具提示尝试在系统设置重新开关 Orca Computer Use 的辅助功能权限。
+
+因此当前阻断属于跨应用 AX 通道异常，确切系统原因尚未证明。重新开关权限是尚未验证的恢复步骤；没有重置权限数据库、重启系统服务、注销登录或重启 Mac。没有执行新的岗位选择、候选人采集或任何消息发送。本轮只做 P0 环境复核，没有修改产品代码或启动开发 worker。
