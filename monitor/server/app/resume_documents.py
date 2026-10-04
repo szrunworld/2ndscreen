@@ -14,8 +14,11 @@
 - ``POST /resume-documents/{doc_id}:link``（控制台）：人工关联，记录 manual_action（actor、时间、说明），
   原始的关联判定不覆盖（link_json 保留）；来源邮件若处于 needs_review 且其原件都已关联，推进为 processed。
 
-原件唯一关联到流程时（自动或人工）经 ``ctx.bus`` 发布 ``ResumeDocumentLinked``，供 F2 推进 resume_linked；
-解析结果记录后发布 ``ResumeDocumentParsed``。附件哈希只用于文件去重，不作为候选人身份。
+原件唯一关联到流程时（自动或人工），在写文档的同一个事务里调用 F2 的 ``ctx.cases.link_resume(case_id, doc_id)``
+推进 resume_linked（换微信之后才到的邮件阶段不回退，只记时间线）；解析为 parsed 且已关联时调用
+``ctx.cases.mark_resume_parsed(doc_id)``；method=none 且列出候选流程时，候选流程经 ``ctx.cases.to_needs_human``
+转人工（reason=resume_link_ambiguous）。提交后另经 ``ctx.bus`` 发布 ``ResumeDocumentLinked`` / ``ResumeDocumentParsed``
+（供其他订阅者使用，F2 不依赖它们）。附件哈希只用于文件去重，不作为候选人身份。
 """
 
 from __future__ import annotations
@@ -345,6 +348,10 @@ class ResumeDocumentStore:
             )
             return cur.rowcount == 1
 
+    def for_case(self, case_id: str) -> list[DocRow]:
+        rows = self._s._all("SELECT * FROM resume_documents WHERE case_id = ? ORDER BY seq", (case_id,))
+        return [_doc(r) for r in rows]  # type: ignore[misc]
+
     def originals_of_message(self, mail_message_id: str) -> list[DocRow]:
         rows = self._s._all(
             "SELECT * FROM resume_documents WHERE variant = 'original' AND mail_message_id = ? ORDER BY seq",
@@ -406,7 +413,7 @@ def _err(path: str, message: str, code: str) -> dict[str, str]:
 
 
 class ResumeDocumentService:
-    """case_exists(case_id) 由装配方注入（F2 合并后接 recruitment_cases）；默认认为流程存在。"""
+    """case_exists(case_id) 由装配方注入（create_app 默认查 F2 的 ctx.cases）；直接构造时默认认为流程存在。"""
 
     def __init__(self, ctx: AppContext, case_exists: Callable[[str], bool] | None = None):
         self.ctx = ctx
@@ -518,10 +525,19 @@ class ResumeDocumentService:
             created_at=now,
             updated_at=now,
         )
-        if not self.store.insert(row):
-            dup = self.store.find_original(body.mail_message_id, sha)
-            assert dup is not None
-            return 200, document_record(dup, duplicate=True)
+        # 写文档与推进流程（F2：link_resume / 歧义转人工）在同一个事务里，一起提交或一起回滚
+        with self.ctx.store.transaction():
+            if not self.store.insert(row):
+                dup = self.store.find_original(body.mail_message_id, sha)
+                assert dup is not None
+                return 200, document_record(dup, duplicate=True)
+            if linked:
+                assert link.case_id is not None
+                self.ctx.cases.link_resume(link.case_id, row.doc_id)
+                if row.parse_status == "parsed":
+                    self.ctx.cases.mark_resume_parsed(row.doc_id)
+            else:
+                self._ambiguous_to_needs_human(row.doc_id, link.candidate_case_ids)
         stored = self.store.get(row.doc_id)
         assert stored is not None
         record = document_record(stored)
@@ -588,8 +604,11 @@ class ResumeDocumentService:
 
     def record_parse(self, doc_id: str, parse: ParseResult) -> dict[str, Any]:
         data = parse.model_dump(mode="json")
-        if not self.store.set_parse(doc_id, data, self._now()):
-            raise not_found("简历文档")
+        with self.ctx.store.transaction():
+            if not self.store.set_parse(doc_id, data, self._now()):
+                raise not_found("简历文档")
+            if data["parse_status"] == "parsed":
+                self.ctx.cases.mark_resume_parsed(doc_id)  # 未关联的文档 F2 返回 False，关联时再补记
         stored = self.store.get(doc_id)
         assert stored is not None
         record = document_record(stored)
@@ -607,16 +626,6 @@ class ResumeDocumentService:
             raise not_found(f"流程 {case_id}")
         now = self._now()
         changed = False
-        if row.link_status == "linked":
-            if row.case_id != case_id:
-                raise ApiError(409, "already_linked", "文档已关联到其他流程", existing=document_record(row))
-        else:
-            changed = self.store.link_manual(doc_id, case_id, now)
-            if not changed:
-                current = self.store.get(doc_id)
-                assert current is not None
-                if current.case_id != case_id:
-                    raise ApiError(409, "already_linked", "文档已关联到其他流程", existing=document_record(current))
         manual = ManualActionRow(
             manual_action_id=f"ma_{uuid.uuid4().hex}",
             type="link_resume",
@@ -626,7 +635,23 @@ class ResumeDocumentService:
             target_kind="resume_document",
             target_id=doc_id,
         )
-        self.ctx.store.insert_manual_action(manual)
+        # 关联文档、记人工处理、推进流程（F2 link_resume）在同一个事务里
+        with self.ctx.store.transaction():
+            if row.link_status == "linked":
+                if row.case_id != case_id:
+                    raise ApiError(409, "already_linked", "文档已关联到其他流程", existing=document_record(row))
+            else:
+                changed = self.store.link_manual(doc_id, case_id, now)
+                if not changed:
+                    current = self.store.get(doc_id)
+                    assert current is not None
+                    if current.case_id != case_id:
+                        raise ApiError(409, "already_linked", "文档已关联到其他流程", existing=document_record(current))
+            self.ctx.store.insert_manual_action(manual)
+            if changed:
+                self.ctx.cases.link_resume(case_id, doc_id)
+                if row.parse_status == "parsed":
+                    self.ctx.cases.mark_resume_parsed(doc_id)
         if changed:
             stored = self.store.get(doc_id)
             assert stored is not None and stored.case_id is not None
@@ -641,6 +666,20 @@ class ResumeDocumentService:
             ):
                 self.ctx.mail.mark_processed_after_link(stored.mail_message_id)
         return manual_action_record(manual)
+
+
+    def _ambiguous_to_needs_human(self, doc_id: str, candidate_case_ids: list[str]) -> None:
+        """method=none 且列出了候选流程（同名、多岗位）：候选流程转人工（F2 to_needs_human，reason=resume_link_ambiguous）。
+        没有候选（找不到流程）时只进人工关联队列。不存在的候选忽略。"""
+        for case_id in dict.fromkeys(candidate_case_ids):
+            if self.case_exists(case_id):
+                self.ctx.cases.to_needs_human(
+                    case_id, "resume_link_ambiguous", ref_id=doc_id, summary="简历邮件无法唯一关联，请人工关联"
+                )
+
+    def list_for_case(self, case_id: str) -> list[dict[str, Any]]:
+        """流程详情里的简历文件（F2 的 resume_documents_provider）：该流程的原件与品牌化版本，按写入顺序。"""
+        return [document_record(r) for r in self.store.for_case(case_id)]
 
 
 def _new_doc_id() -> str:

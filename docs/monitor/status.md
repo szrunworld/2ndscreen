@@ -12,21 +12,21 @@
 | X | client/server 适配 0.3.0 | 已释放 | monitor-X | 已合（813e25a；全量 1137 tests） | 2a9653d | server 一致性测试 NOT_YET_IMPLEMENTED 白名单 26 项，F2/F3/G 实现时逐项移出 |
 | C2 | Driver 修复（CliFailure 冻结、window release 分类、PDF 子树过滤） | 已释放 | monitor-C2 | 已合（f9dbc1e；全量 1181） | b99a2db | 窗口归还文案按源码构造未实测；开着 PDF 预览时快照 index 与 CLI index 不同（driver 内部映射） |
 | D2c | 管线三处小改（入口分发、status()、suspend_gui） | ctx_f53c25d0358d / monitor-D2c | monitor-D2c | 进行 | — | — |
-| R | 品牌化简历渲染 | — | — | 未派（待用户模板与 logo、N 邮件格式） | — | — |
+| R | 品牌化简历渲染 | — | — | 移出本项目（用户 2026-10-04：属于 ATS 功能，见 ~/orca/ats） | — | — |
 | B | 只读可行性验证与夹具 | ctx_1b25ee64eab9（已释放） | monitor-B | 已合（898edbd） | 201001d | 登录/二维码、新招呼首次打开、电话待同意/已交换/已拒绝、邮件转发内容、搜索输入后结果 → 留给 N/K |
 | C | Driver 适配器 | ctx_3dfbecec466d（已释放） | monitor-C | 已合（ecfe9da；client 入工作区 + relock，contracts+client 351 tests） | ec6aed9 | 定位器 text 同时匹配 label/value（比契约宽），0.2.0 契约里追认；CliDriver 未在 BOSS 上真机跑过 → N |
 | D1 | 本地账本 | 已释放 | monitor-D1 | 已合（079107c + 0.2.0 适配 69a9855） | 3a3a5b4 | 已回传数据保留期限待产品决定 |
 | D2 | 指令客户端与执行管线 | ctx_be925b1cfd1f（已释放） | monitor-D2 | 已合（810c993；relock httpx；contracts+client 464 tests） | dc26e24 | 工厂入口：D1 open_ledger(path)、E create_observer()、H create_handlers()；0.2.0 合并后跟进 core/write_flags.py 与 guard.py |
 | E | 观察模块 | 已释放 | monitor-E | 已合（a139f20；协调者同时改 core：观察用 verify 守卫、attach 注入、首个基线带账户；全量 884 tests） | e002670 | 待 N：点页签后列表刷新、处理过的会话是否移出新招呼、更多时间文案形态 |
 | F1 | 服务端基础 | 已释放 | monitor-F1 | 已合（2b1dff2 + 0.2.0 适配 8abbf54） | c7bbc4b | openapi 缺 401/422/403 → A3 |
-| F2 | 服务端业务 | ctx_6788843f9e4a / monitor-F2 | monitor-F2 | 进行 | — | — |
-| F3 | 服务端扩展（搜索、登录接力、通知 + 邮件相关端点） | 派发中 | — | — | — | — |
-| G | 邮件接入（mail 服务订阅方） | 已释放 | monitor-G | 已合（mail 入工作区；全量 1313） | f29f5a9 | 需 server 端点 /mail-messages、/mail-verifications、/resume-documents（→ F3）；serviceToken 读 policy 未定义（→ F3）；清理后再写的幂等键临时用 status-purged 段（下个契约小版本记入）；upstream_missing 待 G0；webhook_delivery_failed 需 mail 管理凭据，暂报 null |
+| F2 | 服务端业务 | 已释放 | monitor-F2 | 已合（含 F2b 原子性 60163fd；全量 1442）；业务部分冻结（归 ATS） | 94a473c | 契约请求 ManualCommandCreated.scheduled_for；issued_at 未到不下发写入 contracts.md |
+| F3 | 服务端扩展（搜索、登录接力、通知 + 邮件相关端点） | ctx_f06639cbb37b / monitor-F3 | monitor-F3 | 进行 | — | 与 F2 的衔接：resume_linked 内部事件、policy 只读权限、迁移 v3 |
+| G | 邮件接入（mail 服务订阅方） | 已释放 | monitor-G | 已合（mail 入工作区；全量 1313） | f29f5a9 | 交接给服务器端（docs/monitor/handover-mail-ingestion.md），Monitor 内冻结 |
 | H1 | 动作公共层 + 问候 + 求简历 | 已释放 | monitor-H1 | 已合（合并时全量 963 tests） | — | 9 条界面假设待 N（H1.md 第五节）；接口请求：Driver 层过滤 PDF 子树、hints 稳定 |
 | H2 | 搜索动作 | — | — | 未派 | — | — |
-| H3 | 换联系方式 + 转发简历 | — | — | 未派 | — | — |
-| I1 | 控制台骨架、总览、连接与策略 | — | — | 未派 | — | — |
-| I2 | 控制台候选人流程、执行记录、搜索 | — | — | 未派 | — | — |
+| H3 | 换微信（人工触发） | ctx_91f17dd8c7d9 / monitor-H3 | monitor-H3 | 进行 | — | — |
+| I1 | 控制台骨架、总览、连接与策略 | — | — | 撤销（2026-10-04：管理页放服务器端 / ATS 门户，见 handover-device-console.md） | — | — |
+| I2 | 控制台候选人流程、执行记录、搜索 | — | — | 撤销（同上） | — | — |
 | J | 安装、模式、launchd、状态窗口 | 已释放 | monitor-J | 已合（2420f09；其分支上 982 tests；合并后受 0.3.0 limits 影响由 X 修） | 3a33e4d | 真机验证步骤见 J.md 第七节；接口请求：CliFailure 冻结 bug、window release 分类（→ C2）、python -m monitor install 分发（→ X 之后） |
 | K | 登录接力 | — | — | 未派 | — | — |
 | M | 集成、混沌测试、运维手册 | — | — | 未派 | — | — |
@@ -53,14 +53,14 @@
 Run：run_7d52e82ce7ed。分支 monitor-v1（a12a931，自 szrunworld/ss-runtime-integration）；并发 3（用户 2026-10-04 确认）。
 
 1. ~~新招呼 = 新投递~~ 已确认（2026-10-04）；会话列表只读最新约 10 行、逐批处理的设计也已接受。
-2. N 阶段测试账号、候选人与逐项授权方式。
+2. N 阶段：账号已确定为用户本人账号，就在本机已登录的 BOSS 客户端（2026-10-04）。待定：用于写操作验证的候选人与逐项授权。
 3. 独立设备模式是否接受"自动登录 + 不启用 FileVault"。
 4. ~~已读回执~~ 已决定（2026-10-04）：接受；如实记录 externally_visible_side_effect。
 5. 候选人同意交换后，是否把**微信号**回传到服务端存储（v1 契约暂不带号码，只报状态）。交换方式已决定（2026-10-04）：只换微信、仅人工触发（A3 0.3.0 实现）。
 6. ~~硬上限~~ 已决定（2026-10-04）：每种对外动作每日 ≤40；间隔问候/求简历/转发 45 秒、换联系方式 60 秒、搜索 30 秒（D2b 实现）。
 7. ~~简历路线~~ 已决定（2026-10-04，二次）：求简历 → 候选人同意 → BOSS 自动发到公司预留邮箱；Monitor 不转发；邮箱按『邮箱即队列 + 消费 + 归档 + 核对』读取（任务 G）；对外版本套用公司模板与 logo（任务 R）。
-10. ~~邮箱~~ 已决定（2026-10-04）：zhaopin@remotedesk.io（别名 bosszhipin@），公司邮件服务 mail（remotedesk-resend）的公共邮箱；Monitor 订阅 mail.ready + integration key 取信；保留 30 天由 mail 留存任务执行，Monitor 不逐封删除。进展（2026-10-04）：公共邮箱 CV 已建（zhaopin@ + 别名 bosszhipin@）。部署时待办：retention_days 改为 30（默认 365）；Monitor 服务端部署后把其主机加入 mail 的 MAIL_WEBHOOK_ALLOWED_HOSTS 并为 CV 建 mail.ready 订阅；签发 mail.read API key 存服务端环境变量；BOSS 后台收简历邮箱改为上述地址之一；是否同意 G0 跨仓修改。
-9. 任务 R 需要：公司简历模板（Word/PDF/HTML 样例均可）、logo 文件、字段取舍（是否含联系方式、是否去掉平台字样）。
+10. ~~邮箱~~ 已决定（2026-10-04）：zhaopin@remotedesk.io（别名 bosszhipin@），公司邮件服务 mail（remotedesk-resend）的公共邮箱；Monitor 订阅 mail.ready + integration key 取信；保留 30 天由 mail 留存任务执行，Monitor 不逐封删除。进展（2026-10-04）：公共邮箱 CV 已建（zhaopin@ + 别名 bosszhipin@）。部署时待办：retention_days 改为 30（默认 365）；Monitor 服务端部署后把其主机加入 mail 的 MAIL_WEBHOOK_ALLOWED_HOSTS 并为 CV 建 mail.ready 订阅；签发 mail.read API key 存服务端环境变量；BOSS 后台收简历邮箱改为上述地址之一；G0 不做（用户 2026-10-04：邮件服务侧已有专门服务监控收信，Monitor 不负责上游完整性）；BOSS 后台收件邮箱已设置（用户 2026-10-04 确认）。
+9. ~~任务 R~~ 移出本项目（属于 ATS）。原需要：公司简历模板（Word/PDF/HTML 样例均可）、logo 文件、字段取舍（是否含联系方式、是否去掉平台字样）。
 8. ~~搜索页问候按钮~~ 已决定（2026-10-04）：v1 去掉，搜索只返回快照。
 
 ## H1 接口请求裁决
@@ -74,3 +74,12 @@ Run：run_7d52e82ce7ed。分支 monitor-v1（a12a931，自 szrunworld/ss-runtime
 - `python -m monitor install|mode` 分发到 `monitor.install.cli:main`（J 请求 1）。
 - `MonitorRuntime.status()` 增加 outbox 计数、last_error.message、当前指令 id 与开始时间（J 请求 2）。
 - 运行时"窗口不归 Monitor"状态：`suspend_gui(reason)` / `resume_gui()`，避免 local 模式时段外的 window_lost 覆盖其他错误（J 请求 3）。
+
+## 与 ATS 的分工（2026-10-04）
+
+- 已确认：Monitor = 本机执行器 + 薄桥接服务（设备、指令队列、事件接收）。业务（候选人、流程、简历存储解析、通知、流程页与总览、品牌化简历）归 ATS。F2 的 cases/policy/overview 冻结；I1/I2 只做设备、登录、执行记录。
+- 已决定：时间路线 A（Monitor 先独立运行，ATS 到 P2 再切换指令来源）；设备、登录、执行记录管理页放服务器端（ATS 门户），I1/I2 撤销（交接 handover-device-console.md）。
+- 契约变更请求已写好：docs/monitor/ats-contract-change-request.md（用户转交 ATS）。
+- 原待决： 给 ATS 的契约变更（channel_task 与执行器接口、任务类型含求简历/换微信/搜索、无联系方式的 BOSS 候选人入库、品牌化简历）由谁提出。
+
+- 邮件收简历（G）：用户决定交给服务器端（定时任务，与设备无关）。交接文档 docs/monitor/handover-mail-ingestion.md；接收方确认后从 Monitor 移除 monitor/mail 与相关端点。

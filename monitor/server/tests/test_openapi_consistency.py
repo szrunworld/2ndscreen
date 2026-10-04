@@ -37,6 +37,16 @@ IMPLEMENTED = {
     "cancelCommand",
     "postEvents",
     "listEvents",
+    # F2：招聘流程、人工处理、策略、总览
+    "listCases",
+    "getCase",
+    "stopCase",
+    "requestWechatExchange",
+    "confirmCommandSent",
+    "recheckCommand",
+    "getPolicy",
+    "putPolicy",
+    "getOverview",
     # F3：搜索、登录接力、邮件记录、简历文档
     "createResumeDocument",
     "listResumeDocuments",
@@ -59,22 +69,23 @@ IMPLEMENTED = {
 
 # yaml 中已定义、server 尚未实现的操作（由 F2/F3/G 等后续任务实现）。实现一个就把它从这里移到
 # IMPLEMENTED；契约新增操作时也要登记到这里，否则 test_unimplemented_operations_are_listed 失败。
-NOT_YET_IMPLEMENTED = {
-    "confirmCommandSent",
-    "recheckCommand",
-    "listCases",
-    "getCase",
-    "stopCase",
-    "requestWechatExchange",
-    "getPolicy",
-    "putPolicy",
-    "getOverview",
-}
+NOT_YET_IMPLEMENTED: set[str] = set()
 
 # 已知的 yaml 缺口：代码如实声明、运行时会返回，但 contracts/openapi.yaml 0.2.0 还没列出的响应码。
 # 由下一版契约任务统一补（清单见 agent-reports/F1.md「0.2.0 适配」）；补上后从这里删除对应条目，
 # 测试会因白名单条目已不再是差异而失败（KNOWN_YAML_GAPS 必须与实际差异完全一致）。
 KNOWN_YAML_GAPS: dict[str, set[str]] = {
+    # 契约 0.3.0 已补齐 F1 的 401/403/422。以下是 F2 端点的缺口（见 agent-reports/F2.md「接口请求」）：
+    # 控制台未认证返回 401；路径参数、查询参数、请求体或 Idempotency-Key 不合法返回 422；
+    # putPolicy 对未知账户返回 404。
+    "confirmCommandSent": {"401", "422"},
+    "recheckCommand": {"401", "422"},
+    "getCase": {"401", "422"},
+    "stopCase": {"401", "422"},
+    "listCases": {"422"},
+    "getPolicy": {"401", "422"},
+    "putPolicy": {"401", "404"},
+    "getOverview": {"401", "422"},
     # F3：yaml 0.3.1 这些接口只靠全局 security，没列 401；带路径 / 查询参数或请求体的没列 422（清单见 F3 报告）
     "createSearchRun": {"401"},
     "listSearchRuns": {"401", "422"},
@@ -90,11 +101,11 @@ KNOWN_YAML_GAPS: dict[str, set[str]] = {
 }
 
 # 已知的认证缺口：代码比 yaml 多接受的令牌（接口请求，见 F3 报告）。结构同上，必须与实际差异完全一致。
-# getPolicy 由 F2 实现：G 需要用 serviceToken 读 mail_retention_days / resume_mail_timeout_days，
-# 认证依赖用 app.mail_endpoints.require_policy_reader（F2 合并时把它从 NOT_YET_IMPLEMENTED 移入后生效）。
+# 注意：getPolicy 运行时也接受 serviceToken（create_app 用 dependency_overrides 换成
+# mail_endpoints.require_policy_reader），但导出的 openapi 仍按 F2 的依赖生成，所以这里不列；
+# 契约补上 serviceToken 后需同步改 F2 的依赖声明（见 F3 报告"接口请求"）。
 KNOWN_SECURITY_GAPS: dict[str, set[frozenset[str]]] = {
     "listResumeDocuments": {frozenset({"serviceToken"})},  # G 的超时提醒按 case_id 查已关联简历
-    "getPolicy": {frozenset({"serviceToken"})},
 }
 
 _KEEP = (
