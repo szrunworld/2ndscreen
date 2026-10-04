@@ -53,6 +53,9 @@ export interface ActorCommand {
   startedAfterMs: number;
 }
 
+/** SIGTERM to SIGKILL grace when stopping a recorded group; verifyWorkerStopped takes at most about twice this per group. */
+export const VERIFY_KILL_GRACE_MS = 2_000;
+
 /** The record's mtime is refreshed this often while the worker lives. */
 export const HEARTBEAT_MS = 2_000;
 
@@ -354,7 +357,7 @@ export async function verifyWorkerStopped(
   options: { probe?: ProcessProbe; killGraceMs?: number; signal?: AbortSignal } = {},
 ): Promise<ActorExitVerdict> {
   const probe = options.probe ?? systemProbe;
-  const killGraceMs = options.killGraceMs ?? 3_000;
+  const killGraceMs = options.killGraceMs ?? VERIFY_KILL_GRACE_MS;
   if (worker.legacy || !worker.processStartedAt)
     return { stopped: false, reason: `worker pid ${worker.ownerPid} has no recorded start time; its processes cannot be identified` };
   let found: ReturnType<typeof findRecord>;
@@ -405,7 +408,7 @@ export async function verifyWorkerStopped(
 
   for (const group of record.groups) {
     if (options.signal?.aborted) return { stopped: false, reason: 'verification was cancelled' };
-    const verdict = await stopGroup(group, probe, killGraceMs);
+    const verdict = await stopGroup(group, probe, killGraceMs, options.signal);
     if (!verdict.ok) return { stopped: false, reason: verdict.text };
     evidence.push(verdict.text);
   }
@@ -413,7 +416,7 @@ export async function verifyWorkerStopped(
   return { stopped: true, evidence: evidence.join('; ') };
 }
 
-async function stopGroup(group: ActorGroup, probe: ProcessProbe, killGraceMs: number): Promise<{ ok: boolean; text: string }> {
+async function stopGroup(group: ActorGroup, probe: ProcessProbe, killGraceMs: number, signal?: AbortSignal): Promise<{ ok: boolean; text: string }> {
   const what = `${group.file} group ${group.pgid}`;
   const state = probe.group(group.pgid);
   if (state === 'gone') return { ok: true, text: `${what} gone` };
@@ -434,8 +437,8 @@ async function stopGroup(group: ActorGroup, probe: ProcessProbe, killGraceMs: nu
   // The recorded leader is alive: stop its group and watch it go.
   probe.killGroup(group.pgid, 'SIGTERM');
   const deadline = Date.now() + killGraceMs;
-  while (probe.group(group.pgid) === 'alive' && Date.now() < deadline) await probe.sleep(50);
-  for (let i = 0; i < 40 && probe.group(group.pgid) === 'alive'; i++) {
+  while (probe.group(group.pgid) === 'alive' && Date.now() < deadline && !signal?.aborted) await probe.sleep(50);
+  for (let i = 0; i < 40 && probe.group(group.pgid) === 'alive' && !signal?.aborted; i++) {
     probe.killGroup(group.pgid, 'SIGKILL');
     await probe.sleep(50);
   }

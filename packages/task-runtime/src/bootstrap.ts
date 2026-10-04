@@ -25,7 +25,7 @@ import {
   type TaskStore,
   type WindowProfile,
 } from './contracts.ts';
-import { ActorRegistry, liveWorkers, pruneClosedRecords, verifyWorkerStopped } from './actors.ts';
+import { ActorRegistry, VERIFY_KILL_GRACE_MS, liveWorkers, pruneClosedRecords, verifyWorkerStopped } from './actors.ts';
 import { createAgentBridge, createLineProcessSpawner } from './adapters/agent-bridge.ts';
 import { createLocalVision, type LocalVisionClient } from './adapters/local-vision.ts';
 import { createCommandRunner, createSecondScreenAdapter } from './adapters/second-screen.ts';
@@ -368,6 +368,8 @@ export async function startWorker(config: RuntimeConfig, options: WorkerOptions 
     specs: (id) => skills.get(id)?.spec,
     // A worker whose exit no daemon recorded: proven stopped only from its actor record.
     verifyActorExit: (worker, { signal }) => verifyWorkerStopped(config.paths.actorsDir, worker, { signal }),
+    // Room for a SIGTERM grace and the SIGKILL rounds of each recorded group, and the process scans.
+    verifyTimeoutMs: 4 * VERIFY_KILL_GRACE_MS,
     ...options.daemon,
   });
 
