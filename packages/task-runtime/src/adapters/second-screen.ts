@@ -417,7 +417,8 @@ export function createSecondScreenAdapter(options: SecondScreenAdapterOptions): 
     },
 
     async bindApp(screenId, profile, bindOptions, signal) {
-      const where = await screen(screenId, signal);
+      // The screen must exist before anything is launched or moved; its frame is read again below.
+      await screen(screenId, signal);
       const running = await runningPid(profile.bundleId, signal);
       let pid: number;
       let launched = false;
@@ -498,12 +499,17 @@ export function createSecondScreenAdapter(options: SecondScreenAdapterOptions): 
       }
       if (shotPath) {
         const shot = await screenshotRef(typeof reply.json.screenshot === 'string' ? reply.json.screenshot : shotPath, read.frame);
-        // A clipped image is never passed off as the whole window: say where the window went instead.
-        if (!rasterCoversFrame({ width: shot.widthPx, height: shot.heightPx }, read.frame, binding.window.scale)) {
+        // A screenshot stands for the whole window only if the window lies wholly within its screen
+        // as the screen is now (displays move), and the image is the frame at the bound scale.
+        // Otherwise it is clipped: say where the window went instead of stretching it over the frame.
+        const where = (await screens(signal)).find((s) => s.name === binding.screenId);
+        const inside = where !== undefined && rectWithin(read.frame, where.frame);
+        if (!inside || !rasterCoversFrame({ width: shot.widthPx, height: shot.heightPx }, read.frame, binding.window.scale)) {
           await rm(shot.path, { force: true });
-          const where = await screens(signal).then((list) => list.find((s) => s.name === binding.screenId)).catch(() => undefined);
-          const off = where && !rectWithin(read.frame, where.frame) ? `; it reaches past screen ${binding.screenId} (${describeRect(where.frame)})` : '';
-          throw new RuntimeError('window_lost', `the screenshot is ${shot.widthPx}x${shot.heightPx} px, not the whole window ${describeRect(read.frame)} at ${binding.window.scale}x${off}`, {
+          const why = !where ? `screen ${binding.screenId} is gone`
+            : !inside ? `the window ${describeRect(read.frame)} reaches past screen ${binding.screenId} (${describeRect(where.frame)})`
+            : `the screenshot is ${shot.widthPx}x${shot.heightPx} px, not the whole window ${describeRect(read.frame)} at ${binding.window.scale}x`;
+          throw new RuntimeError('window_lost', `${why}; no screenshot is reported for it`, {
             windowId: binding.window.windowId,
             frame: read.frame,
             screenFrame: where?.frame,

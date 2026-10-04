@@ -359,27 +359,55 @@ test('bindApp checks the window against the screen as it is now, not where it wa
   assert.ok(!calls.some((c) => verb(c.args) === 'window move'));
 });
 
-test('observe refuses a screenshot clipped by the screen edge instead of stretching it over the window', async () => {
+test('observe refuses a screenshot of a window not wholly on its screen as the screen is now, or of the wrong size', async () => {
   await withDir(async (dir) => {
-    // The window drifted past the right edge after binding; the CLI's crop stops at the screen.
-    const drifted = { x: 3200, y: 25, width: 1360, height: 848 };
-    const { run } = fakeRunner({
+    let frame: Rect = { x: 3200, y: 25, width: 1360, height: 848 };
+    let screenFrame: Rect = SCREEN.frame;
+    let pixels = { width: (4440 - 3200) * 2, height: 848 * 2 };
+    const { run, calls } = fakeRunner({
       cli: async (args) => {
-        if (verb(args) === 'screen list') return { ok: true, screens: [SCREEN] };
+        if (verb(args) === 'screen list') return { ok: true, screens: [{ ...SCREEN, frame: screenFrame }] };
         const shot = flag(args, '--screenshot');
-        if (shot) await writeFile(shot, png((4440 - 3200) * 2, 848 * 2));
-        return { ok: true, pid: 4242, windowID: 77, app: 'Synthetic', windowFrame: drifted, screenshot: shot, elements: [] };
+        if (shot) await writeFile(shot, png(pixels.width, pixels.height));
+        return { ok: true, pid: 4242, windowID: 77, app: 'Synthetic', windowFrame: frame, screenshot: shot, elements: [] };
+      },
+      tools: {
+        sips: async (args) => {
+          await writeFile(args[args.length - 1]!, png(Number(args[2]), Number(args[1])));
+          return { code: 0 };
+        },
       },
     });
     const adapter = createSecondScreenAdapter({ cli: 'cli', socket: SOCKET, run, screenshotDir: dir });
-    await assert.rejects(adapter.observe(binding, { screenshot: true, region: { x: 3300, y: 100, width: 734, height: 700 } }), (e) => {
-      assert.ok(isRuntimeError(e, 'window_lost'));
-      assert.match(e.message, /2480x1696 px, not the whole window .* reaches past screen/);
-      return true;
-    });
-    // Without a screenshot nothing is clipped, and the drifted frame is reported as it is.
+    const refused = async (pattern: RegExp) => {
+      await assert.rejects(adapter.observe(binding, { screenshot: true, region: { x: 3300, y: 100, width: 734, height: 700 } }), (e) => {
+        assert.ok(isRuntimeError(e, 'window_lost'));
+        assert.match(e.message, pattern);
+        return true;
+      });
+      assert.ok(!calls.some((c) => c.file === 'sips'), 'no region was cut from a clipped image');
+    };
+    // Drifted past the right edge after binding; the CLI's crop stops at the screen.
+    await refused(/the window 3200,25 1360x848 reaches past screen synthetic-1440x900 \(3000,0 1440x900\)/);
+    // The image happens to have the full size, but the display moved and the window is no longer on it.
+    frame = MAIN;
+    pixels = { width: 2720, height: 1696 };
+    screenFrame = { x: 5000, y: 0, width: 1440, height: 900 };
+    await refused(/reaches past screen .*5000,0 1440x900/);
+    // Inside its screen, but the image is not the frame at the bound scale.
+    screenFrame = SCREEN.frame;
+    pixels = { width: 1360, height: 848 };
+    await refused(/the screenshot is 1360x848 px, not the whole window 3000,25 1360x848 at 2x/);
+    // Inside and the right size: the region is cut and covers what it shows.
+    pixels = { width: 2720, height: 1696 };
+    const ok = await adapter.observe(binding, { screenshot: true, region: { x: 3300, y: 100, width: 734, height: 700 } });
+    assert.deepEqual(ok.screenshot?.covers, { x: 3300, y: 100, width: 734, height: 700 });
+    // Without a screenshot nothing can be clipped: the frame is reported as it is, with no screen read.
+    frame = { x: 3200, y: 25, width: 1360, height: 848 };
+    const before = calls.filter((c) => verb(c.args) === 'screen list').length;
     const plain = await adapter.observe(binding, { screenshot: false });
-    assert.deepEqual(plain.window.frame, drifted);
+    assert.deepEqual(plain.window.frame, frame);
+    assert.equal(calls.filter((c) => verb(c.args) === 'screen list').length, before);
   });
 });
 
@@ -387,6 +415,7 @@ test('observe returns typed elements, text and a measured screenshot, and a crop
   await withDir(async (dir) => {
     const { run, calls } = fakeRunner({
       cli: async (args) => {
+        if (verb(args) === 'screen list') return { ok: true, screens: [SCREEN] };
         const shot = flag(args, '--screenshot');
         // The window is 1360x848 pt; its shot is 2720x1696 px.
         if (shot) await writeFile(shot, png(2720, 1696));
@@ -678,7 +707,8 @@ test('session and adapter together map window fractions against the window as it
       cli: async (args) => {
         switch (verb(args)) {
           case 'screen list':
-            return { ok: true, screens: [{ ...SCREEN, ownerPID: process.pid }] };
+            // The screen (a display rearranged) moves with the window, which stays wholly on it.
+            return { ok: true, screens: [{ ...SCREEN, ownerPID: process.pid, frame: { x: frame.x, y: frame.y - 25, width: 1440, height: 900 } }] };
           case 'state': {
             const shot = flag(args, '--screenshot');
             if (shot) await writeFile(shot, png(frame.width * 2, frame.height * 2));
