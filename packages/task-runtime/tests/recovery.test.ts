@@ -485,3 +485,28 @@ test('the caller cancelling during local recovery is still cancelled, not a budg
   const outcome = await w.recovery.recover(w.context('张三', failure, { unit: { ...UNIT, timeoutMs: 5_000 } }), controller.signal);
   assert.deepEqual(outcome, { status: 'cancelled' });
 });
+
+test('the exploration request says why the model is called: ui/missing_procedure to learn, repair with the failure to fix', async () => {
+  // First learning: no procedure.
+  const learn = world();
+  learn.app.show('张三');
+  assert.equal((await learn.recovery.recover(learn.context('张三', { status: 'no_procedure' }))).status, 'repaired');
+  assert.deepEqual(learn.bridge.requests[0]!.usageContext, { purpose: 'ui', reason: 'missing_procedure' });
+
+  // A replay that failed at a step.
+  const v1 = procedure({ status: 'stable', source: 'learned', counters: { successes: 5, failures: 0, consecutiveFailures: 0, successItemIds: ['a', 'b', 'c'] } });
+  const repair = world({ procedures: [v1] });
+  repair.app.show('张三');
+  repair.app.buttonLabel = '查看简历';
+  const failure = await repair.engine.replay(v1, repair.session, { 'candidate.name': '张三' });
+  assert.equal(failure.status, 'step_failed');
+  assert.equal((await repair.recovery.recover(repair.context('张三', failure, { unit: { ...UNIT, timeoutMs: 60 } }))).status, 'repaired');
+  assert.deepEqual(repair.bridge.requests[0]!.usageContext, { purpose: 'repair', reason: 'replay_failed' });
+
+  // A unit whose result did not verify.
+  const unverified = world();
+  unverified.app.show('张三');
+  const check = { ok: false, evidence: ['online resume not shown'] };
+  assert.equal((await unverified.recovery.recover(unverified.context('张三', { status: 'verify_failed', check }, { unit: { ...UNIT, timeoutMs: 60 } }))).status, 'repaired');
+  assert.deepEqual(unverified.bridge.requests[0]!.usageContext, { purpose: 'repair', reason: 'postcondition_failed' });
+});

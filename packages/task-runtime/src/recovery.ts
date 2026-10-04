@@ -281,6 +281,9 @@ export function createRecovery(deps: {
               timeoutMs: Math.max(1, Math.min(unit.timeoutMs, budget.wallClockMs - used.elapsedMs)),
             },
             submitAllowed: false,
+            // Every model_usage event carries why the model is called: a first
+            // exploration is ui/missing_procedure, a repair names its failure.
+            usageContext: { purpose: fallbackPurpose, reason },
           }),
           'exploration request',
         );
