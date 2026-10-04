@@ -22,25 +22,35 @@ BOSS 的界面，也不要用 `2ndscreen agent` 去替代它。
 
 只有完整采集（顶部确认、底部有两种独立信号、拼接无缺口）的在线简历才计入数量；
 不完整的采集保存为诊断文件，不计数。数量不足时任务以 `partial` 结束并写明原因。
-打开会话可能把消息标为已读。
+
+已知限制（请如实告诉用户）：
+
+- 打开会话和简历会把消息标为已读，候选人可能看到“已读”。
+- 一屏就能显示完的短简历无法证明已到顶部和底部，按保守规则保存为诊断文件、不计数。
+- 推荐牛人来源和原始附件下载没有在真实 BOSS 上验证，所以不提供（`capability_missing`）。
+- 稳定路径不需要模型配置；只有遇到没学过或已改版的界面才需要模型，没有模型时任务进入
+  `waiting_user / model_unavailable`，不会假装成功。
 
 ## 运行前提
 
 - 2ndscreen.app 正在运行，并已授予辅助功能与屏幕录制权限。
 - BOSS直聘 Mac 客户端已安装、已登录（首次登录与验证码需用户本人完成）。
-- 显式指定的 BOSS 账号。Runtime 无法从窗口可靠读出账号，不会自行猜测；账号必须由用户提供并在任务
-  开始前绑定。配置命令随最终的 Task Runtime 一起提供，本版本尚未包含。
+- 显式指定的 BOSS 账号。Runtime 无法从窗口可靠读出账号，不会自行猜测。请用户给当前登录的账号起一个
+  固定的名字（字母、数字、`.`、`_`、`-`，如 `hr-zhang`），用 `--account` 传入；同一账号以后一直用同一个
+  名字。任务一旦绑定账号就不再改变，候选人记录不会跨账号合并。没有给账号的任务会停在
+  `waiting_user / account_changed`，用 `2ndscreen task bind-account TASK_ID 账号名` 补上后再 `resume`。
+  用户换了 BOSS 登录账号时，必须用新的账号名创建新任务，不要沿用旧任务。
 - 已安装随 2ndscreen.app 一起发布的 Task Runtime。若 `2ndscreen task …` 输出
   `"code":"capability_missing"` 且提示 task runtime 未安装，说明当前构建尚不包含它：
   如实告诉用户这一点并停止，不要尝试用 npx、全局 node 或其他方式代替。
 
 ## 用法
 
-先向用户确认三件事：岗位（与 BOSS 职位筛选中的名称匹配）、需要几份简历、保存到哪个
-目录（绝对路径）。然后只调用一次：
+先向用户确认四件事：岗位（与 BOSS 职位筛选中的名称匹配）、需要几份简历、保存到哪个
+目录（绝对路径）、当前 BOSS 账号的名字。然后只调用一次：
 
 ```bash
-2ndscreen task run boss.collect-resumes --job "前端工程师" --limit 20 --output "$HOME/招聘/前端"
+2ndscreen task run boss.collect-resumes --job "前端工程师" --limit 20 --output "$HOME/招聘/前端" --account hr-zhang
 ```
 
 可选参数：`--browse-limit N`（最多查看多少位候选人，不小于 `--limit`）、
@@ -59,13 +69,19 @@ BOSS 的界面，也不要用 `2ndscreen agent` 去替代它。
 2ndscreen task resume TASK_ID      # 用户处理完登录/验证码/职位选择后继续
 2ndscreen task cancel TASK_ID
 2ndscreen task artifacts TASK_ID   # 已归档的文件及其完整性
+2ndscreen task bind-account TASK_ID hr-zhang   # 只用于还没有账号、正在等待或已暂停的任务
 ```
 
-MCP 客户端可用同名工具 `task_run`、`task_status`、`task_pause`、`task_resume`、
-`task_cancel`、`task_artifacts`、`task_inspect_procedure`，它们调用的是同一个命令。
+`run` 和 `resume` 会在需要时启动后台 worker（不会重复启动）；命令退出后任务继续运行。`pause` 和
+`cancel` 在执行者真正停下后才报告 `paused` / `cancelled`，之前会显示 `running` 或 `cancelling`，
+稍后用 `status` 查看即可。
+
+MCP 客户端可用同名工具 `task_run`（参数 `account`）、`task_status`、`task_pause`、`task_resume`、
+`task_cancel`、`task_artifacts`、`task_inspect_procedure`、`task_bind_account`，它们调用的是同一个命令。
 
 ## 处理等待与结果
 
+- `waiting_user` + `account_changed`：任务没有绑定账号。问用户当前账号的名字，`bind-account` 后 `resume`。
 - `waiting_user` + `login_required` / `captcha`：请用户在 BOSS 窗口完成登录或验证，然后 `resume`。
 - `waiting_user` + `job_ambiguous`：多个职位都匹配 `--job`，任务不会自己挑。请用户给出准确的职位名，
   取消后用新的 `--job` 重新 `run`。
@@ -83,6 +99,7 @@ MCP 客户端可用同名工具 `task_run`、`task_status`、`task_pause`、`tas
 - `task.json`：机器校验的任务配置（`validateTaskSpec`）。
 - `profiles/macos/boss-macos-1440x900.json`：窗口 profile（1440×900 逻辑点的虚拟屏）。应用版本、
   实际内容区和缩放在绑定窗口时实测，不由 profile 假定。
-- `procedures/*.seed.json`：随包发布的流程种子（状态 `seeded`，只含读取/导航动作，不含元素序号）。
-  它们未在真实 BOSS 上验证，只作为首次尝试；每次结果都由工作流的本地校验判定，失败时由 Runtime
-  修复或回到工作流的确定路径。
+- `procedures/*.seed.json`：流程种子（状态 `seeded`，只含读取/导航动作，不含元素序号），供审阅和
+  以后导入。它们未在真实 BOSS 上验证，所以 Runtime **不会**自动导入：已有种子时会先回放种子而跳过
+  工作流已实测的确定路径，种子一旦失效就要调用模型修复。当前版本直接走确定路径，学会的流程由
+  Runtime 在本机账本中按“三次不同候选人成功”晋级。

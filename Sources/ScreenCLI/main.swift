@@ -34,6 +34,7 @@ usage:
   2ndscreen task run SKILL_ID --job TEXT --limit N --output DIR [...]   see 2ndscreen task --help
   2ndscreen task status|pause|resume|cancel|artifacts TASK_ID
   2ndscreen task inspect-procedure PROCEDURE_ID
+  2ndscreen task bind-account TASK_ID ACCOUNT_KEY
   2ndscreen vision          on-device OCR, compare and stitch: one JSON request on stdin
   2ndscreen agent-bridge    one task-runtime unit with the UI-TARS agent, JSON lines (for the runtime)
 

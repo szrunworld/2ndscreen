@@ -14,30 +14,50 @@ import {
   assertValid,
   isRuntimeError,
   validateCollectResumesInput,
+  type AccountScope,
   type Budget,
   type CliCommand,
   type CliIO,
   type CollectResumesInput,
   type TaskControl,
+  type TaskRecord,
 } from './contracts.ts';
 
-export const CLI_COMMANDS: readonly CliCommand[] = ['run', 'status', 'pause', 'resume', 'cancel', 'artifacts', 'inspect-procedure'];
+/** The contract's commands, and bind-account for the explicit BOSS account. */
+export type TaskCliCommand = CliCommand | 'bind-account';
+
+export const CLI_COMMANDS: readonly TaskCliCommand[] = ['run', 'status', 'pause', 'resume', 'cancel', 'artifacts', 'inspect-procedure', 'bind-account'];
+
+/**
+ * What the runtime's daemon adds to TaskControl for accounts: a submit that
+ * binds the account before the task can start, and a later binding while a
+ * task waits for one. runCli asks for these only when an account is given.
+ */
+export interface AccountControl {
+  submit(skillId: string, input: CollectResumesInput, options?: { account?: AccountScope }): Promise<{ taskId: string }>;
+  bindAccount(taskId: string, account: AccountScope): Promise<TaskRecord>;
+}
 
 export const CLI_USAGE = [
   'usage:',
   '  2ndscreen task run SKILL_ID --job TEXT --limit N --output DIR',
   '                 [--source conversations|recommend] [--mode available|original-only]',
   '                 [--browse-limit N] [--deadline ISO_TIME] [--budget FIELD=N]...',
-  '                 [--take-over] [--keep-window] [--analysis off|on]',
+  '                 [--take-over] [--keep-window] [--analysis off|on] [--account ACCOUNT_KEY]',
   '  2ndscreen task status TASK_ID',
   '  2ndscreen task pause TASK_ID',
   '  2ndscreen task resume TASK_ID',
   '  2ndscreen task cancel TASK_ID',
   '  2ndscreen task artifacts TASK_ID',
   '  2ndscreen task inspect-procedure PROCEDURE_ID',
+  '  2ndscreen task bind-account TASK_ID ACCOUNT_KEY',
   '',
   '--limit is how many resumes must be committed; --output is an absolute directory, the',
   'task writes under DIR/TASK_ID. --source defaults to conversations, --mode to available.',
+  '--account names the BOSS account the task works in, a key you choose (letters, digits, ".", "_", "-"),',
+  'such as hr-zhang. The runtime cannot read the account from the window: without one a task waits',
+  '(waiting_user, account_changed) until bind-account names it. A task keeps its account for good, and',
+  'its candidates are never mixed with another account\'s.',
   `Budget fields: ${[...Object.keys(DEFAULT_BUDGET), 'taskTokens'].join(', ')}.`,
   'Every command prints one JSON line: {"ok":true,"command":…,"result":…} or {"ok":false,…,"error":{code,message}}.',
 ].join('\n');
@@ -47,6 +67,8 @@ export const RUN_DEFAULTS = { source: 'conversations', captureMode: 'available' 
 
 const BUDGET_FIELDS: ReadonlySet<string> = new Set([...Object.keys(DEFAULT_BUDGET), 'taskTokens']);
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+/** Goes into lease scopes and folder names: no ':' or '/'. */
+const ACCOUNT_KEY = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const DIGITS = /^(0|[1-9][0-9]{0,14})$/;
 const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?(Z|[+-]\d{2}:\d{2})$/;
 const CONTROL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
@@ -54,13 +76,17 @@ const MAX_TEXT = 200;
 const MAX_PATH = 4096;
 const MAX_BROWSE = 1_000_000;
 
-/** Run one CLI invocation. Never throws; the returned number is the process exit code. */
+/**
+ * Run one CLI invocation. Never throws; the returned number is the process
+ * exit code. `--account` and bind-account need the AccountControl methods
+ * (the runtime's daemon has them); other commands use TaskControl alone.
+ */
 export async function runCli(argv: readonly string[], io: CliIO, control: TaskControl): Promise<number> {
   const first = argv[0];
   if (first === undefined) return emit(io, null, usageError('a command is required'));
   if (HELP.has(first)) return help(io);
   if (!(CLI_COMMANDS as readonly string[]).includes(first)) return emit(io, null, usageError(`unknown command ${quote(first)}`));
-  const command = first as CliCommand;
+  const command = first as TaskCliCommand;
   try {
     const result = await dispatch(command, argv.slice(1), control);
     return emit(io, command, { result });
@@ -80,10 +106,21 @@ function help(io: CliIO): number {
   return 0;
 }
 
-async function dispatch(command: CliCommand, words: readonly string[], control: TaskControl): Promise<unknown> {
+async function dispatch(command: TaskCliCommand, words: readonly string[], control: TaskControl): Promise<unknown> {
   if (command === 'run') {
-    const { skillId, input } = parseRun(words);
-    return control.submit(skillId, input);
+    const { skillId, input, account } = parseRun(words);
+    if (account === undefined) return control.submit(skillId, input);
+    return accountControl(control).submit(skillId, input, { account });
+  }
+  if (command === 'bind-account') {
+    if (words.some((w) => w === '--help' || w === '-h')) throw HELP_REQUESTED;
+    if (words.length !== 2) throw usageError('bind-account takes a TASK_ID and an ACCOUNT_KEY');
+    const [taskId, key] = words as [string, string];
+    const errors: string[] = [];
+    if (!ID.test(taskId)) errors.push("TASK_ID must be 1-128 letters, digits, '.', '_', ':' or '-', starting with a letter or digit");
+    const account = explicitAccount(key, errors);
+    if (errors.length > 0) throw new RuntimeError('invalid_input', `bind-account: ${errors.join('; ')}`, { errors });
+    return accountControl(control).bindAccount(taskId, account!);
   }
   const id = single(command, words);
   switch (command) {
@@ -105,8 +142,24 @@ async function dispatch(command: CliCommand, words: readonly string[], control: 
   }
 }
 
+function accountControl(control: TaskControl): AccountControl {
+  const candidate = control as TaskControl & Partial<AccountControl>;
+  // Never drop an account the user named: a control without bindAccount cannot honor it.
+  if (typeof candidate.bindAccount !== 'function') throw new RuntimeError('capability_missing', 'this task runtime cannot bind accounts');
+  return candidate as AccountControl;
+}
+
+/** The account the user named, bound as given: explicit, never inferred. */
+function explicitAccount(key: string, errors: string[]): AccountScope | undefined {
+  if (!ACCOUNT_KEY.test(key)) {
+    errors.push('ACCOUNT_KEY must be 1-64 letters, digits, ".", "_" or "-", starting with a letter or digit');
+    return undefined;
+  }
+  return { platform: 'boss', accountKey: key, binding: 'explicit' };
+}
+
 /** The one ID the non-run commands take. */
-function single(command: CliCommand, words: readonly string[]): string {
+function single(command: TaskCliCommand, words: readonly string[]): string {
   const what = command === 'inspect-procedure' ? 'PROCEDURE_ID' : 'TASK_ID';
   if (words.some((w) => w === '--help' || w === '-h')) throw HELP_REQUESTED;
   if (words.length !== 1) throw usageError(`${command} takes exactly one ${what}`);
@@ -129,10 +182,11 @@ const RUN_FLAGS: Readonly<Record<string, Flag>> = {
   '--analysis': { kind: 'choice', choices: ['off', 'on'] },
   '--take-over': { kind: 'bool' },
   '--keep-window': { kind: 'bool' },
+  '--account': { kind: 'text' },
 };
 
 /** Words after `run`, checked in full; every problem is reported at once. */
-export function parseRun(words: readonly string[]): { skillId: string; input: CollectResumesInput } {
+export function parseRun(words: readonly string[]): { skillId: string; input: CollectResumesInput; account?: AccountScope } {
   const errors: string[] = [];
   const values = new Map<string, string>();
   const flags = new Set<string>();
@@ -201,12 +255,14 @@ export function parseRun(words: readonly string[]): { skillId: string; input: Co
   if (analysis !== undefined) raw.analysis = choice('--analysis', analysis, errors);
   if (flags.has('--take-over')) raw.takeOver = true;
   if (flags.has('--keep-window')) raw.keepWindow = true;
+  const accountKey = values.get('--account');
+  const account = accountKey === undefined ? undefined : explicitAccount(accountKey, errors);
 
   if (errors.length > 0) throw new RuntimeError('invalid_input', `run: ${errors.join('; ')}`, { errors });
   // The contract's own validator has the last word: absolute path, count
   // bounds, browse limit not below the count, deadline not already past.
   const input = assertValid(validateCollectResumesInput(raw), 'run');
-  return { skillId, input };
+  return account ? { skillId, input, account } : { skillId, input };
 
   function choice(name: string, value: string, errs: string[]): string {
     const allowed = (RUN_FLAGS[name] as { choices: readonly string[] }).choices;
@@ -257,7 +313,7 @@ function usageError(message: string): RuntimeError {
 }
 
 /** Print the single JSON line for a result or an error, and pick the exit code. */
-function emit(io: CliIO, command: CliCommand | null, outcome: { result: unknown } | { error: unknown } | RuntimeError): number {
+function emit(io: CliIO, command: TaskCliCommand | null, outcome: { result: unknown } | { error: unknown } | RuntimeError): number {
   if (outcome instanceof RuntimeError) outcome = { error: outcome };
   if ('result' in outcome) {
     const line = serialize({ ok: true, command, result: outcome.result ?? null });

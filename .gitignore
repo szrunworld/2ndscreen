@@ -5,3 +5,4 @@ windows/**/bin/
 windows/**/obj/
 windows/artifacts/
 node_modules/
+packages/task-runtime/dist/

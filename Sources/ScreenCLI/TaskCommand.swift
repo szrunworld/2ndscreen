@@ -20,16 +20,17 @@ import Foundation
 /// 2ndscreen.app. $SECONDSCREEN_NODE (absolute) replaces <runtime>/bin/node.
 /// Without a runtime, every task command fails with capability_missing.
 enum TaskCommand {
-    static let commands = ["run", "status", "pause", "resume", "cancel", "artifacts", "inspect-procedure"]
+    static let commands = ["run", "status", "pause", "resume", "cancel", "artifacts", "inspect-procedure", "bind-account"]
 
     static let usage = """
     usage:
       2ndscreen task run SKILL_ID --job TEXT --limit N --output DIR
                      [--source conversations|recommend] [--mode available|original-only]
                      [--browse-limit N] [--deadline ISO_TIME] [--budget FIELD=N]...
-                     [--take-over] [--keep-window] [--analysis off|on]
+                     [--take-over] [--keep-window] [--analysis off|on] [--account ACCOUNT_KEY]
       2ndscreen task status|pause|resume|cancel|artifacts TASK_ID
       2ndscreen task inspect-procedure PROCEDURE_ID
+      2ndscreen task bind-account TASK_ID ACCOUNT_KEY
 
     Runs skill tasks such as boss.collect-resumes in the background through the
     task runtime bundled with 2ndscreen.app. Every command prints one JSON line
@@ -51,7 +52,8 @@ enum TaskCommand {
 
         // The runtime drives this same CLI for screens and the agent bridge.
         if let me = executableURL() { setenv("SECONDSCREEN_CLI", me.path, 1) }
-        let argv = [runtime.node.path, runtime.entry.path] + words
+        // node:sqlite still prints an ExperimentalWarning on Node 22; the command line writes nothing to stderr.
+        let argv = [runtime.node.path, "--disable-warning=ExperimentalWarning", runtime.entry.path] + words
         var cArgs: [UnsafeMutablePointer<CChar>?] = argv.map { strdup($0) }
         cArgs.append(nil)
         execv(runtime.node.path, &cArgs)

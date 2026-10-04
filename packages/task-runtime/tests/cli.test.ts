@@ -129,7 +129,46 @@ test('each command routes to its one TaskControl method', async () => {
   assert.equal(status.json.result.outputPath, '/tmp/out/task-1');
   assert.deepEqual((await cli(['artifacts', 'task-1'])).json.result, []);
   assert.deepEqual((await cli(['inspect-procedure', 'proc-1'], control)).json.result, procedure);
-  assert.deepEqual(CLI_COMMANDS, ['run', 'status', 'pause', 'resume', 'cancel', 'artifacts', 'inspect-procedure']);
+  assert.deepEqual(CLI_COMMANDS, ['run', 'status', 'pause', 'resume', 'cancel', 'artifacts', 'inspect-procedure', 'bind-account']);
+});
+
+test('--account binds the named account at submit, as explicit, and nothing else does', async () => {
+  const bindAccount = async () => TASK;
+  const control = fakeControl({ bindAccount } as never);
+  const { code, json, calls } = await cli([...RUN, '--account', 'hr-zhang.2'], control);
+  assert.equal(code, 0);
+  assert.deepEqual(json.result, { taskId: 'task-1' });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]!.method, 'submit');
+  assert.deepEqual(calls[0]!.args[2], { account: { platform: 'boss', accountKey: 'hr-zhang.2', binding: 'explicit' } });
+  // Without --account the contract's two-argument submit is used, and no account is made up.
+  const plain = fakeControl({ bindAccount } as never);
+  await cli(RUN, plain);
+  assert.equal(plain.calls[0]!.args.length, 2);
+});
+
+test('an account the control cannot bind is refused, never dropped', async () => {
+  const control = fakeControl();
+  const { code, json, calls } = await cli([...RUN, '--account', 'hr-zhang'], control);
+  assert.equal(code, 1);
+  assert.equal(json.error.code, 'capability_missing');
+  assert.deepEqual(calls, []);
+});
+
+test('bind-account names the account for a waiting task; bad keys never reach the control', async () => {
+  const control = fakeControl({ bindAccount: async () => ({ ...TASK, status: 'waiting_user' }) } as never);
+  const ok = await cli(['bind-account', 'task-1', 'hr_zhang'], control);
+  assert.equal(ok.code, 0);
+  assert.equal(ok.json.command, 'bind-account');
+  assert.deepEqual(control.calls, [{ method: 'bindAccount', args: ['task-1', { platform: 'boss', accountKey: 'hr_zhang', binding: 'explicit' }] }]);
+  for (const argv of [['bind-account', 'task-1'], ['bind-account', 'task-1', 'a:b'], ['bind-account', 'task-1', 'a/b'], ['bind-account', 'task-1', '-x'],
+    ['bind-account', 'task-1', 'x'.repeat(65)], [...RUN, '--account', 'acct:1'], [...RUN, '--account']]) {
+    control.calls.length = 0;
+    const bad = await cli(argv, control);
+    assert.equal(bad.code, 2, argv.join(' '));
+    assert.equal(bad.json.error.code, 'invalid_input');
+    assert.deepEqual(control.calls, []);
+  }
 });
 
 test('invalid words fail with code 2, one JSON line, and never reach the control', async () => {
