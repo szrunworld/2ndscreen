@@ -14,7 +14,7 @@
 | D2c | 管线三处小改（入口分发、status()、suspend_gui） | 已释放 | monitor-D2c | 已合（e329d0c；全量 1712 + 5 xfail） | fe06972 | client_state 缺 suspended → F5（0.3.3） |
 | A4 | 契约 0.3.2 汇总补丁 | 已释放 | monitor-A4 | 已合（5dc14d1，contracts 299）；server 一致性测试 21 个失败待 F4 | 2810273 | 多账户策略取值未裁决（A4.md） |
 | F4 | 服务端适配 0.3.2 | 已释放 | monitor-F4 | 已合（5bf3bd8；全量 1665 + 1 xfail） | f95735b | 搜索时段外直接 409（不顺延）；最小间隔仍按 search_runs 计算，被取消的搜索也占间隔 |
-| F5 | 修 M-1（契约 0.3.3 HeartbeatAck.account_binding + 服务端）与 M-4 | ctx_7ccac2768d4c / monitor-F5 | monitor-F5 | 进行 | — | — |
+| F5 | 修 M-1（契约 0.3.3 HeartbeatAck.account_binding + 服务端）与 M-4 | 已释放 | monitor-F5 | 已合（e3d4644；全量 1757 + 5 xfail） | — | 客户端部分归 D2d |
 | D2d | 管线收尾（搜索=对外动作、M-1 客户端、M-2、M-3、suspended） | ctx_e735d5dd2f10 / monitor-D2d | monitor-D2d | 进行 | — | — |
 | R | 品牌化简历渲染 | — | — | 移出本项目（用户 2026-10-04：属于 ATS 功能，见 ~/orca/ats） | — | — |
 | B | 只读可行性验证与夹具 | ctx_1b25ee64eab9（已释放） | monitor-B | 已合（898edbd） | 201001d | 登录/二维码、新招呼首次打开、电话待同意/已交换/已拒绝、邮件转发内容、搜索输入后结果 → 留给 N/K |
@@ -40,6 +40,7 @@
 
 | 版本 | 日期 | 变更 | 受影响任务 |
 | --- | --- | --- | --- |
+| 0.3.3 | 2026-10-05 | 新增 heartbeat_ack 契约：account_binding {account_id, bound_at, confirmed_by} 必有可空，如实反映服务端确认的绑定；client_state 增加 suspended | client（D2d） |
 | 0.3.2 | 2026-10-04 | 搜索=对外动作（三标志 true、受工作时段约束）；ManualCommandCreated.scheduled_for 与 issued_at 未到不下发；openapi 补 401/403/404/422；serviceToken 只读 listResumeDocuments/getPolicy；ResumeDocument.candidate_case_ids；human_input_required.expires_at（默认 10 分钟）；mail_message_key revision=purged | server（F4）、core（D2d） |
 | 0.3.1 | 2026-10-04 | 人工换微信可从除 closed 外各阶段进入 contact_requested（之后邮件到达不回退阶段）；mail_message 改为 mail 服务订阅方（provider=remotedesk-mail、mail_message_id='mail:'+id）；upstream_missing；policy.mail_retention_days（必填，默认 30）；收件邮箱 zhaopin@remotedesk.io | F2、G、I1 |
 | 0.3.0 | 2026-10-04 | 移除 forward_resume；mail_message / mail_verification；resume_document variant；搜索卡片 fields/masked_name/prop_card_texts；只换微信 + POST /cases/{id}:request-wechat；补齐 401/403/422 | client、server（X 适配） |
