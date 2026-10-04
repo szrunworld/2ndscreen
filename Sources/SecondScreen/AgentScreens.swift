@@ -132,21 +132,22 @@ final class AgentScreens {
         // A serial whose remembered unit number is already taken gives a
         // screen that captures as another one; try the next serial instead.
         var tried: Set<UInt32> = []
-        var created: (VirtualDisplay, UInt32)?
-        // macOS tearing the display down removes this screen, not a later one of the same name.
-        let owner = ScreenRef()
+        var created: (VirtualDisplay, UInt32, ScreenRef)?
         while created == nil, tried.count < Self.serialAttempts {
             let serial = nextSerial(excluding: tried)
             tried.insert(serial)
+            // One per attempt: macOS tearing a display down removes the screen made from that
+            // display only; a display given up for its unit number never removes anything.
+            let owner = ScreenRef()
             guard let display = VirtualDisplay(
                 name: name, mode: mode, hiDPI: hiDPI, reserving: [mode], serialNumber: serial,
                 onTerminate: { [weak self] in owner.screen.map { self?.remove($0) } })
             else {
                 return .failure("macOS refused to create a \(mode)\(hiDPI ? " HiDPI" : "") display")
             }
-            if !VirtualDisplay.sharesUnitNumber(display.displayID) { created = (display, serial) }
+            if !VirtualDisplay.sharesUnitNumber(display.displayID) { created = (display, serial, owner) }
         }
-        guard let (display, serial) = created else {
+        guard let (display, serial, owner) = created else {
             return .failure("macOS gave every new display the unit number of an existing one;"
                 + " destroy a screen and try again")
         }
@@ -171,6 +172,8 @@ final class AgentScreens {
         // A screen of the wrong size breaks every frame an agent computes.
         // Destroyed (and its name possibly reused) while it settled: report that, not another screen.
         guard isRegistered(screen) else { return .failure(Self.goneWhileCreating(name)) }
+        // Resized by another request meanwhile: that request owns the size now; do not claim this one.
+        guard display.mode == mode, display.hiDPI == hiDPI else { return .failure(Self.resizedWhileCreating(name, display)) }
         guard display.isSettled else {
             let actual = CGDisplayCopyDisplayMode(display.displayID)
                 .map { "\($0.width)×\($0.height)\($0.pixelWidth > $0.width ? " HiDPI" : "")" } ?? "no mode"
@@ -183,6 +186,7 @@ final class AgentScreens {
         }
         await keepArrangement(arrangement, adding: display.displayID, windows: windowsBefore)
         guard isRegistered(screen) else { return .failure(Self.goneWhileCreating(name)) }
+        guard display.mode == mode, display.hiDPI == hiDPI else { return .failure(Self.resizedWhileCreating(name, display)) }
         var response = ControlResponse()
         response.screen = info(screen)
         return response
@@ -190,6 +194,11 @@ final class AgentScreens {
 
     static func goneWhileCreating(_ name: String) -> String {
         "the screen \"\(name)\" was destroyed while it was being created"
+    }
+
+    static func resizedWhileCreating(_ name: String, _ display: VirtualDisplay) -> String {
+        "the screen \"\(name)\" was created but another request resized it to \(display.mode)\(display.hiDPI ? " HiDPI" : "")"
+            + " before creation finished; it still exists"
     }
 
     /// Whether `screen` itself is still one of this app's screens; a newer screen of the same name is not.
@@ -545,8 +554,13 @@ final class AgentScreens {
         return await displayWork.run("2ndscreen: resizing agent screen \(name)", refused: { .failure($0.message()) }) {
             // The guard may have waited: act only on this very screen, not one recreated under its name.
             guard isRegistered(screen) else { return .failure(Self.goneWhileResizing(name)) }
-            guard await apply(VirtualDisplay.Mode(width: width, height: height), to: screen) else {
-                return .failure(isRegistered(screen) ? "macOS did not switch the screen to \(width)×\(height)" : Self.goneWhileResizing(name))
+            let wanted = VirtualDisplay.Mode(width: width, height: height)
+            guard await apply(wanted, to: screen) else {
+                if !isRegistered(screen) { return .failure(Self.goneWhileResizing(name)) }
+                if screen.display.mode != wanted {
+                    return .failure("another request resized the screen to \(screen.display.mode) before this resize finished")
+                }
+                return .failure("macOS did not switch the screen to \(width)×\(height)")
             }
             var response = ControlResponse()
             response.screen = info(screen)
@@ -632,7 +646,8 @@ final class AgentScreens {
         // Removed while settling: no preview update for it, and no success.
         guard isRegistered(screen) else { return false }
         onResize?(screen.name)
-        return screen.display.isSettled
+        // isSettled reads the latest request; a newer resize meanwhile means this one did not win.
+        return screen.display.mode == mode && screen.display.hiDPI == hiDPI && screen.display.isSettled
     }
 
     // MARK: Following new windows
