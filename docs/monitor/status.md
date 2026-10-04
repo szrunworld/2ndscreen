@@ -20,7 +20,7 @@
 | E | 观察模块 | 已释放 | monitor-E | 已合（a139f20；协调者同时改 core：观察用 verify 守卫、attach 注入、首个基线带账户；全量 884 tests） | e002670 | 待 N：点页签后列表刷新、处理过的会话是否移出新招呼、更多时间文案形态 |
 | F1 | 服务端基础 | 已释放 | monitor-F1 | 已合（2b1dff2 + 0.2.0 适配 8abbf54） | c7bbc4b | openapi 缺 401/422/403 → A3 |
 | F2 | 服务端业务 | 已释放 | monitor-F2 | 已合（含 F2b 原子性 60163fd；全量 1442）；业务部分冻结（归 ATS） | 94a473c | 契约请求 ManualCommandCreated.scheduled_for；issued_at 未到不下发写入 contracts.md |
-| F3 | 服务端扩展（搜索、登录接力、通知 + 邮件相关端点） | ctx_f06639cbb37b / monitor-F3 | monitor-F3 | 进行 | — | 与 F2 的衔接：resume_linked 内部事件、policy 只读权限、迁移 v3 |
+| F3 | 服务端扩展（搜索、登录接力、通知 + 邮件相关端点） | 已释放 | monitor-F3 | 已合（6ec91ae；全量 1602） | — | 通知只保留设备运维类（login_required、blocked_by_dialog、login_qr、邮件 failed），case_needs_human 与 mail_verification 通知冻结；搜索受工作时段约束（搜索算对外动作）；scrub/purge 定时调用归 M 与部署；契约缺口见 F3.md |
 | G | 邮件接入（mail 服务订阅方） | 已释放 | monitor-G | 已合（mail 入工作区；全量 1313） | f29f5a9 | 交接给服务器端（docs/monitor/handover-mail-ingestion.md），Monitor 内冻结 |
 | H1 | 动作公共层 + 问候 + 求简历 | 已释放 | monitor-H1 | 已合（合并时全量 963 tests） | — | 9 条界面假设待 N（H1.md 第五节）；接口请求：Driver 层过滤 PDF 子树、hints 稳定 |
 | H2 | 搜索动作 | ctx_6a47ff3c529e / monitor-H2 | monitor-H2 | 进行 | — | — |
@@ -83,3 +83,8 @@ Run：run_7d52e82ce7ed。分支 monitor-v1（a12a931，自 szrunworld/ss-runtime
 - 原待决： 给 ATS 的契约变更（channel_task 与执行器接口、任务类型含求简历/换微信/搜索、无联系方式的 BOSS 候选人入库、品牌化简历）由谁提出。
 
 - 邮件收简历（G）：用户决定交给服务器端（定时任务，与设备无关）。交接文档 docs/monitor/handover-mail-ingestion.md；接收方确认后从 Monitor 移除 monitor/mail 与相关端点。
+
+## 搜索算对外动作（用户 2026-10-04）
+
+- 更正此前"搜索属于导航"的裁决：搜索输入与提交在 ctx.outbound() 内，三标志 navigation/outbound/visible 均为 true。
+- 待跟进（D2d，D2c 恢复后派）：core 中 search 的限额改按对外动作计数、崩溃恢复对 search 的 outbound 不再强制 false、服务端搜索受工作时段约束；契约 contracts.md 第四节释义同步（0.3.2，文档修订）。
