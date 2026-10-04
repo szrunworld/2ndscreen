@@ -473,11 +473,6 @@ def _crashing_run(command, driver, ctx):
     raise SimulatedKill()
 
 
-@pytest.mark.xfail(
-    raises=ValidationError,
-    strict=False,
-    reason="core/write_flags.py 仍写 0.1.x 的 gui_write_performed（由 D2b 适配 0.2.0）；D2b 合入后应通过，届时删除本标记",
-)
 def test_d2_crash_recovery_with_reopened_sqlite_ledger(db):
     greet = ScriptedHandler("send_greeting", run=_crashing_run)  # verify 默认"无法判断"
     env = make_env(handlers=[greet])
