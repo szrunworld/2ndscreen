@@ -13,7 +13,7 @@
 | C2 | Driver 修复（CliFailure 冻结、window release 分类、PDF 子树过滤） | 已释放 | monitor-C2 | 已合（f9dbc1e；全量 1181） | b99a2db | 窗口归还文案按源码构造未实测；开着 PDF 预览时快照 index 与 CLI index 不同（driver 内部映射） |
 | D2c | 管线三处小改（入口分发、status()、suspend_gui） | ctx_f53c25d0358d / monitor-D2c | monitor-D2c | 进行（21:21 撞会话额度，凌晨 12:30 自动继续；改动在工作区未提交） | — | — |
 | A4 | 契约 0.3.2 汇总补丁 | 已释放 | monitor-A4 | 已合（5dc14d1，contracts 299）；server 一致性测试 21 个失败待 F4 | 2810273 | 多账户策略取值未裁决（A4.md） |
-| F4 | 服务端适配 0.3.2 | 派发 / monitor-F4 | monitor-F4 | 进行 | — | — |
+| F4 | 服务端适配 0.3.2 | 已释放 | monitor-F4 | 已合（5bf3bd8；全量 1665 + 1 xfail） | f95735b | 搜索时段外直接 409（不顺延）；最小间隔仍按 search_runs 计算，被取消的搜索也占间隔 |
 | R | 品牌化简历渲染 | — | — | 移出本项目（用户 2026-10-04：属于 ATS 功能，见 ~/orca/ats） | — | — |
 | B | 只读可行性验证与夹具 | ctx_1b25ee64eab9（已释放） | monitor-B | 已合（898edbd） | 201001d | 登录/二维码、新招呼首次打开、电话待同意/已交换/已拒绝、邮件转发内容、搜索输入后结果 → 留给 N/K |
 | C | Driver 适配器 | ctx_3dfbecec466d（已释放） | monitor-C | 已合（ecfe9da；client 入工作区 + relock，contracts+client 351 tests） | ec6aed9 | 定位器 text 同时匹配 label/value（比契约宽），0.2.0 契约里追认；CliDriver 未在 BOSS 上真机跑过 → N |
