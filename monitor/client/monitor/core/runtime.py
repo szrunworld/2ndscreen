@@ -7,11 +7,18 @@
 4. 什么都没做且允许领取：长轮询领取（等待时间不超过下一次心跳 / 观察的到期时间）。
 
 暂停 = 停止领取、停止启动新指令与观察；心跳、结果回传、事件补传照常进行（方案第十节第 2 条）。
-离线超过 24 小时：再次连上服务端后置 needs_baseline，先重建观察基线，再领取指令。
+离线超过 24 小时：再次连上服务端后置 needs_baseline，先重建观察基线，再执行与领取指令。
+
+绑定账户以服务端为准（契约 0.3.3，缺陷 M-1）：心跳回执带 account_binding，从无到有或变更时写入本机；
+换了账户时置 needs_baseline，基线重建前不执行、不领取；服务端撤销绑定（回执为 null）时清除本机绑定、停止领取。
+
+心跳被拒（缺陷 M-3）：401 → 令牌吊销，停止一切服务端往来；409 → 契约版本不兼容，停止领取与执行，
+按退避继续心跳，直到服务端接受；其他 4xx → 记 last_error 并按退避重试。进程不因此退出。
+退避期间（缺陷 M-2）空闲等待以退避结束时间为准，不空转。
 
 窗口不归 Monitor（suspend_gui）：local 归还窗口或不在工作时段时，由窗口归属方（任务 J 的 LocalSession）
 调用 suspend_gui(reason) / resume_gui()。挂起期间不观察、不执行也不领取指令（指令都要用界面），
-由此产生的 window_lost 不记为 last_error；心跳照常，client_state 报 unknown（看不到界面）。
+由此产生的 window_lost 不记为 last_error；心跳照常，client_state 报 suspended（契约 0.3.3）。
 与暂停是两回事：暂停是"不该做"，挂起是"做不了"，两者互不覆盖。
 """
 
@@ -46,6 +53,7 @@ from .client import (
     Backoff,
     ClaimResponse,
     CommandClient,
+    HeartbeatAck,
     RequestRejected,
     ServerUnavailable,
     Unauthorized,
@@ -58,6 +66,8 @@ from .pipeline import ExecOutcome, Gate, Pipeline
 
 Mode = Literal["local", "remote"]
 ClientState = Literal["running", "not_running", "login_required", "blocked_by_dialog", "unknown"]
+# 只用于上报：挂起期间心跳与 status() 报 suspended（契约 0.3.3）
+ReportedClientState = Literal["running", "not_running", "login_required", "blocked_by_dialog", "unknown", "suspended"]
 
 # 这些暂停原因下界面已不归 Monitor（用户拿回窗口、换了账户），连观察也停止；
 # 其他原因（登录失效、异常、服务端要求）仍继续只读观察，以便发现恢复。
@@ -138,6 +148,8 @@ class MonitorRuntime:
         self.policy_stale = True
         self.account_confirmed: bool | None = None
         self.revoked = False
+        # 心跳收到 409（契约版本不兼容）：停止领取与执行，按退避继续心跳，服务端接受后自动解除
+        self.contract_incompatible = False
         self.online: bool | None = None
         self.client_state: ClientState = "unknown"
         self.last_error: LastErrorInfo | None = None
@@ -239,6 +251,7 @@ class MonitorRuntime:
                 self.pipeline.recover(self.gate())
                 self._recovery_pending = False
                 return 0.0
+        if self._execute_allowed():
             outcome = self.pipeline.run_next(self.gate())
             if outcome is not None:
                 self._after_execution(outcome)
@@ -262,8 +275,14 @@ class MonitorRuntime:
 
     def _idle_seconds(self, now: datetime) -> float:
         candidates = [self.config.max_idle_seconds]
-        wake_at = None if self.gui_suspended else self.pipeline.wake_at  # 挂起时不会执行，别为它醒来
-        for t in (self._next_heartbeat, self.backoff.next_at, wake_at):
+        wake_at = self.pipeline.wake_at if self._execute_allowed() else None  # 不会执行时别为它醒来
+        next_server: datetime | None = None
+        if not self.revoked:
+            # 退避期内到期的心跳也要等退避结束才发（M-2：否则到期时间停在过去，空闲为 0，空转）
+            next_server = self._next_heartbeat
+            if self.backoff.next_at is not None and (next_server is None or next_server < self.backoff.next_at):
+                next_server = self.backoff.next_at
+        for t in (next_server, wake_at):
             if t is not None:
                 candidates.append((t - now).total_seconds())
         if self.observer is not None and self._observe_allowed() and self._next_observe is not None:
@@ -298,7 +317,13 @@ class MonitorRuntime:
             return
         try:
             if self._next_heartbeat is None or now >= self._next_heartbeat:
-                self._heartbeat()
+                try:
+                    self._heartbeat()
+                except RequestRejected as exc:
+                    self._heartbeat_rejected(exc)
+                    return
+            if self.contract_incompatible:
+                return  # 契约不兼容时只靠心跳探测服务端是否已升级
             if self.policy_stale and self.account_id is not None:
                 self._refresh_policy()
             self._retry_acks()
@@ -363,7 +388,12 @@ class MonitorRuntime:
         self._next_heartbeat = now + timedelta(seconds=self.config.heartbeat_interval)
         if self._unsent_error is err:
             self._unsent_error = None
-        self.account_confirmed = ack.account_confirmed
+        if self.contract_incompatible:
+            self.contract_incompatible = False  # 服务端已接受心跳：恢复
+        self._apply_server_binding(ack)
+        # 本次心跳带的是写入前的 account_id，回执的 account_confirmed 说的是旧值；绑定刚由回执写入时记为未知，
+        # 由下一次心跳确认（新绑定还要先重建基线，期间本来就不领取）
+        self.account_confirmed = ack.account_confirmed if hb.account_id == self.account_id else None
         if ack.paused and not self.state.paused:
             self.pause("server_request", by="server", detail="控制台要求暂停")
         elif not ack.paused and self.state.paused and self.state.pause_reason == "server_request":
@@ -372,6 +402,28 @@ class MonitorRuntime:
             self.policy_stale = True
         for cid in ack.cancellations:
             self.pipeline.cancel(cid)
+
+    def _heartbeat_rejected(self, exc: RequestRejected) -> None:
+        """心跳收到 401 以外的 4xx：不让异常穿出 run_once（M-3）。按退避重试；409 视为契约不兼容并暂停。"""
+        at = self.backoff.failure(self.clock.now())
+        if exc.status == 409:
+            self.contract_incompatible = True
+            self.record_error("contract_incompatible", f"{exc}；暂停领取与执行，{at.isoformat()} 后再试")
+        else:
+            self.record_error("heartbeat_rejected", f"{exc}；{at.isoformat()} 后重试")
+
+    def _apply_server_binding(self, ack: HeartbeatAck) -> None:
+        """以服务端确认的绑定为准更新本机绑定（契约 0.3.3，M-1）。"""
+        if not ack.binding_reported:
+            return  # 0.3.3 之前的服务端：不知道绑定，不动本机
+        remote = ack.account_binding
+        local = self.state.account_binding
+        if remote is None:
+            if local is not None:
+                self.unbind_account()
+            return
+        if local is None or local != remote:
+            self.bind_account(remote.account_id, confirmed_by=remote.confirmed_by, bound_at=remote.bound_at)
 
     def _refresh_policy(self) -> None:
         assert self.account_id is not None
@@ -447,6 +499,7 @@ class MonitorRuntime:
             and self.policy is not None
             and not self.policy_stale
             and self.account_confirmed is not False
+            and not self.contract_incompatible
             and not self.state.paused
             and not self.gui_suspended
             and not self.state.needs_baseline
@@ -610,6 +663,10 @@ class MonitorRuntime:
     def _gui_allowed(self) -> bool:
         return not self.state.paused and not self.gui_suspended
 
+    def _execute_allowed(self) -> bool:
+        """能否启动排队指令：GUI 可用、基线已重建（换账户或长时间离线后先看清界面）、契约兼容。"""
+        return self._gui_allowed() and not self.state.needs_baseline and not self.contract_incompatible
+
     # ------------------------------------------------------------------
     # 窗口挂起（窗口不归 Monitor）
     # ------------------------------------------------------------------
@@ -654,9 +711,9 @@ class MonitorRuntime:
                 self.gui_suspend_reason = None
                 self._next_observe = self.clock.now()
 
-    def _reported_client_state(self) -> ClientState:
-        # 契约的 client_state 没有"挂起"一值；挂起时看不到界面，如实报 unknown（D2c 报告接口请求 1）
-        return "unknown" if self.gui_suspended else self.client_state
+    def _reported_client_state(self) -> ReportedClientState:
+        # 契约 0.3.3 起 client_state 有 suspended（D2c 报告接口请求 1）
+        return "suspended" if self.gui_suspended else self.client_state
 
     def pause(self, reason: str, *, by: Literal["user", "monitor", "server"], detail: str | None = None) -> None:
         """停止领取与启动新动作；已发生的动作照常记录与回传。重复暂停不覆盖首个原因。"""
@@ -677,14 +734,17 @@ class MonitorRuntime:
         self.state.pause_reason = None
         self.ledger.save_state(self.state)
 
-    def bind_account(self, account_id: str, *, confirmed_by: str) -> None:
-        """（重新）绑定招聘账户：清空策略缓存、要求重建基线；因换账户而暂停的设备恢复。"""
+    def bind_account(self, account_id: str, *, confirmed_by: str, bound_at: datetime | None = None) -> None:
+        """（重新）绑定招聘账户：清空策略缓存、要求重建基线；因换账户而暂停的设备恢复。
+
+        通常由心跳回执的 account_binding 触发（bound_at 取服务端记录的确认时间）。
+        """
         from monitor_contracts import AccountBinding
 
         changed = self.account_id != account_id
         switched = self.state.paused and self.state.pause_reason == "account_switched"
         self.state.account_binding = AccountBinding(
-            account_id=account_id, bound_at=self.clock.now(), confirmed_by=confirmed_by
+            account_id=account_id, bound_at=bound_at or self.clock.now(), confirmed_by=confirmed_by
         )
         if changed:
             self.policy = None
@@ -696,6 +756,17 @@ class MonitorRuntime:
             self.state.paused = False
             self.state.pause_reason = None
         self.ledger.save_state(self.state)
+
+    def unbind_account(self) -> None:
+        """服务端撤销了绑定：清除本机绑定与策略，停止领取（心跳 account_id 随之为 null）。"""
+        if self.state.account_binding is None:
+            return
+        self.state.account_binding = None
+        self.policy = None
+        self.policy_stale = True
+        self.account_confirmed = None
+        self.ledger.save_state(self.state)
+        self.record_error("account_unbound", "控制台已撤销本设备的账户绑定，停止领取指令")
 
     # ------------------------------------------------------------------
     # 杂项
@@ -732,6 +803,7 @@ class MonitorRuntime:
             "needs_baseline": self.state.needs_baseline,
             "online": self.online,
             "revoked": self.revoked,
+            "contract_incompatible": self.contract_incompatible,
             "gui_suspended": self.gui_suspended,
             "gui_suspend_reason": self.gui_suspend_reason,
             "current_action": current[0].action if current else None,

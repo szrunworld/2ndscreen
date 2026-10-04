@@ -77,6 +77,7 @@ def _result(cmd, clock):
 def test_heartbeat_shape_and_ack(server, clock):
     contacts = []
     server.paused = True
+    server.bind(ACCOUNT, confirmed_by="ops_li")
     server.cancellations.add("00000000-0000-4000-8000-0000000000aa")
     c = _client(server, clock, on_contact=contacts.append)
     ack = c.heartbeat(_hb(clock))
@@ -87,6 +88,22 @@ def test_heartbeat_shape_and_ack(server, clock):
     assert ack.paused is True and ack.policy_version == 1 and ack.account_confirmed is True
     assert ack.cancellations == (UUID("00000000-0000-4000-8000-0000000000aa"),)
     assert contacts == [clock.now()] and c.last_contact_at == clock.now()
+    # 契约 0.3.3：回执里的绑定原样解析成本机 AccountBinding 的形状
+    assert ack.binding_reported is True
+    assert ack.account_binding is not None
+    assert (ack.account_binding.account_id, ack.account_binding.confirmed_by) == (ACCOUNT, "ops_li")
+    assert ack.account_binding.bound_at == clock.now()
+
+
+def test_heartbeat_ack_binding_null_and_absent(server, clock):
+    c = _client(server, clock)
+    ack = c.heartbeat(_hb(clock, account_id=None))
+    assert ack.binding_reported is True and ack.account_binding is None and ack.account_confirmed is False
+    # 0.3.3 之前的服务端：回执没有这个字段，与"未绑定"区分开
+    server.report_binding = False
+    clock.advance(30)
+    ack = c.heartbeat(_hb(clock))
+    assert ack.binding_reported is False and ack.account_binding is None
 
 
 def test_heartbeat_rejects_foreign_device_id(server, clock):

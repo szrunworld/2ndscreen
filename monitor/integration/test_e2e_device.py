@@ -48,12 +48,6 @@ def test_register_with_enrollment_code_then_console_binding(w: World):
     assert w.server.device(ident.device_id)["account_binding"]["account_id"] == ACCOUNT
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="缺陷 M-1：Monitor 得不到控制台确认的绑定账户。契约与服务端部分已由 F5 补上（契约 0.3.3："
-    "HeartbeatAck.account_binding 返回服务端确认的绑定，未确认为 null）；还差客户端部分（D2d）："
-    "core 读取心跳回执的 account_binding 并调用 runtime.bind_account 写入本机绑定。D2d 完成后本用例应 XPASS，届时删除标记",
-)
 def test_monitor_learns_binding_from_server_without_manual_step(w: World):
     ident = w.register("local")
     m = w.monitor(ident, _screen(w))
@@ -132,36 +126,3 @@ def test_revoked_token_stops_all_server_traffic(w: World):
     m.run(3)
     assert m.runtime.revoked is True
     assert len(w.cluster.requests) == sent + 1
-
-
-def test_bind_script_workaround_then_monitor_claims(w: World):
-    """运维替代步骤（scripts/bind_account.py）：Monitor 停止 → 写入绑定 → 再启动即确认绑定、建基线、领取。"""
-    import importlib.util
-
-    from integration_kit import MONITOR_DIR
-
-    spec = importlib.util.spec_from_file_location("bind_account_script", MONITOR_DIR / "scripts" / "bind_account.py")
-    script = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(script)
-
-    fake = boss_new_greeting(w.clock)
-    screen = Screen(fake)
-    ident = w.register("local")
-    m = w.monitor(ident, screen)
-    m.run(3)
-    assert m.runtime.account_id is None
-    w.server.bind(ident.device_id)
-    w.enable_automation()
-    m.close()  # 停止 Monitor
-
-    ledger = w.workdir / "monitor.db"
-    assert script.main(["--ledger", str(ledger), "--account", ACCOUNT, "--confirmed-by", "ops@example.com"]) == 0
-    assert script.main(["--ledger", str(w.workdir / "missing.db"), "--account", ACCOUNT, "--confirmed-by", "x"]) == 2
-
-    m.restart()
-    assert m.runtime.account_id == ACCOUNT and m.runtime.state.needs_baseline
-    m.run_until(lambda: m.runtime.account_confirmed is True and not m.runtime.state.needs_baseline, what="确认并建基线")
-    w.clock.advance((at_local(19, 12) - w.clock.now()).total_seconds())
-    fake.goto("list_new")
-    m.run_until(lambda: w.server.cases() and w.server.cases()[0]["stage"] == "resume_requested", what="主线")
-    assert screen.outbound() == ["greeting_type", "greeting_send", "resume_request"]

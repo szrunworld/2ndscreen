@@ -601,11 +601,6 @@ def test_runtime_whitelist_closed():
     assert not (result["navigation_performed"] or result["outbound_action_performed"])
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="等待 core/契约跟进：用户 2026-10-04 决定搜索算对外动作，core write_flags 仍把 search 当作"
-    "『成功不含对外动作』（崩溃恢复复核成功时 outbound=false）",
-)
 def test_core_treats_search_success_as_outbound():
     from monitor.core.write_flags import success_is_outbound
 

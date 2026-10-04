@@ -4,8 +4,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from integration_kit import Screen, World, boss_new_greeting
 
 
@@ -15,11 +13,6 @@ def _online(w: World):
     return m
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="缺陷 M-2：连接失败进入退避后，心跳到期时间停在过去，MonitorRuntime._idle_seconds 取到负数→0，"
-    "run_forever 在退避期内空转（CPU 满载）直到退避结束；应把退避结束时间作为下一次心跳的下限",
-)
 def test_runtime_does_not_busy_spin_while_backing_off(w: World):
     m = _online(w)
     w.cluster.down = True
@@ -30,12 +23,6 @@ def test_runtime_does_not_busy_spin_while_backing_off(w: World):
     assert idle > 0, "退避期内建议等待 0 秒：真实进程会空转"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=Exception,
-    reason="缺陷 M-3：心跳收到 4xx（非 401，例如 422 契约不一致、403 device_mismatch）时 RequestRejected 没有被"
-    "_server_round 捕获，异常穿出 run_once，run_forever 退出、进程崩溃（launchd 会反复拉起）；应记 last_error 并退避",
-)
 def test_heartbeat_4xx_does_not_crash_runtime(w: World):
     m = _online(w)
     w.cluster.fail("/heartbeat", status=422, times=1)

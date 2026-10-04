@@ -83,8 +83,8 @@ def _executed(clock, at, *, action="send_greeting", wrote=True, mode="execute"):
             "observed": {"before": [], "after": []},
             "evidence": [],
             "navigation_performed": wrote,
-            "outbound_action_performed": wrote and action != "search_candidates",
-            "externally_visible_side_effect": wrote and action != "search_candidates",
+            "outbound_action_performed": wrote,
+            "externally_visible_side_effect": wrote,
             "executed_at": at.isoformat(),
             "reported_at": at.isoformat(),
         }
@@ -154,7 +154,7 @@ def _failed(clock, at, *, action, navigation, outbound):
     return LedgerCommand(command=cmd, state="failed", result=res, delivery="pending", received_at=at, updated_at=at)
 
 
-def test_check_rate_counts_outbound_only_except_search():
+def test_check_rate_counts_outbound_only_including_search():
     clock = ManualClock(datetime(2026, 10, 4, 10, 0, tzinfo=UTC))
     policy = validate_policy(make_policy(daily_limits={k: 1 for k in HARD_DAILY_CAPS}))
     now = clock.now()
@@ -164,12 +164,18 @@ def test_check_rate_counts_outbound_only_except_search():
     assert check_rate("send_greeting", now=now, history=nav_only, policy=policy).allowed
     sent = [_failed(clock, earlier, action="send_greeting", navigation=True, outbound=True)]
     assert check_rate("send_greeting", now=now, history=sent, policy=policy).kind == "daily_cap"
-    # 搜索没有对外动作，动过界面就计入
+    # 契约 0.3.2：搜索与其他动作一样按对外动作计数，只导航（没输入就失败）不计入
     cid = "00000000-0000-4000-8000-00000000abcd"
-    searched = _failed_result(cid, earlier, action="search_candidates", navigation=True, outbound=False)
+    navigated = _failed_result(cid, earlier, action="search_candidates", navigation=True, outbound=False)
+    assert not write_flags.counts_toward_limit(navigated)
+    searched = _failed_result(cid, earlier, action="search_candidates", navigation=True, outbound=True)
     assert write_flags.counts_toward_limit(searched)
-    untouched = _failed_result(cid, earlier, action="search_candidates", navigation=False, outbound=False)
-    assert not write_flags.counts_toward_limit(untouched)
+
+
+def test_success_is_outbound_for_every_action():
+    from monitor_contracts import OUTWARD_ACTIONS
+
+    assert all(write_flags.success_is_outbound(a) for a in OUTWARD_ACTIONS)
 
 
 def test_check_rate_day_boundary_uses_policy_timezone():

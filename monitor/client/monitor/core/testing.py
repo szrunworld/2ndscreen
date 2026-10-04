@@ -320,6 +320,9 @@ class FakeServer:
     - fail(route, status, times) 让接下来 times 次该路由返回 status（0 表示网络错误）。
     - 结果按 command_id 只记首次：相同重放返回 duplicate=true，不同返回 409 result_conflict。
     - 领取按 Idempotency-Key 重放返回同一批指令。
+    - 心跳回执带 account_binding（契约 0.3.3）：控制台确认的绑定，None 表示未绑定；
+      report_binding=False 模拟 0.3.3 之前的服务端（回执里没有这个字段）。
+      account_confirmed 只有在心跳里的 account_id 等于该绑定时才为真。
     """
 
     device_id: str
@@ -328,6 +331,8 @@ class FakeServer:
     policy: dict[str, Any] | None = None
     paused: bool = False
     account_confirmed: bool = True
+    account_binding: dict[str, Any] | None = None
+    report_binding: bool = True
     lease_seconds: int = 60
     queue: list[dict[str, Any]] = field(default_factory=list)
     cancellations: set[str] = field(default_factory=set)
@@ -395,16 +400,27 @@ class FakeServer:
         if errs:
             return _problem(422, "validation_failed", "心跳不合契约", errs)
         self.heartbeats.append(body)
-        return httpx.Response(
-            200,
-            json={
-                "server_time": self.clock.now().isoformat(),
-                "paused": self.paused,
-                "policy_version": self.policy["policy_version"] if self.policy else None,
-                "cancellations": sorted(self.cancellations),
-                "account_confirmed": self.account_confirmed,
-            },
-        )
+        binding = self.account_binding
+        if self.report_binding:
+            confirmed = self.account_confirmed and binding is not None and binding["account_id"] == body["account_id"]
+        else:
+            confirmed = self.account_confirmed
+        ack: dict[str, Any] = {
+            "server_time": self.clock.now().isoformat(),
+            "paused": self.paused,
+            "policy_version": self.policy["policy_version"] if self.policy and confirmed else None,
+            "cancellations": sorted(self.cancellations),
+            "account_confirmed": confirmed,
+        }
+        if self.report_binding:
+            ack["account_binding"] = copy.deepcopy(binding)
+            assert check("heartbeat_ack", ack) == [], "FakeServer 的心跳回执不合契约 0.3.3"
+        return httpx.Response(200, json=ack)
+
+    def bind(self, account_id: str = "acct_demo", *, confirmed_by: str = "tester", bound_at: datetime | None = None) -> None:
+        """控制台确认（或改换）绑定。"""
+        at = bound_at or self.clock.now()
+        self.account_binding = {"account_id": account_id, "bound_at": at.isoformat(), "confirmed_by": confirmed_by}
 
     def _claim(self, m: re.Match[str], body: Any, request: httpx.Request) -> httpx.Response:
         if not isinstance(body, dict) or set(body) != {"account_id", "max_commands", "wait_seconds"}:
@@ -540,7 +556,7 @@ def make_command(
     account_id: str = ACCOUNT,
     command_id: str | None = None,
 ) -> dict[str, Any]:
-    """合法的会话类指令（线上 JSON 形状）。"""
+    """合法的指令（线上 JSON 形状）：会话类指令，或作用于当前页的搜索。"""
     from datetime import timedelta
 
     now = clock.now()
@@ -548,14 +564,20 @@ def make_command(
         "send_greeting": {"text": "你好"},
         "request_resume": {},
         "request_contact_exchange": {"exchange_type": "wechat"},
+        "search_candidates": {"search_id": "srch_001", "query": "前端开发", "max_results": 20},
     }[action]
+    target: dict[str, Any] = (
+        {"scope": "current_page"}
+        if action == "search_candidates"
+        else {"conversation": {"candidate_name": "候选人A", "job_title": "后端工程师", "hints": []}}
+    )
     return {
         "command_id": command_id or f"00000000-0000-4000-8000-{next(_cid):012d}",
-        "workflow_id": "case_001",
+        "workflow_id": None if action == "search_candidates" else "case_001",
         "account_id": account_id,
         "action": action,
         "execution_mode": execution_mode,
-        "target": {"conversation": {"candidate_name": "候选人A", "job_title": "后端工程师", "hints": []}},
+        "target": target,
         "payload": payload,
         "issued_at": now.isoformat(),
         "expires_at": (now + timedelta(seconds=ttl_seconds)).isoformat(),
@@ -635,6 +657,7 @@ def make_env(
     state = ledger.load_state()
     if bind:
         state.account_binding = AccountBinding(account_id=ACCOUNT, bound_at=clock.now(), confirmed_by="tester")
+    bound_at = clock.now()
     if baseline_ready:
         state.needs_baseline = False
         state.baseline = Baseline(account_id=ACCOUNT, established=True, generation=1)
@@ -652,6 +675,8 @@ def make_env(
         handlers={h.action: h for h in hs},
         observer=observer,
     )
+    if bind:  # 服务端记录的绑定与本机一致
+        env.server.bind(ACCOUNT, confirmed_by="tester", bound_at=bound_at)
     env.new_runtime(**config)
     return env
 

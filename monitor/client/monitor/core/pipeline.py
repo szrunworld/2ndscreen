@@ -191,7 +191,7 @@ class Pipeline:
             return self._result(cmd, status="unknown", reason="crash_recovery", detail="复核仍无法确认")
 
         # 上次进程里是否做过对外动作已无从得知（守卫计数没有落账），按保守值：导航与对方可见都记 true；
-        # 复核确认动作已发生时对外动作为 true（搜索除外），确认未发生时为 false，不明时为 true。
+        # 复核确认动作已发生时对外动作为 true（0.3.2 起搜索同样），确认未发生时为 false，不明时为 true。
         if verified is not None and verified.status == "succeeded":
             built = self._build(
                 cmd,
