@@ -168,6 +168,29 @@ test('element indexes need the snapshot they came from', () => {
   assert.equal(validateActionRequest({ actionId: 'a2', action: byLabel }, policy).ok, true);
 });
 
+test('a click may opt into an explicit accessibility press, on one element and nothing more', () => {
+  const policy = { submitAllowed: false };
+  const press = (extra: Record<string, unknown>, target: unknown = { kind: 'element', index: 4 }) =>
+    validateActionRequest({ actionId: 'p', snapshotId: 's1', action: { kind: 'click', target, effect: 'navigation', method: 'accessibility', ...extra } }, policy);
+  assert.deepEqual(press({}), { ok: true, value: { actionId: 'p', snapshotId: 's1', action: { kind: 'click', target: { kind: 'element', index: 4 }, effect: 'navigation', method: 'accessibility' } } });
+  assert.equal(press({ button: 'left', count: 1 }).ok, true, 'the defaults spelled out');
+  assert.equal(press({}, { kind: 'element', role: 'AXGroup', label: '箭头' }).ok, true, 'a semantic element the session resolves to one index');
+  const refused: Array<[string, ReturnType<typeof press>]> = [
+    ['unknown method', press({ method: 'event' })],
+    ['empty method', press({ method: '' })],
+    ['right button', press({ button: 'right' })],
+    ['double click', press({ count: 2 })],
+    ['modifiers', press({ modifiers: ['cmd'] })],
+    ['relative point', press({}, { kind: 'relative', point: { x: 0.3, y: 0.04 } })],
+    ['ocr text', press({}, { kind: 'ocr', text: '全部职位' })],
+    ['template', press({}, { kind: 'template', templateId: 'caret' })],
+  ];
+  for (const [what, result] of refused) assert.equal(result.ok, false, what);
+  // Without a method a click validates as it always has, right and double clicks included.
+  const plain = { kind: 'click', target: { kind: 'relative', point: { x: 0.3, y: 0.04 } }, button: 'right', count: 2, effect: 'navigation' };
+  assert.equal(validateActionRequest({ actionId: 'q', action: plain }, policy).ok, true);
+});
+
 test('external-submit actions are refused unless the task allows them', () => {
   const send = { actionId: 'a3', action: { kind: 'key', key: 'return', effect: 'external-submit' } };
   assert.equal(validateActionRequest(send, { submitAllowed: false }).ok, false);
