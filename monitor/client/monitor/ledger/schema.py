@@ -5,7 +5,7 @@
   更新 schema_version，所以任何一步失败后库都停在上一个完整版本。
 - 库的版本高于本程序认识的最高版本时拒绝打开（不降级），避免旧程序写坏新结构。
 - 结果、指令、事件都按契约 to_wire() 整体存 JSON，不为单个字段建列，契约增删字段
-  （例如 0.2.0 拆分 gui_write_performed）不需要改表。
+  （例如 0.2.0 把 gui_write_performed 拆成三个标志）不需要改表。
 """
 
 from __future__ import annotations

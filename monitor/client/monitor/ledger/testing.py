@@ -71,7 +71,10 @@ def make_result(command: CommandModel, status: str = "succeeded", *, at: datetim
         reason=reason,
         observed={},
         evidence=[],
-        gui_write_performed=status in ("succeeded", "unknown"),
+        # 0.2.0 三个标志：成功/不明视为已发生对外动作；失败与跳过只导航过；未执行的什么都没做
+        navigation_performed=executed,
+        outbound_action_performed=status in ("succeeded", "unknown"),
+        externally_visible_side_effect=status in ("succeeded", "unknown"),
         executed_at=at if executed else None,
         reported_at=at,
     )
