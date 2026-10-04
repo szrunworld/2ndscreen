@@ -1,0 +1,34 @@
+# 招聘 Monitor 邮件接入（任务 G）：公司邮件服务 mail 的订阅方。
+# 计划作为 uv 工作区成员 monitor-mail；加入根 monitor/pyproject.toml members 前，
+# 用路径依赖独立运行（见 docs/monitor/agent-reports/G.md "接口请求"）。
+[project]
+name = "monitor-mail"
+version = "0.1.0"
+description = "招聘 Monitor 邮件接入：mail.ready webhook、任务表消费者、副本清理与核对"
+requires-python = "==3.12.*"
+dependencies = [
+    "monitor-contracts",
+    "fastapi>=0.115,<1",
+    "httpx>=0.27,<1",
+    "pypdf>=5.0,<7",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.3"]
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["monitor_mail"]
+
+[tool.uv.sources]
+# 加入工作区 members 后改为 { workspace = true }。
+monitor-contracts = { path = "../contracts", editable = true }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--import-mode=importlib -q"
+pythonpath = ["tests"]
+filterwarnings = ["ignore:Using `httpx` with `starlette.testclient`"]
