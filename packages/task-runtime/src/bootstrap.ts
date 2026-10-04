@@ -16,6 +16,7 @@ import {
   DEFAULT_PROMOTION,
   RuntimeError,
   assertValid,
+  isRuntimeError,
   validateTaskSpec,
   type BossWorkflow,
   type LineProcessSpawner,
@@ -29,7 +30,7 @@ import { createAgentBridge, createLineProcessSpawner } from './adapters/agent-br
 import { createLocalVision, type LocalVisionClient } from './adapters/local-vision.ts';
 import { createCommandRunner, createSecondScreenAdapter } from './adapters/second-screen.ts';
 import { createArtifactStore } from './artifacts.ts';
-import { createTaskDaemon, ensureDaemon, type TaskDaemon } from './daemon.ts';
+import { DAEMON_DEFAULTS, createTaskDaemon, ensureDaemon, type TaskDaemon } from './daemon.ts';
 import { createLearner } from './learning.ts';
 import { createProcedureEngine } from './procedures.ts';
 import { createRecovery } from './recovery.ts';
@@ -204,7 +205,7 @@ export async function openControlClient(config: RuntimeConfig): Promise<ControlC
   const control = createTaskDaemon({ store, runner: refusingRunner, specs: (id) => skills.get(id)?.spec, claim: false });
   return {
     control,
-    ensureWorker: () => ensureDaemon(store, workerCommand(config)),
+    ensureWorker: () => ensureWorker(store, config),
     async close() {
       await control.shutdown();
       await store.close();
@@ -218,6 +219,35 @@ function processAlive(pid: number): boolean {
     return true;
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/** Held while one command line starts a worker, so concurrent commands start one between them. */
+export const SPAWN_LOCK_SCOPE = '2ndscreen.task-spawn:*';
+
+/**
+ * Makes sure a worker owns the ledger, starting one when none does. Command
+ * lines that race take turns through a short lease: the first starts the
+ * worker and waits until it holds the daemon lease; the next then finds it.
+ */
+async function ensureWorker(store: TaskStore, config: RuntimeConfig): Promise<{ started: boolean; pid?: number }> {
+  const readyTimeoutMs = 10_000;
+  const deadline = Date.now() + readyTimeoutMs + 5_000;
+  for (;;) {
+    let lock;
+    try {
+      lock = await store.acquireLease({ scopeKey: SPAWN_LOCK_SCOPE, holder: 'runtime', ownerPid: process.pid, ttlMs: readyTimeoutMs + 5_000 });
+    } catch (error) {
+      if (!isRuntimeError(error, 'lease_held') || Date.now() > deadline) throw error;
+      await new Promise((r) => setTimeout(r, 100));
+      continue;
+    }
+    try {
+      const result = await ensureDaemon(store, workerCommand(config), { readyTimeoutMs });
+      return result.started ? { started: true, pid: result.pid } : { started: false };
+    } finally {
+      await store.releaseLease(lock.leaseId).catch(() => undefined);
+    }
   }
 }
 
@@ -259,7 +289,7 @@ export async function startWorker(config: RuntimeConfig, options: WorkerOptions 
   const skills = loadSkills(config.skillsDir);
   const store = await openTaskStore({ path: config.paths.dbPath });
   // Recorded before the daemon can start a task: every actor of this worker is on file.
-  const registry = await ActorRegistry.create(config.paths.actorsDir);
+  const registry = ActorRegistry.create(config.paths.actorsDir);
   const spawn = registry.wrap(options.spawn ?? createLineProcessSpawner());
 
   const vision: LocalVisionClient = createLocalVision({ helper: config.cli, spawn });
@@ -316,9 +346,10 @@ export async function startWorker(config: RuntimeConfig, options: WorkerOptions 
     store,
     runner,
     specs: (id) => skills.get(id)?.spec,
+    // A worker whose exit no daemon recorded: proven stopped only from its actor record.
+    verifyActorExit: (worker, { signal }) => verifyWorkerStopped(config.paths.actorsDir, worker, { signal }),
     ...options.daemon,
   });
-  void verifyWorkerStopped; // wired as the daemon's verifyActorExit once A6 exports the hook
 
   let closing: Promise<void> | undefined;
   return {

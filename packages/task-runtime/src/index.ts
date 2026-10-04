@@ -22,4 +22,5 @@ export {
   type WorkerOptions,
 } from './bootstrap.ts';
 export { runCli, CLI_COMMANDS, CLI_USAGE } from './cli.ts';
-export { ActorRegistry, verifyWorkerStopped, type ActorExitVerdict, type ActorRecord } from './actors.ts';
+export { ActorRegistry, verifyWorkerStopped, type ActorRecord } from './actors.ts';
+export type { ActorExitVerdict, ActorExitVerifier, WorkerRecord } from './daemon.ts';
