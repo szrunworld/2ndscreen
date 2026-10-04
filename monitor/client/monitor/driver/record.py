@@ -62,9 +62,6 @@ class FixtureRecorder:
             data = element.model_dump(mode="json", exclude={"snapshot_id"})
             data["label"] = self._redact(element.label)
             data["value"] = self._redact(element.value)
-            if data.get("enabled") is None:
-                # 夹具 schema 要求 enabled 为布尔；CLI 不提供时按可用记录，并在 notes 里说明。
-                data["enabled"] = True
             if data.get("parent_index") is None:
                 data.pop("parent_index", None)
             if data.get("depth") is None:
@@ -96,7 +93,7 @@ class FixtureRecorder:
                 "wechat_removed": True,
                 "notes": self.notes
                 or "由 monitor.driver.record 录制：姓名按调用方替换表替换，手机号/微信号/邮箱正则删除；"
-                "CLI 不输出 enabled，一律记为 true。",
+                "CLI 不输出 enabled，记为 null。",
             },
             "steps": self.steps,
         }

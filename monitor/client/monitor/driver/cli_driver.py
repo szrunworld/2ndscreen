@@ -85,16 +85,8 @@ def _new_id() -> str:
     return uuid.uuid4().hex
 
 
-def _enabled_unknown() -> bool | None:
-    """CLI 不输出 enabled。契约改为 ``bool | None`` 后填 None（未知）；旧契约只能填 True。"""
-    try:
-        Element(index=0, role="AXUnknown", frame=_ZERO, enabled=None)  # type: ignore[arg-type]
-    except Exception:
-        return True
-    return None
-
-
-ENABLED_UNKNOWN = _enabled_unknown()
+# CLI 不输出 enabled；契约 0.1.1 起 None 表示"来源不提供"。
+ENABLED_UNKNOWN = None
 
 
 def to_driver_error(failure: _cli.CliFailure) -> DriverError:
@@ -162,7 +154,7 @@ def snapshot_from_state(
                 label=raw.label or "",
                 value=raw.value or "",
                 frame=to_frame(raw.frame),
-                enabled=ENABLED_UNKNOWN,  # type: ignore[arg-type]
+                enabled=ENABLED_UNKNOWN,
                 snapshot_id=snapshot_id,
                 parent_index=parent,
                 depth=depth,

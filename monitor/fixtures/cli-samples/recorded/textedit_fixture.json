@@ -13,7 +13,7 @@
     "names_replaced": true,
     "phones_removed": true,
     "wechat_removed": true,
-    "notes": "由 monitor.driver.record 录制：姓名按调用方替换表替换，手机号/微信号/邮箱正则删除；CLI 不输出 enabled，一律记为 true。"
+    "notes": "由 monitor.driver.record 录制：姓名按调用方替换表替换，手机号/微信号/邮箱正则删除；CLI 不输出 enabled，记为 null。"
   },
   "steps": [
     {
@@ -42,7 +42,7 @@
             "w": 1280.0,
             "h": 775.0
           },
-          "enabled": true
+          "enabled": null
         },
         {
           "index": 1,
@@ -55,7 +55,7 @@
             "w": 1280.0,
             "h": 687.0
           },
-          "enabled": true
+          "enabled": null
         },
         {
           "index": 2,
@@ -68,7 +68,7 @@
             "w": 1280.0,
             "h": 32.0
           },
-          "enabled": true
+          "enabled": null
         },
         {
           "index": 3,
@@ -81,7 +81,7 @@
             "w": 34.0,
             "h": 20.0
           },
-          "enabled": true
+          "enabled": null
         },
         {
           "index": 4,
@@ -94,7 +94,7 @@
             "w": 100.0,
             "h": 20.0
           },
-          "enabled": true
+          "enabled": null
         },
         {
           "index": 5,
@@ -107,7 +107,7 @@
             "w": 100.0,
             "h": 20.0
           },
-          "enabled": true
+          "enabled": null
         },
         {
           "index": 6,
@@ -120,7 +120,7 @@
             "w": 45.0,
             "h": 20.0
           },
-          "enabled": true
+          "enabled": null
         },
         {
           "index": 7,
@@ -133,7 +133,7 @@
             "w": 21.0,
             "h": 21.0
           },
-          "enabled": true
+          "enabled": null
         },
         {
           "index": 8,
@@ -146,7 +146,7 @@
             "w": 22.0,
             "h": 20.0
           },
-          "enabled": true
+          "enabled": null
         },
         {
           "index": 9,
@@ -159,7 +159,7 @@
             "w": 22.0,
             "h": 20.0
           },
-          "enabled": true
+          "enabled": null
         },
         {
           "index": 10,
@@ -172,7 +172,7 @@
             "w": 22.0,
             "h": 20.0
           },
-          "enabled": true
+          "enabled": null
         },
         {
           "index": 11,
@@ -185,7 +185,7 @@
             "w": 22.0,
             "h": 20.0
           },
-          "enabled": true
+          "enabled": null
         },
         {
           "index": 12,
@@ -198,7 +198,7 @@
             "w": 64.0,
             "h": 20.0
           },
-          "enabled": true
+          "enabled": null
         },
         {
           "index": 13,
@@ -211,7 +211,7 @@
             "w": 22.0,
             "h": 21.0
           },
-          "enabled": true
+          "enabled": null
         },
         {
           "index": 14,
@@ -224,7 +224,7 @@
             "w": 21.0,
             "h": 21.0
           },
-          "enabled": true
+          "enabled": null
         },
         {
           "index": 15,
@@ -237,7 +237,7 @@
             "w": 21.0,
             "h": 21.0
           },
-          "enabled": true
+          "enabled": null
         },
         {
           "index": 16,
@@ -250,7 +250,7 @@
             "w": 85.0,
             "h": 20.0
           },
-          "enabled": true
+          "enabled": null
         },
         {
           "index": 17,
@@ -263,7 +263,7 @@
             "w": 22.0,
             "h": 21.0
           },
-          "enabled": true
+          "enabled": null
         },
         {
           "index": 18,
@@ -276,7 +276,7 @@
             "w": 21.0,
             "h": 21.0
           },
-          "enabled": true
+          "enabled": null
         },
         {
           "index": 19,
@@ -289,7 +289,7 @@
             "w": 21.0,
             "h": 21.0
           },
-          "enabled": true
+          "enabled": null
         },
         {
           "index": 20,
@@ -302,7 +302,7 @@
             "w": 21.0,
             "h": 21.0
           },
-          "enabled": true
+          "enabled": null
         },
         {
           "index": 21,
@@ -315,7 +315,7 @@
             "w": 41.0,
             "h": 20.0
           },
-          "enabled": true
+          "enabled": null
         },
         {
           "index": 22,
@@ -328,7 +328,7 @@
             "w": 41.0,
             "h": 20.0
           },
-          "enabled": true
+          "enabled": null
         },
         {
           "index": 23,
@@ -341,7 +341,7 @@
             "w": 14.0,
             "h": 18.0
           },
-          "enabled": true
+          "enabled": null
         },
         {
           "index": 24,
@@ -354,7 +354,7 @@
             "w": 16.0,
             "h": 16.0
           },
-          "enabled": true
+          "enabled": null
         },
         {
           "index": 25,
@@ -367,7 +367,7 @@
             "w": 16.0,
             "h": 16.0
           },
-          "enabled": true
+          "enabled": null
         },
         {
           "index": 26,
@@ -380,7 +380,7 @@
             "w": 16.0,
             "h": 16.0
           },
-          "enabled": true
+          "enabled": null
         },
         {
           "index": 27,
@@ -393,7 +393,7 @@
             "w": 55.0,
             "h": 18.0
           },
-          "enabled": true
+          "enabled": null
         },
         {
           "index": 28,
@@ -406,7 +406,7 @@
             "w": 18.0,
             "h": 18.0
           },
-          "enabled": true
+          "enabled": null
         },
         {
           "index": 29,
@@ -419,7 +419,7 @@
             "w": 68.0,
             "h": 16.0
           },
-          "enabled": true
+          "enabled": null
         }
       ],
       "annotations": {
@@ -453,7 +453,7 @@
             "w": 1280.0,
             "h": 775.0
           },
-          "enabled": true,
+          "enabled": null,
           "depth": 0
         },
         {
@@ -467,7 +467,7 @@
             "w": 1280.0,
             "h": 687.0
           },
-          "enabled": true,
+          "enabled": null,
           "parent_index": 0,
           "depth": 2
         },
@@ -482,7 +482,7 @@
             "w": 1280.0,
             "h": 32.0
           },
-          "enabled": true,
+          "enabled": null,
           "parent_index": 0,
           "depth": 2
         },
@@ -497,7 +497,7 @@
             "w": 34.0,
             "h": 20.0
           },
-          "enabled": true,
+          "enabled": null,
           "parent_index": 0,
           "depth": 2
         },
@@ -512,7 +512,7 @@
             "w": 100.0,
             "h": 20.0
           },
-          "enabled": true,
+          "enabled": null,
           "parent_index": 0,
           "depth": 2
         },
@@ -527,7 +527,7 @@
             "w": 100.0,
             "h": 20.0
           },
-          "enabled": true,
+          "enabled": null,
           "parent_index": 0,
           "depth": 2
         },
@@ -542,7 +542,7 @@
             "w": 45.0,
             "h": 20.0
           },
-          "enabled": true,
+          "enabled": null,
           "parent_index": 0,
           "depth": 2
         },
@@ -557,7 +557,7 @@
             "w": 21.0,
             "h": 21.0
           },
-          "enabled": true,
+          "enabled": null,
           "parent_index": 6,
           "depth": 3
         },
@@ -572,7 +572,7 @@
             "w": 22.0,
             "h": 20.0
           },
-          "enabled": true,
+          "enabled": null,
           "parent_index": 0,
           "depth": 2
         },
@@ -587,7 +587,7 @@
             "w": 22.0,
             "h": 20.0
           },
-          "enabled": true,
+          "enabled": null,
           "parent_index": 8,
           "depth": 3
         },
@@ -602,7 +602,7 @@
             "w": 22.0,
             "h": 20.0
           },
-          "enabled": true,
+          "enabled": null,
           "parent_index": 0,
           "depth": 2
         },
@@ -617,7 +617,7 @@
             "w": 22.0,
             "h": 20.0
           },
-          "enabled": true,
+          "enabled": null,
           "parent_index": 10,
           "depth": 3
         },
@@ -632,7 +632,7 @@
             "w": 64.0,
             "h": 20.0
           },
-          "enabled": true,
+          "enabled": null,
           "parent_index": 0,
           "depth": 2
         },
@@ -647,7 +647,7 @@
             "w": 22.0,
             "h": 21.0
           },
-          "enabled": true,
+          "enabled": null,
           "parent_index": 12,
           "depth": 3
         },
@@ -662,7 +662,7 @@
             "w": 21.0,
             "h": 21.0
           },
-          "enabled": true,
+          "enabled": null,
           "parent_index": 12,
           "depth": 3
         },
@@ -677,7 +677,7 @@
             "w": 21.0,
             "h": 21.0
           },
-          "enabled": true,
+          "enabled": null,
           "parent_index": 12,
           "depth": 3
         },
@@ -692,7 +692,7 @@
             "w": 85.0,
             "h": 20.0
           },
-          "enabled": true,
+          "enabled": null,
           "parent_index": 0,
           "depth": 2
         },
@@ -707,7 +707,7 @@
             "w": 22.0,
             "h": 21.0
           },
-          "enabled": true,
+          "enabled": null,
           "parent_index": 16,
           "depth": 3
         },
@@ -722,7 +722,7 @@
             "w": 21.0,
             "h": 21.0
           },
-          "enabled": true,
+          "enabled": null,
           "parent_index": 16,
           "depth": 3
         },
@@ -737,7 +737,7 @@
             "w": 21.0,
             "h": 21.0
           },
-          "enabled": true,
+          "enabled": null,
           "parent_index": 16,
           "depth": 3
         },
@@ -752,7 +752,7 @@
             "w": 21.0,
             "h": 21.0
           },
-          "enabled": true,
+          "enabled": null,
           "parent_index": 16,
           "depth": 3
         },
@@ -767,7 +767,7 @@
             "w": 41.0,
             "h": 20.0
           },
-          "enabled": true,
+          "enabled": null,
           "parent_index": 0,
           "depth": 2
         },
@@ -782,7 +782,7 @@
             "w": 41.0,
             "h": 20.0
           },
-          "enabled": true,
+          "enabled": null,
           "parent_index": 0,
           "depth": 2
         },
@@ -797,7 +797,7 @@
             "w": 14.0,
             "h": 18.0
           },
-          "enabled": true,
+          "enabled": null,
           "parent_index": 0,
           "depth": 1
         },
@@ -812,7 +812,7 @@
             "w": 16.0,
             "h": 16.0
           },
-          "enabled": true,
+          "enabled": null,
           "parent_index": 0,
           "depth": 1
         },
@@ -827,7 +827,7 @@
             "w": 16.0,
             "h": 16.0
           },
-          "enabled": true,
+          "enabled": null,
           "parent_index": 0,
           "depth": 1
         },
@@ -842,7 +842,7 @@
             "w": 16.0,
             "h": 16.0
           },
-          "enabled": true,
+          "enabled": null,
           "parent_index": 0,
           "depth": 1
         },
@@ -857,7 +857,7 @@
             "w": 55.0,
             "h": 18.0
           },
-          "enabled": true,
+          "enabled": null,
           "parent_index": 0,
           "depth": 1
         },
@@ -872,7 +872,7 @@
             "w": 18.0,
             "h": 18.0
           },
-          "enabled": true,
+          "enabled": null,
           "parent_index": 0,
           "depth": 1
         },
@@ -887,7 +887,7 @@
             "w": 68.0,
             "h": 16.0
           },
-          "enabled": true,
+          "enabled": null,
           "parent_index": 0,
           "depth": 1
         }
