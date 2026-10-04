@@ -137,6 +137,32 @@ const toRect = (raw: any): Rect | undefined =>
 
 const sameRect = (a: Rect, b: Rect) => a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
 
+/** Points a window may overhang its screen by rounding alone. */
+const CONTAIN_SLACK = 1;
+
+/** Whether `inner` lies within `outer`, up to rounding. A window below the menu bar is within its screen. */
+export function rectWithin(inner: Rect, outer: Rect, slack = CONTAIN_SLACK): boolean {
+  return inner.x >= outer.x - slack && inner.y >= outer.y - slack
+    && inner.x + inner.width <= outer.x + outer.width + slack && inner.y + inner.height <= outer.y + outer.height + slack;
+}
+
+/**
+ * Whether a screenshot of `frame` at `scale` pixels per point shows all of
+ * it. The CLI crops a screen capture to the window and clips the crop to the
+ * screen, so a window reaching past its screen gives a smaller image (P0:
+ * 913x1102 pane rasters where 1468x1750 were expected); stretched over the
+ * whole frame it would map every point wrong. The crop rounds outwards to
+ * whole pixels, so one pixel either way is allowed.
+ */
+export function rasterCoversFrame(size: { width: number; height: number }, frame: Rect, scale: number): boolean {
+  return Math.abs(size.width - frame.width * scale) <= 1 && Math.abs(size.height - frame.height * scale) <= 1;
+}
+
+const describeRect = (r: Rect) => `${r.x},${r.y} ${r.width}x${r.height}`;
+
+/** Refits a protruding window at most this many times before binding fails. */
+const REFIT_ATTEMPTS = 2;
+
 /** Width and height from a PNG's IHDR chunk. */
 export function pngSize(bytes: Buffer): { width: number; height: number } {
   const signature = '89504e470d0a1a0a';
@@ -418,11 +444,26 @@ export function createSecondScreenAdapter(options: SecondScreenAdapterOptions): 
           if (!moved.ok) throw cliError(`cannot move ${profile.bundleId} onto ${screenId}`, moved);
         }
       }
-      const window = await mainWindow(screenId, pid, profile, signal);
+      let window = await mainWindow(screenId, pid, profile, signal);
+      // The window counts as on its screen when its center is; it must lie wholly within it, or
+      // screenshots are clipped and coordinates drift. Read the screen again: displays move.
+      let current = await screen(screenId, signal);
+      for (let refits = 0; !rectWithin(window.frame, current.frame); refits++) {
+        const details = { pid, windowId: window.windowId, frame: window.frame, screenFrame: current.frame };
+        // Resizing a window the runtime neither launched nor was handed would rearrange the user's app.
+        if (!launched && !bindOptions.takeOver)
+          throw new RuntimeError('conflict', `${profile.bundleId} (pid ${pid}) reaches past screen ${screenId} (window ${describeRect(window.frame)}, screen ${describeRect(current.frame)}) and was not handed over; pass takeOver to refit it`, details);
+        if (refits >= REFIT_ATTEMPTS)
+          throw new RuntimeError('conflict', `${profile.bundleId} (pid ${pid}) still reaches past screen ${screenId} after ${REFIT_ATTEMPTS} refits (window ${describeRect(window.frame)}, screen ${describeRect(current.frame)})`, details);
+        const refit = await cli(['window', 'move', '--screen', screenId, '--pid', String(pid), '--window-id', String(window.windowId), '--fill'], signal);
+        if (!refit.ok) throw cliError(`cannot fit ${profile.bundleId} onto ${screenId}`, refit, details);
+        window = await mainWindow(screenId, pid, profile, signal);
+        current = await screen(screenId, signal);
+      }
       const who = await identity(pid, signal);
       if (who.bundleId !== profile.bundleId)
         throw new RuntimeError('conflict', `pid ${pid} is ${who.bundleId ?? 'not an app'}, not ${profile.bundleId}`, { pid });
-      return { screenId, socket: options.socket, window: geometry(window, profile.bundleId, who.startedAt, where), launchedByRuntime: launched };
+      return { screenId, socket: options.socket, window: geometry(window, profile.bundleId, who.startedAt, current), launchedByRuntime: launched };
     },
 
     async observe(binding, observeOptions: ObserveOptions, signal) {
@@ -457,6 +498,17 @@ export function createSecondScreenAdapter(options: SecondScreenAdapterOptions): 
       }
       if (shotPath) {
         const shot = await screenshotRef(typeof reply.json.screenshot === 'string' ? reply.json.screenshot : shotPath, read.frame);
+        // A clipped image is never passed off as the whole window: say where the window went instead.
+        if (!rasterCoversFrame({ width: shot.widthPx, height: shot.heightPx }, read.frame, binding.window.scale)) {
+          await rm(shot.path, { force: true });
+          const where = await screens(signal).then((list) => list.find((s) => s.name === binding.screenId)).catch(() => undefined);
+          const off = where && !rectWithin(read.frame, where.frame) ? `; it reaches past screen ${binding.screenId} (${describeRect(where.frame)})` : '';
+          throw new RuntimeError('window_lost', `the screenshot is ${shot.widthPx}x${shot.heightPx} px, not the whole window ${describeRect(read.frame)} at ${binding.window.scale}x${off}`, {
+            windowId: binding.window.windowId,
+            frame: read.frame,
+            screenFrame: where?.frame,
+          });
+        }
         observation.screenshot = observeOptions.region ? await crop(shot, observeOptions.region, signal) : shot;
       }
       return observation;
