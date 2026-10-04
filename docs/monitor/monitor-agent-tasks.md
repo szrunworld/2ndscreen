@@ -69,7 +69,8 @@
 | F1 | 服务端基础：设备、指令队列、事件接收 | `monitor/server/app/{main,db,devices,commands,events}.py`、`monitor/server/tests/test_{devices,commands,events}.py`、`monitor/server/pyproject.toml` | A | 3 人日 |
 | F2 | 服务端业务：流程状态机与策略引擎 | `monitor/server/app/{cases,policy,orchestrator,manual}.py`、对应测试 | A、F1 | 4 人日 |
 | F3 | 服务端扩展：搜索、登录接力、通知 | `monitor/server/app/{search,login_relay,notify}.py`、对应测试 | A、F1 | 2 人日 |
-| G | 邮件接入 | `monitor/mail/**` | A | 4 人日 |
+| G0 | 邮件服务补 integration 列表接口 | 仓库 remotedesk-resend 内 | 用户同意跨仓修改 | 1 人日 |
+| G | 邮件接入（mail 服务订阅方） | `monitor/mail/**` | A3、F1 | 4 人日 |
 | H1 | 动作公共层 + 问候 + 求简历 | `monitor/client/monitor/actions/{common,greeting,request_resume}.py`、对应测试 | A、B | 3 人日 |
 | H2 | 搜索动作 | `monitor/client/monitor/actions/search.py`、对应测试 | A、B | 2 人日 |
 | H3 | 换微信（人工触发） | `monitor/client/monitor/actions/contact_exchange.py`、对应测试 | A、B、H1 合并、N 的写操作结论 | 1.5 人日 |
@@ -198,9 +199,13 @@
 
 验收：过期二维码接口返回 410；查看记录可查询；搜索快照 `unreadable` 与 `empty_confirmed` 分别可查。
 
-### G 邮件接入（Resend Inbound：webhook + 任务表 + 核对）
+### G0 邮件服务接口补充（仓库 amplifistudio/remotedesk-resend，需用户同意跨仓修改）
 
-目标：方案 8.2 第 1–7 条（Resend 版）。范围：`POST /webhooks/resend`（Svix 签名校验，原始请求体，只接 email.received，按 email_id 幂等写 pending，快速 200）；数据库任务表与消费者（租约领取、取邮件与附件并立即下载、写原件与 sha256、BOSS 发件人白名单、去重、关联、写服务端、失败 3 次转 failed）；保留期清理（默认 30 天）；核对任务（`GET /emails/receiving` 分页对账补漏 + 方案 8.2 第 5 条全部检查）。Resend 访问封装成接口，测试用 fake Resend（含 webhook 重放、签名错误、附件链接过期、列表里有 webhook 没送到的邮件）。不做：OCR；MQ。依赖：A3、F1；N 提供脱敏的真实 BOSS 邮件样本后补关联规则。需要用户提供：Resend API key 与 webhook 签名密钥（只放在服务端环境变量，测试不用真实值）。
+为 Monitor 的对账补一个 integration 接口：`GET /v1/integration/messages?since=&cursor=&limit=`（`mail.read`，只列 key 绑定的邮箱，返回 message_id、received_at、from、has_attachments、scan 状态、purged），按该仓既有的 ACL、审计、迁移与测试规范实现。可选：`POST /v1/integration/messages/{id}/archive`（新 scope `mail.organize`，只移动文件夹到 archive，便于人工在门户看出哪些已处理）。不提供删除接口：销毁只走留存任务。
+
+### G 邮件接入（mail 服务订阅方：webhook + 任务表 + 核对）
+
+目标：方案 8.2（mail 服务版）。范围：`POST /webhooks/mail`（HMAC 验签、原始字节、按投递 id 与 message_id 幂等写 pending、快速 2xx）；数据库任务表与消费者（租约领取、integration API 取信与附件、写副本与 sha256、BOSS 发件人白名单、去重、关联、写服务端、失败 3 次转 failed）；我方副本 30 天清理；核对任务（方案 8.2 第 6 条；G0 合入后启用"mail 有、我方没有"的对账，之前用投递台账兜底）。mail 访问封装成接口，测试用 fake mail（签名错误、重复投递、附件未扫完、链接过期、key 配错）。不做：OCR、MQ、删除 mail 里的邮件。依赖：A3、F1。需要的配置（不进仓库）：mail 的 API key 与 webhook 密钥。
 
 ### H1 动作公共层 + 问候 + 求简历
 

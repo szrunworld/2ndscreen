@@ -178,14 +178,14 @@ GUI 调度锁：观察与动作共用一把锁，动作优先；观察按配置�
 
 前提（用户 2026-10-04 说明）：BOSS 账户设置里预留了公司邮箱，候选人同意发送简历后，附件简历会自动发到该邮箱。待 N 实测：邮件发件人、主题与正文里有哪些字段（姓名、岗位、招聘账户）、附件格式。
 
-邮箱是 **Resend Inbound**（用户 2026-10-04 确认），没有 MQ，原件保留 30 天。Resend 的特点决定了做法：没有文件夹、没有 IMAP、文档里没有删除或归档接口；新邮件通过 `email.received` webhook 推送（只含元数据，正文与附件要再调 API 取；附件 `download_url` 1 小时内有效）；webhook 失败按指数退避重试（约 30 小时内多次），持续失败会被自动停用；`GET /emails/receiving` 可分页列出已收邮件。所以"队列"放在我方数据库，"归档"是我方状态，"核对"以 Resend 的列表为准：
+收件邮箱是 **`cv@remotedesk.io`**，建成公司邮件服务 **mail**（仓库 `amplifistudio/remotedesk-resend`）里的公共邮箱（kind=shared）。`remotedesk.io` 的 MX 已指向 Resend 的收信链路；mail 服务是邮箱、附件扫描、留存与审计的权威，Resend 只负责收发（用户 2026-10-04 确认；无 MQ；保留 30 天）。所以 Monitor **不直接接 Resend**，而是 mail 服务的订阅方：
 
-1. **接收**：`POST /webhooks/resend` 用原始请求体校验 Svix 签名（`svix-id`、`svix-timestamp`、`svix-signature`），只接受 `email.received`；按 Resend `email_id` 幂等写入 `mail_messages`（状态 pending），立即返回 200。webhook 里不做下载和解析，避免超时触发重试。
-2. **任务表代替 MQ**：消费者从数据库按租约领取 pending 记录（单进程起步，多进程时用行级租约），处理完更新状态。
-3. **消费**：调用"取单封已收邮件"与"附件列表"接口，**立即**下载附件（链接 1 小时过期）并连同原始邮件写入我方存储、记录 sha256 → 只处理 BOSS 发件人（发件地址白名单），其他标记 ignored → 按（email_id，附件 sha256）去重 → 关联招聘流程 → 写 `resume_document` → 提交事务后状态改为 processed；关联歧义 → needs_review；连续失败 3 次 → failed 并告警。崩溃后重新领取，靠去重变成无操作。
-4. **保留 30 天**：我方存储的原件、附件与解析文本在收到后 30 天由定时任务清理，`resume_document` 只保留元数据与清理记录。Resend 侧已收邮件的保留期与删除方式文档未写明，需要在 Resend 后台确认（合规待办）。
-5. **核对（verify）**：每小时用 `GET /emails/receiving` 分页列出最近的已收邮件，与 `mail_messages` 对账：Resend 有、我方没有的（webhook 丢失或被停用）补写为 pending；pending 超过 30 分钟未处理的数量应为 0；processed 记录的原件存在且哈希一致；needs_review / failed 与人工队列一致；"求简历已成功但超过 3 天未收到邮件"的流程列出提醒；本次保留期清理数量。结果写入总览与告警。webhook 被 Resend 停用时核对任务也能兜底，不丢邮件。
-6. **前提**：BOSS 账户里预留的收简历邮箱，必须是 Resend 接收域上的地址（Resend 托管的 `*.resend.app` 子域，或 MX 指向 Resend 的自有域名）。若现在预留的是普通企业邮箱，需要改成 Resend 地址或在原邮箱设置自动转发。
+1. **订阅**：平台管理员在 mail 为 cv@ 建一个 webhook 订阅，事件只订 **`mail.ready`**（附件扫描完成、可下载时才推；`mail.received` 时附件可能还在扫，下不到），不含垃圾邮件与接管邮件；URL 必须在 mail 的 `MAIL_WEBHOOK_ALLOWED_HOSTS` 白名单内。再为 cv@ 签发一把 `mail.read` 的 integration API key（一把 key 一个邮箱）。
+2. **接收**：`POST /webhooks/mail` 用原始请求体校验 HMAC-SHA256 签名（`X-RemoteDesk-Webhook-Id/-Timestamp/-Signature`，覆盖 `{id}.{timestamp}.{原始字节}`）；推送体只有 `message_id` 等标识，没有内容。按投递 `id` 与 `message_id` 幂等写入 `mail_messages`（pending），立即返回 2xx。mail 的重试约 46 小时（10s→24h 九档），连续失败 20 次会停用订阅。
+3. **任务表代替 MQ**：消费者从我方数据库按租约领取 pending 记录。
+4. **消费**：用 `X-Mail-Api-Key` 调 `GET /v1/integration/messages/{id}` 取邮件，再取附件下载链接并下载；写我方存储与 sha256 → 只处理 BOSS 发件人（白名单），其他标记 ignored → 按（message_id，附件 sha256）去重 → 关联 → 写 `resume_document` → 提交后标记 processed；歧义 → needs_review；连续失败 3 次 → failed 并告警。
+5. **保留 30 天、不由 Monitor 删除**：mail 服务的设计是"只有留存任务才真正销毁内容"（受 legal hold 约束，删内容留信封与 sha256），所以 Monitor 不逐封删除，而是由管理员把 cv@ 邮箱的 `retention_days` 设为 30，由 mail 的 purge 任务统一清理。我方存储的副本同样 30 天清理，只留元数据。
+6. **核对（verify）**：每小时检查 pending 超过 30 分钟为 0、processed 的副本存在且哈希一致、needs_review/failed 与人工队列一致、"求简历成功但超过 3 天未收到"的流程提醒、本次清理数量；并对账 mail 的 webhook 投递台账（失败/落死的投递，必要时按窗口重放）。mail 目前没有给 integration key 的"列出邮件"接口，要做到"mail 有、我方没有"的完整对账，需要在 mail 增加 `GET /v1/integration/messages?since=`（接口请求，见任务 G0）。
 6. **关联**：账户（邮箱或主题中的招聘账户）+ 岗位 + 候选人姓名，在该账户"求简历已成功"的流程里查找，结合 `request_resume` 的执行时间窗。只有唯一命中才自动关联；同名、多岗位或找不到时进入人工关联队列，不按姓名硬匹配。
 7. 关联成功后建立 `resume_document` 版本（同一候选人多份简历保留版本，不覆盖），流程进入 `resume_linked`，再解析 PDF 文本；扫描版第一版不做 OCR。收到并正确关联即可按策略触发联系方式请求。
 8. **品牌化简历**（用户 2026-10-04 要求）：对外使用的简历版本套用公司模板与 logo。服务端从候选人附件解析出结构化字段，用公司模板渲染为新 PDF，作为派生版本（`variant=branded`）保存，原件始终保留。模板、logo、字段取舍由用户提供。
