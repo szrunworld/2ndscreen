@@ -286,6 +286,55 @@ test('a cancelled compose removes only the partial file its own helper made', as
   assert.equal(nonces.size, 3);
 });
 
+test('a kill that throws still lets a cancelled call settle once the helper exits', async () => {
+  const { spawn, spawned } = fakeSpawner(never, { ignoreTerm: true });
+  const throwing: LineProcessSpawner = (file, args, env) => {
+    const child = spawn(file, args, env) as FakeChild;
+    const kill = child.kill.bind(child);
+    child.kill = (sig) => {
+      kill(sig === 'SIGKILL' ? 'SIGTERM' : sig); // record, but never exit from a kill
+      throw new Error('ESRCH');
+    };
+    setTimeout(() => child.exit(0), 40);
+    return child;
+  };
+  const vision = createLocalVision({ helper: 'h', spawn: throwing, killGraceMs: 5 });
+  const controller = new AbortController();
+  const pending = vision.ocr('/a.png', undefined, controller.signal);
+  await new Promise((r) => setTimeout(r, 5));
+  controller.abort();
+  await rejects(pending, 'cancelled');
+  assert.equal(spawned[0]!.child.signals.length, 2, 'SIGTERM then the SIGKILL attempt, both swallowed');
+});
+
+test('an abort that fires while the helper is starting is not missed', async () => {
+  const { spawn, spawned } = fakeSpawner(never);
+  const controller = new AbortController();
+  const aborting: LineProcessSpawner = (file, args, env) => {
+    const child = spawn(file, args, env);
+    controller.abort(); // after the pre-spawn check, before the listener exists
+    return child;
+  };
+  const vision = createLocalVision({ helper: 'h', spawn: aborting, timeoutMs: 60_000 });
+  await rejects(vision.ocr('/a.png', undefined, controller.signal), 'cancelled');
+  assert.deepEqual(spawned[0]!.child.signals, ['SIGTERM']);
+});
+
+test('a helper that cannot start or loses its exit status is io', async () => {
+  const cannot: LineProcessSpawner = () => {
+    throw new Error('ENOENT');
+  };
+  await rejects(createLocalVision({ helper: '/missing', spawn: cannot }).ocr('/a.png'), 'io');
+  const { spawn } = fakeSpawner(never);
+  const lost: LineProcessSpawner = (file, args, env) => {
+    const child = spawn(file, args, env) as FakeChild;
+    child.exited = () => Promise.reject(new Error('wait failed'));
+    child.exit(1);
+    return child;
+  };
+  await rejects(createLocalVision({ helper: 'h', spawn: lost }).ocr('/a.png'), 'io');
+});
+
 test('close stops running calls and refuses new ones', async () => {
   const { spawn, spawned } = fakeSpawner(never);
   const vision = createLocalVision({ helper: 'h', spawn });

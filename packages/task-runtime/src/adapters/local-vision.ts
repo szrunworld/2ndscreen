@@ -100,17 +100,33 @@ export function createLocalVision(options: LocalVisionOptions): LocalVisionClien
   async function call(op: Op, body: Record<string, unknown>, signal: AbortSignal | undefined, onStopped?: () => Promise<void>): Promise<Record<string, unknown>> {
     if (closed) throw new RuntimeError('cancelled', 'local vision is closed');
     throwIfAborted(signal);
-    const child = options.spawn(options.helper, helperArgs, options.env);
+    let child: LineProcess;
+    try {
+      child = options.spawn(options.helper, helperArgs, options.env);
+    } catch (error) {
+      throw new RuntimeError('io', `cannot start local vision helper ${options.helper}: ${String(error)}`, { op });
+    }
     let stopped: 'cancelled' | 'timeout' | 'overflow' | undefined;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
+    // A child that has already exited, or a spawner that throws on kill,
+    // must not turn a cancellation into an unhandled exception.
+    const kill = (sig: 'SIGTERM' | 'SIGKILL') => {
+      try {
+        child.kill(sig);
+      } catch {
+        // Gone already; exited() reports how it ended.
+      }
+    };
     const stop = (reason: 'cancelled' | 'timeout' | 'overflow') => {
       if (stopped) return;
       stopped = reason;
-      child.kill('SIGTERM');
-      killTimer = setTimeout(() => child.kill('SIGKILL'), killGraceMs);
+      kill('SIGTERM');
+      killTimer = setTimeout(() => kill('SIGKILL'), killGraceMs);
     };
     const onAbort = () => stop('cancelled');
     signal?.addEventListener('abort', onAbort, { once: true });
+    // An abort that fired while the helper was starting has no event left to hear.
+    if (signal?.aborted || closed) stop('cancelled');
     running.set(child, () => stop('cancelled'));
     const timer = setTimeout(() => stop('timeout'), options.timeoutMs ?? DEFAULT_TIMEOUT_MS[op]);
     const replies: string[] = [];
@@ -134,7 +150,12 @@ export function createLocalVision(options: LocalVisionOptions): LocalVisionClien
           if (line.trim() !== '') replies.push(line);
         }
       })();
-      const [exit] = await Promise.all([child.exited(), reading.catch(() => undefined)]);
+      let exit: { code: number | null; signal: string | null };
+      try {
+        [exit] = await Promise.all([child.exited(), reading.catch(() => undefined)]);
+      } catch (error) {
+        throw new RuntimeError('io', `local vision ${op} lost its helper: ${String(error)}`, { op });
+      }
       if (stopped === 'cancelled' || stopped === 'timeout') {
         await onStopped?.().catch(() => undefined);
         if (stopped === 'cancelled') throw new RuntimeError('cancelled', `local vision ${op} was cancelled`);
