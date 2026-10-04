@@ -4,8 +4,8 @@
 
 | 代号 | 任务 | Worker / 工作区 | 分支 | 状态 | 最近 commit | 未决问询 |
 | --- | --- | --- | --- | --- | --- | --- |
-| A | 契约、协议与 API 规范 | ctx_0786c7296951 / monitor-A | monitor-A | 进行 | — | — |
-| B | 只读可行性验证与夹具 | ctx_1b25ee64eab9 / monitor-B（屏幕 monitor-b，BOSS pid 97510） | monitor-B | 进行 | — | — |
+| A | 契约、协议与 API 规范 | ctx_0786c7296951 / monitor-A | monitor-A | 进行（Driver 协议已提交 4f033c7，派回两处修正） | 4f033c7 | — |
+| B | 只读可行性验证与夹具 | ctx_1b25ee64eab9（已释放） | monitor-B | 已合（898edbd） | 201001d | 登录/二维码、新招呼首次打开、电话待同意/已交换/已拒绝、邮件转发内容、搜索输入后结果 → 留给 N/K |
 | C | Driver 适配器 | ctx_3dfbecec466d / monitor-C（自建屏幕 monitor-c） | monitor-C | 进行（第 1 阶段；等 A 先提交 Driver 协议） | — | — |
 | D1 | 本地账本 | — | — | 未派 | — | — |
 | D2 | 指令客户端与执行管线 | — | — | 未派 | — | — |
@@ -34,7 +34,7 @@
 
 Run：run_7d52e82ce7ed。分支 monitor-v1（a12a931，自 szrunworld/ss-runtime-integration）；并发 3（用户 2026-10-04 确认）。
 
-1. B 阶段占用的是用户日常 BOSS 实例（已移到屏幕 monitor-b）；B 交付后归还窗口。
+1. 确认『新招呼』= 新投递（B 推断，客户端无『投递』字样）。
 2. N 阶段测试账号、候选人与逐项授权方式。
 3. 独立设备模式是否接受"自动登录 + 不启用 FileVault"。
 4. Monitor 打开未读会话会产生已读回执（对外可见），新投递检测是否接受这一点（B 已避免打开未读会话）。
