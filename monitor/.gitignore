@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+# 成员目录不单独 lock，只用根 uv.lock
+*/uv.lock

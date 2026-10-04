@@ -9,10 +9,9 @@ dependencies = [
     "monitor-contracts",
 ]
 
-# 客户端暂未列入工作区 members（根 pyproject 归任务 A），先用路径依赖；
-# 加入工作区后可改为 { workspace = true }。
+# 客户端已列入工作区 members（协调者合并 C 时加入）。
 [tool.uv.sources]
-monitor-contracts = { path = "../contracts", editable = true }
+monitor-contracts = { workspace = true }
 
 [dependency-groups]
 dev = ["pytest>=8.3"]
