@@ -19,6 +19,7 @@ usage:
 
   2ndscreen state --screen NAME --pid PID [--window-id ID] [--query TEXT] [--screenshot FILE.png]
   2ndscreen click --screen NAME --pid PID (--index N | --text TEXT | --x X --y Y) [--right | --double]
+  2ndscreen ax-press --screen NAME --pid PID [--window-id ID] --index N
   2ndscreen type  --screen NAME --pid PID --value TEXT [--index N | --text TEXT] [--replace]
   2ndscreen key   --screen NAME --pid PID --key NAME [--modifiers cmd,shift]
   2ndscreen scroll --screen NAME --pid PID --direction up|down|left|right [--amount N] [--by line|page]
@@ -74,6 +75,10 @@ on the named screen. drag is the exception: macOS offers no background drag,
 so it brings the app to the front and moves the real pointer, and runs only
 with --foreground. Indexes come from the window's last state; run state again
 after the UI changes.
+
+ax-press presses one element from the last state through accessibility only
+(AXPress); it never moves the pointer, takes focus or sends events, and fails
+if the element does not advertise AXPress.
 
 agent runs INSTRUCTION with a UI-TARS vision model, which reads screenshots of
 the screen and the app's controls, acting on a listed control by its number

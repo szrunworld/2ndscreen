@@ -12,11 +12,11 @@
 // or an unfinished spawn on record — never a child nobody knows about.
 //
 // The 2ndscreen commands of A1's CommandRunner also lead groups of their
-// own (detached). Each is announced in the record while it runs. Their
-// pids are not known here, so they are never signalled: after a crash the
-// verifier only waits until no orphaned group leader of that program,
-// started within the worker's lifetime (from the announcement to the
-// record's last heartbeat), is left running.
+// own (detached). Each is announced in the record before it starts. When
+// the runner reports the spawn (commandHooks: its pid and spawn window),
+// the announcement becomes a group like any other; a command whose spawn
+// was never reported cannot be identified, so a crash during one leaves the
+// worker unproven.
 //
 // verifyWorkerStopped() answers whether every actor of a dead worker is gone.
 // It is conservative: a group counts as gone only when no process is in it,
@@ -46,6 +46,14 @@ export interface ActorGroup {
   file: string;
 }
 
+/** A command spawn as a CommandRunner reports it. */
+export interface CommandSpawn {
+  pid: number;
+  file: string;
+  spawnedAfterMs: number;
+  spawnedBeforeMs: number;
+}
+
 export interface ActorCommand {
   id: number;
   file: string;
@@ -70,7 +78,7 @@ export interface ActorRecord {
   /** Spawns announced whose outcome is not written yet. Non-zero after a crash means: cannot prove. */
   pendingSpawns: number;
   groups: ActorGroup[];
-  /** Commands under way (CommandRunner), by when they were announced; their pids are unknown. */
+  /** Commands announced whose spawn was not reported (yet): their pids are unknown. */
   commands: ActorCommand[];
   /** Written at a clean exit, once every spawned group was confirmed gone. */
   closedAt?: string;
@@ -85,12 +93,6 @@ export interface ProcessProbe {
   /** The process group of `pid`; undefined when it cannot be read. */
   groupOf(pid: number): number | undefined;
   killGroup(pgid: number, signal: 'SIGTERM' | 'SIGKILL'): void;
-  /**
-   * Running processes of program `file` (as started: argv[0]) that lead
-   * their own group and were left to launchd (ppid 1), started in
-   * [fromMs, toMs]; undefined when the process list cannot be read.
-   */
-  orphanLeaders(file: string, fromMs: number, toMs: number): number[] | undefined;
   sleep(ms: number): Promise<void>;
 }
 
@@ -141,27 +143,6 @@ export const systemProbe: ProcessProbe = {
       // Gone already; the caller looks again.
     }
   },
-  orphanLeaders(file, fromMs, toMs) {
-    let out: string;
-    try {
-      // Numbers, start times and argv[0] only: no arguments, no environment.
-      out = execFileSync('/bin/ps', ['-axo', 'pid=,ppid=,pgid=,lstart=,comm='], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' }, timeout: 5_000, stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 16 << 20 });
-    } catch {
-      return undefined;
-    }
-    const found: number[] = [];
-    for (const line of out.split('\n')) {
-      if (line.trim() === '') continue;
-      const m = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\w{3}\s+\w{3}\s+\d+\s+[\d:]+\s+\d{4})\s(.*)$/.exec(line);
-      if (!m) return undefined;
-      const [pid, ppid, pgid] = [Number(m[1]), Number(m[2]), Number(m[3])];
-      const start = Date.parse(m[4]!);
-      if (Number.isNaN(start)) return undefined;
-      // ps truncates to seconds: the true start is in [start, start + 1000).
-      if (m[5]!.trim() === file && ppid === 1 && pgid === pid && start + 1000 > fromMs && start <= toMs) found.push(pid);
-    }
-    return found;
-  },
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 };
 
@@ -208,6 +189,8 @@ export class ActorRegistry {
   /** Set once the record could not be kept current: from then on nothing is spawned. */
   private broken: Error | undefined;
   private commandIds = 0;
+  /** The command whose runner call is on the stack right now. */
+  private announced: ActorCommand | undefined;
 
   private constructor(path: string, record: ActorRecord) {
     this.path = path;
@@ -273,20 +256,58 @@ export class ActorRegistry {
   }
 
   /**
-   * A command runner that keeps each command announced in the record while
-   * it runs. The runner settles only once its child has exited, so a
-   * command still announced after a crash may still be running.
+   * A command runner that announces each command in the record before
+   * running it. With the runner's spawn reports wired (commandHooks), the
+   * announcement is replaced by the command's group in the same write;
+   * without them it stays until the command settles, and a crash meanwhile
+   * leaves the worker unproven.
    */
   wrapRunner(run: CommandRunner, now: () => number = Date.now): CommandRunner {
     return async (file, args, options) => {
       if (this.broken) throw new Error(`not running ${file}: the actor record cannot be kept (${this.broken.message})`);
       const command: ActorCommand = { id: ++this.commandIds, file, startedAfterMs: now() };
       this.update((r) => ({ ...r, commands: [...r.commands, command] }));
+      // The runner spawns synchronously within this call: a spawn report now belongs to this command.
+      this.announced = command;
+      let running: ReturnType<CommandRunner>;
       try {
-        return await run(file, args, options);
+        running = run(file, args, options);
       } finally {
+        this.announced = undefined;
+      }
+      try {
+        return await running;
+      } finally {
+        // Settled: its child has exited (and was recorded as a group if reported).
         this.tryUpdate((r) => ({ ...r, commands: r.commands.filter((c) => c.id !== command.id) }));
       }
+    };
+  }
+
+  /**
+   * Callbacks for a CommandRunner that reports its spawns. onSpawn records
+   * the command's group, ending its announcement in the same write, and
+   * throws when that cannot be written (the runner then stops the child).
+   * After onSettled the group stays on record until it has no members.
+   */
+  commandHooks(probe: ProcessProbe = systemProbe): { onSpawn(spawn: CommandSpawn): void; onSettled(spawn: CommandSpawn): void } {
+    return {
+      onSpawn: (spawn) => {
+        const announced = this.announced;
+        const group: ActorGroup = { pgid: spawn.pid, spawnedAfterMs: spawn.spawnedAfterMs, spawnedBeforeMs: spawn.spawnedBeforeMs, file: spawn.file };
+        this.update((r) => ({ ...r, commands: r.commands.filter((c) => c.id !== announced?.id), groups: [...r.groups, group] }));
+      },
+      onSettled: (spawn) => {
+        const drop = () => {
+          if (probe.group(spawn.pid) !== 'gone') return false;
+          this.tryUpdate((r) => ({ ...r, groups: r.groups.filter((g) => !(g.pgid === spawn.pid && g.spawnedAfterMs === spawn.spawnedAfterMs)) }));
+          return true;
+        };
+        if (drop()) return;
+        // Descendants still hold the group: look again until it is empty.
+        const timer = setInterval(() => drop() && clearInterval(timer), 1_000);
+        timer.unref();
+      },
     };
   }
 
@@ -387,24 +408,9 @@ export async function verifyWorkerStopped(
   if (own !== 'gone') return { stopped: false, reason: `worker group ${record.pgid} is ${own === 'alive' ? 'not empty' : 'unreadable'}; waiting for its commands to end` };
   evidence.push(`worker group ${record.pgid} empty`);
 
-  // Commands that were under way: never signalled, only waited out.
-  if (record.commands.length > 0) {
-    let lastAliveMs: number;
-    try {
-      lastAliveMs = statSync(found.path).mtimeMs + 2 * HEARTBEAT_MS;
-    } catch (error) {
-      return { stopped: false, reason: `cannot read the actor record's heartbeat: ${(error as Error).message}` };
-    }
-    const left: number[] = [];
-    for (const file of new Set(record.commands.map((c) => c.file))) {
-      const fromMs = Math.min(...record.commands.filter((c) => c.file === file).map((c) => c.startedAfterMs));
-      const found = probe.orphanLeaders(file, fromMs, lastAliveMs);
-      if (found === undefined) return { stopped: false, reason: 'cannot list processes to look for its commands' };
-      left.push(...found);
-    }
-    if (left.length > 0) return { stopped: false, reason: `${record.commands.length} command(s) were under way; orphaned processes from that time still run (pid ${left.join(', ')})` };
-    evidence.push(`no orphaned process from its ${record.commands.length} unfinished command(s) runs`);
-  }
+  // A command announced but never reported spawned may be running under an unknown pid.
+  if (record.commands.length > 0)
+    return { stopped: false, reason: `worker ${record.pid} died during ${record.commands.length} command(s) whose processes cannot be identified` };
 
   for (const group of record.groups) {
     if (options.signal?.aborted) return { stopped: false, reason: 'verification was cancelled' };

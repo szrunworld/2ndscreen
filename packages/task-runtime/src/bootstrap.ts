@@ -214,11 +214,17 @@ export async function openControlClient(config: RuntimeConfig): Promise<ControlC
 }
 
 function processAlive(pid: number): boolean {
+  return processExists(pid) !== false;
+}
+
+/** true or false when the system says, undefined when it will not. */
+function processExists(pid: number): boolean | undefined {
   try {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'EPERM';
+    const code = (error as NodeJS.ErrnoException).code;
+    return code === 'ESRCH' ? false : code === 'EPERM' ? true : undefined;
   }
 }
 
@@ -257,12 +263,18 @@ async function ensureWorker(store: TaskStore, config: RuntimeConfig): Promise<{ 
         const result = await ensureDaemon(store, workerCommand(config), { readyTimeoutMs });
         return result.started ? { started: true, pid: result.pid } : { started: false };
       }
-      // The lease names a worker that is not running: start the one that takes over once it expires.
+      // The lease names a process with no worker record. Unless that process is certainly gone, it may
+      // still be the owner (an unknown is not a death): start nothing.
+      if (processExists(owner) !== false) return { started: false };
+      // The owner is gone and its lease has not run out yet: start the worker that takes over then.
       const pid = await spawnDetachedWorker(workerCommand(config));
-      // Hold the turn until its record shows, so the next command line sees it.
-      for (const until = Date.now() + 5_000; Date.now() < until && !liveWorkers(config.paths.actorsDir).some((w) => w.pid === pid); )
+      // It counts as started only once its own record shows it running.
+      for (const until = Date.now() + readyTimeoutMs; Date.now() < until; ) {
+        if (liveWorkers(config.paths.actorsDir).some((w) => w.pid === pid)) return { started: true, pid };
+        if (processExists(pid) === false) break;
         await new Promise((r) => setTimeout(r, 50));
-      return { started: true, pid };
+      }
+      throw new RuntimeError('io', `a standby worker (pid ${pid}) did not come up; see ${config.paths.workerLog}`, { pid });
     } finally {
       await store.releaseLease(lock.leaseId).catch(() => undefined);
     }
@@ -295,6 +307,7 @@ export interface WorkerOptions {
 
 export async function startWorker(config: RuntimeConfig, options: WorkerOptions = {}): Promise<Worker> {
   preparePrivateDirs(config.paths);
+  const skills = loadSkills(config.skillsDir);
   // Screenshots of workers that are gone are not evidence of anything now; A4 keeps its own copies.
   for (const name of readdirSync(config.paths.screenshotsDir)) {
     const pid = Number(name);
@@ -304,88 +317,100 @@ export async function startWorker(config: RuntimeConfig, options: WorkerOptions 
   const screenshotDir = join(config.paths.screenshotsDir, String(process.pid));
   mkdirSync(screenshotDir, { recursive: true, mode: 0o700 });
   pruneClosedRecords(config.paths.actorsDir, 7 * 24 * 60 * 60 * 1000);
-  const skills = loadSkills(config.skillsDir);
   const store = await openTaskStore({ path: config.paths.dbPath });
-  // Recorded before the daemon can start a task: every actor of this worker is on file.
-  const registry = ActorRegistry.create(config.paths.actorsDir);
-  const spawn = registry.wrap(options.spawn ?? createLineProcessSpawner());
-  const stopHeartbeat = registry.startHeartbeat();
-
-  const vision: LocalVisionClient = createLocalVision({ helper: config.cli, spawn });
-  const adapter = createSecondScreenAdapter({
-    cli: config.cli,
-    socket: config.socket,
-    ...(config.app ? { app: config.app } : {}),
-    // Every 2ndscreen command leads its own group: announced in the actor record while it runs.
-    run: registry.wrapRunner(createCommandRunner()),
-    screenshotDir,
-  });
-  const hub = createTelemetryHub();
-  // The bridge is made only when a unit needs exploration: stable and scripted runs never start a model.
-  const explorer = async () => createAgentBridge({ cli: config.cli, spawn });
-
-  const runners = new Map<string, TaskRunner>();
-  for (const { spec, profile } of skills.values()) {
-    const sessions = createSessionManager({
-      adapter,
-      leases: store,
-      policy: { submitAllowed: spec.submitAllowed, foregroundAllowed: spec.foregroundAllowed },
-      vision,
-    });
-    // No telemetry on the engine: the runner counts replays itself.
-    const engine = createProcedureEngine({ repository: store, rule: { ...DEFAULT_PROMOTION, promoteAfterSuccesses: spec.learning.promoteAfterSuccesses } });
-    const learner = createLearner({ repository: store });
-    const recovery = createRecovery({ engine, learner, explorer, telemetry: hub.shared });
-    const workflow = options.workflow?.(spec) ?? createBossResumesWorkflow({ vision, telemetry: hub.shared });
-    runners.set(
-      spec.id,
-      createTaskRunner({
-        store,
-        sessions,
-        artifacts: (task) => createArtifactStore({ outputDir: task.input.outputDir, taskId: task.id }),
-        engine,
-        learner,
-        recovery,
-        workflow,
-        spec,
-        profile,
-        telemetry: hub.forTask,
-      }),
-    );
-  }
-  const runner: TaskRunner = {
-    async run(taskId, signal) {
-      const task = await store.getTask(taskId);
-      const chosen = task && runners.get(task.skillId);
-      if (!chosen) throw new RuntimeError('not_found', `no runner for task ${taskId}`);
-      return chosen.run(taskId, signal);
-    },
+  let registry: ActorRegistry | undefined;
+  let stopHeartbeat: (() => void) | undefined;
+  let vision: LocalVisionClient | undefined;
+  /** What was acquired, given back in reverse; also after a failed start. */
+  const release = async () => {
+    await vision?.close().catch(() => undefined);
+    stopHeartbeat?.();
+    registry?.close();
+    await store.close().catch(() => undefined);
+    rmSync(screenshotDir, { recursive: true, force: true });
   };
+  let daemon: TaskDaemon;
+  try {
+    // Recorded before the daemon can start a task: every actor of this worker is on file.
+    registry = ActorRegistry.create(config.paths.actorsDir);
+    const spawn = registry.wrap(options.spawn ?? createLineProcessSpawner());
+    stopHeartbeat = registry.startHeartbeat();
 
-  const daemon = createTaskDaemon({
-    store,
-    runner,
-    specs: (id) => skills.get(id)?.spec,
-    // A worker whose exit no daemon recorded: proven stopped only from its actor record.
-    verifyActorExit: (worker, { signal }) => verifyWorkerStopped(config.paths.actorsDir, worker, { signal }),
-    // Room for a SIGTERM grace and the SIGKILL rounds of each recorded group, and the process scans.
-    verifyTimeoutMs: 4 * VERIFY_KILL_GRACE_MS,
-    ...options.daemon,
-  });
+    vision = createLocalVision({ helper: config.cli, spawn });
+    const adapter = createSecondScreenAdapter({
+      cli: config.cli,
+      socket: config.socket,
+      ...(config.app ? { app: config.app } : {}),
+      // Every 2ndscreen command leads its own group: announced in the actor record while it runs.
+      run: registry.wrapRunner(createCommandRunner()),
+      screenshotDir,
+    });
+    const hub = createTelemetryHub();
+    // The bridge is made only when a unit needs exploration: stable and scripted runs never start a model.
+    const explorer = async () => createAgentBridge({ cli: config.cli, spawn });
+
+    const runners = new Map<string, TaskRunner>();
+    for (const { spec, profile } of skills.values()) {
+      const sessions = createSessionManager({
+        adapter,
+        leases: store,
+        policy: { submitAllowed: spec.submitAllowed, foregroundAllowed: spec.foregroundAllowed },
+        vision,
+      });
+      // No telemetry on the engine: the runner counts replays itself.
+      const engine = createProcedureEngine({ repository: store, rule: { ...DEFAULT_PROMOTION, promoteAfterSuccesses: spec.learning.promoteAfterSuccesses } });
+      const learner = createLearner({ repository: store });
+      const recovery = createRecovery({ engine, learner, explorer, telemetry: hub.shared });
+      const workflow = options.workflow?.(spec) ?? createBossResumesWorkflow({ vision, telemetry: hub.shared });
+      runners.set(
+        spec.id,
+        createTaskRunner({
+          store,
+          sessions,
+          artifacts: (task) => createArtifactStore({ outputDir: task.input.outputDir, taskId: task.id }),
+          engine,
+          learner,
+          recovery,
+          workflow,
+          spec,
+          profile,
+          telemetry: hub.forTask,
+        }),
+      );
+    }
+    const runner: TaskRunner = {
+      async run(taskId, signal) {
+        const task = await store.getTask(taskId);
+        const chosen = task && runners.get(task.skillId);
+        if (!chosen) throw new RuntimeError('not_found', `no runner for task ${taskId}`);
+        return chosen.run(taskId, signal);
+      },
+    };
+
+    daemon = createTaskDaemon({
+      store,
+      runner,
+      specs: (id) => skills.get(id)?.spec,
+      // A worker whose exit no daemon recorded: proven stopped only from its actor record.
+      verifyActorExit: (worker, { signal }) => verifyWorkerStopped(config.paths.actorsDir, worker, { signal }),
+      // Room for a SIGTERM grace and the SIGKILL rounds of each recorded group, and the process scans.
+      verifyTimeoutMs: 4 * VERIFY_KILL_GRACE_MS,
+      ...options.daemon,
+    });
+  } catch (error) {
+    await release();
+    throw error;
+  }
 
   let closing: Promise<void> | undefined;
   return {
     daemon,
     store,
-    registry,
+    registry: registry!,
     close() {
       closing ??= (async () => {
         await daemon.shutdown();
-        await vision.close();
-        stopHeartbeat();
-        registry.close();
-        await store.close();
-        rmSync(screenshotDir, { recursive: true, force: true });
+        await release();
       })();
       return closing;
     },

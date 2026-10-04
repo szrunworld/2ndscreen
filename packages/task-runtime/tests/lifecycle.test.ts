@@ -4,7 +4,7 @@
 // unit tests cannot: the command line exits while the detached worker goes
 // on, control calls answer while the worker is busy, concurrent command
 // lines start one worker, and a worker that dies mid-task leaves the task
-// blocked until its leftover processes are proven gone.
+// blocked while nothing proves its processes gone.
 
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
@@ -190,7 +190,7 @@ test('concurrent command lines start one worker between them', async () => {
   await until('workers gone', () => (workers(w).length === 0 ? true : undefined), 10_000);
 });
 
-test('a worker killed mid-task: the task stays unresolved while its command lives, then is paused, never rerun on a guess', async () => {
+test('a worker killed during a GUI command: the task stays unresolved and is never rerun on a guess', async () => {
   const w = world('hang');
   const id: string = (await run(w, '--account', 'hr-zhang')).json.result.taskId;
   const [first] = await until('a worker', () => (workers(w).length ? workers(w) : undefined));
@@ -220,12 +220,14 @@ test('a worker killed mid-task: the task stays unresolved while its command live
   assert.deepEqual(hung(), before, 'an unidentified command is waited out, not killed');
   assert.equal((await controlEvents(w, id)).filter((e) => e === 'worker_started').length, 1, 'no second actor was started');
 
-  // The command ends (here: killed by the test); a later check proves nothing of the worker runs.
+  // The command ends (here: killed by the test). Its pid was never reported to the worker's
+  // record (A1's runner gives no spawn report), so nothing proves it was the only one: still blocked.
   for (const pid of before) process.kill(pid, 'SIGKILL');
-  await until('paused as an orphan', async () => ((await status(w, id)).status === 'paused' ? true : undefined), 20_000);
+  await new Promise((r) => setTimeout(r, 12_000)); // two verifier rounds
   const events = await controlEvents(w, id);
-  assert.ok(events.includes('actor_exit_verified'), events.join(','));
-  assert.ok(events.includes('orphan_recovered'), events.join(','));
+  assert.equal((await status(w, id)).status, 'running');
+  assert.ok(!events.includes('actor_exit_verified'), events.join(','));
+  assert.ok(!events.includes('orphan_recovered'), events.join(','));
   assert.equal(events.filter((e) => e === 'worker_started').length, 1, 'it was not rerun');
   process.kill(standby!.pid, 'SIGTERM');
   await until('workers gone', () => (workers(w).length === 0 ? true : undefined), 10_000);

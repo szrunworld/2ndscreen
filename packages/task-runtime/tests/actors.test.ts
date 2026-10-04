@@ -24,9 +24,8 @@ const iso = (ms: number) => new Date(ms).toISOString();
 const WORKER_START = iso(Date.parse('2026-10-04T10:00:00Z'));
 
 /** A probe over a made-up process table: pid -> start, and groups with members. */
-function fakeProbe(starts: Map<number, string>, groups: Map<number, 'alive' | 'gone' | 'unknown'>, killed: number[] = [], orphans: number[] | undefined = []): ProcessProbe {
+function fakeProbe(starts: Map<number, string>, groups: Map<number, 'alive' | 'gone' | 'unknown'>, killed: number[] = []): ProcessProbe {
   return {
-    orphanLeaders: () => orphans,
     startedAt: (pid) => starts.get(pid),
     group: (pgid) => groups.get(pgid) ?? 'gone',
     groupOf: (pid) => pid,
@@ -175,16 +174,53 @@ test('a group that cannot be tied to the record is left alone', async () => {
   }
 });
 
-test('commands under way at a crash are waited out, never signalled', async () => {
+test('a command whose spawn was never reported leaves the worker unproven, whatever the process list shows', async () => {
   const d = dir();
   writeRecord(d, base({ commands: [{ id: 1, file: '2ndscreen', startedAfterMs: Date.parse('2026-10-04T10:06:00Z') }] }));
   const killed: number[] = [];
-  assert.match(reason(await verifyWorkerStopped(d, worker, { probe: fakeProbe(new Map(), new Map(), killed, [912]) })), /still run \(pid 912\)/);
-  assert.match(reason(await verifyWorkerStopped(d, worker, { probe: { ...fakeProbe(new Map(), new Map(), killed), orphanLeaders: () => undefined } })), /cannot list processes/);
+  const verdict = await verifyWorkerStopped(d, worker, { probe: fakeProbe(new Map(), new Map(), killed) });
+  assert.match(reason(verdict), /died during 1 command\(s\) whose processes cannot be identified/);
   assert.deepEqual(killed, []);
-  const ok = await verifyWorkerStopped(d, worker, { probe: fakeProbe(new Map(), new Map(), killed, []) });
-  assert.equal(ok.stopped, true);
-  assert.match((ok as { evidence: string }).evidence, /no orphaned process from its 1 unfinished command/);
+});
+
+test('with spawn reports, a command becomes an exact group in the write that ends its announcement, and stays until its group is empty', async () => {
+  const registry = ActorRegistry.create(dir());
+  const groups = new Map<number, 'alive' | 'gone' | 'unknown'>([[3131, 'alive']]);
+  const hooks = registry.commandHooks(fakeProbe(new Map(), groups));
+  const writes: ActorRecord[] = [];
+  const spawnReport = { pid: 3131, file: '/x/2ndscreen', spawnedAfterMs: 1000, spawnedBeforeMs: 1003 };
+  let settle!: () => void;
+  // A runner like A1's: spawns synchronously within the call, reports, settles after close.
+  const run = registry.wrapRunner((file) => {
+    writes.push(structuredClone(registry.current));
+    hooks.onSpawn({ ...spawnReport, file });
+    writes.push(structuredClone(registry.current));
+    return new Promise((resolve) => (settle = () => {
+      hooks.onSettled({ ...spawnReport, file });
+      resolve({ code: 0, stdout: '', stderr: '' });
+    }));
+  });
+  const done = run('/x/2ndscreen', [], { timeoutMs: 1000 });
+  settle();
+  await done;
+  assert.equal(writes[0]!.commands.length, 1, 'announced before the spawn');
+  assert.equal(writes[1]!.commands.length, 0, 'the announcement ended with the report');
+  assert.deepEqual(writes[1]!.groups.map((g) => [g.pgid, g.spawnedAfterMs, g.spawnedBeforeMs]), [[3131, 1000, 1003]]);
+  // Settled, but a descendant still holds the group: kept.
+  assert.deepEqual(registry.current.groups.map((g) => g.pgid), [3131]);
+  assert.deepEqual(registry.current.commands, []);
+  groups.set(3131, 'gone');
+  await sleep(1_100);
+  assert.deepEqual(registry.current.groups, []);
+  // A report that cannot be written throws, so the runner stops the child instead of losing it.
+  const d = dir();
+  const broken = ActorRegistry.create(d);
+  chmodSync(d, 0o500);
+  try {
+    assert.throws(() => broken.commandHooks().onSpawn(spawnReport));
+  } finally {
+    chmodSync(d, 0o700);
+  }
 });
 
 test('the runner wrapper announces a command while it runs, through success and failure', async () => {
