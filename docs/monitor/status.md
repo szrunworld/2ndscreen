@@ -4,7 +4,7 @@
 
 | 代号 | 任务 | Worker / 工作区 | 分支 | 状态 | 最近 commit | 未决问询 |
 | --- | --- | --- | --- | --- | --- | --- |
-| A | 契约、协议与 API 规范 | ctx_0786c7296951 / monitor-A | monitor-A | 进行（Driver 协议已提交 4f033c7，派回两处修正） | 4f033c7 | — |
+| A | 契约、协议与 API 规范 | ctx_0786c7296951→ctx_edd92e2bd40f（同一终端）/ monitor-A | monitor-A | 派回（0.1.0 审过：168 tests；A-fix 做 enabled 与 text 两处修正 → 0.1.1） | ba4685f | — |
 | B | 只读可行性验证与夹具 | ctx_1b25ee64eab9（已释放） | monitor-B | 已合（898edbd） | 201001d | 登录/二维码、新招呼首次打开、电话待同意/已交换/已拒绝、邮件转发内容、搜索输入后结果 → 留给 N/K |
 | C | Driver 适配器 | ctx_3dfbecec466d / monitor-C（自建屏幕 monitor-c） | monitor-C | 进行（第 1 阶段；等 A 先提交 Driver 协议） | — | — |
 | D1 | 本地账本 | — | — | 未派 | — | — |
