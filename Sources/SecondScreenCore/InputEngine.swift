@@ -106,11 +106,11 @@ public final class InputEngine {
                 let before = AXActions.value(element.snapshot, index: element.info.index)
                 if AXActions.isFocused(element.snapshot, index: element.info.index) {
                     cursor(.move, center)
-                    response.route = try BackgroundInput.type(text, in: window)
+                    response.route = try BackgroundInput.type(text, in: window, chunk: action.chunk ?? 1)
                 } else {
                     cursor(.click, center)
                     _ = try BackgroundInput.click(at: center, in: window, button: .left, count: 1, allowAX: false)
-                    response.route = "event.click+" + (try BackgroundInput.type(text, in: window))
+                    response.route = "event.click+" + (try BackgroundInput.type(text, in: window, chunk: action.chunk ?? 1))
                 }
                 // Some Electron apps (BOSS直聘) drop background keys but take the
                 // field's text set through accessibility, which the page sees as
@@ -132,7 +132,7 @@ public final class InputEngine {
                 // put the text in twice.
                 response.route = write == .landed ? "ax.insert" : "ax.insert.unconfirmed"
             } else {
-                response.route = try BackgroundInput.type(text, in: window)
+                response.route = try BackgroundInput.type(text, in: window, chunk: action.chunk ?? 1)
             }
 
         case .key:

@@ -219,6 +219,10 @@ public struct InputAction: Codable {
     /// `type`: set the field's whole text to `value` instead of adding to it;
     /// needs the field named.
     public var replace: Bool?
+    /// `type`: send up to this many characters in each key event (1–20)
+    /// instead of one, for long text in apps that take a key event carrying
+    /// several characters, such as Chromium pages. Unset types one at a time.
+    public var chunk: Int?
     /// `key`: a key name such as return, a, f5 or down, and modifiers
     /// (cmd, shift, option, ctrl).
     public var key: String?

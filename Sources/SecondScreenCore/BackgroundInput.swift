@@ -192,12 +192,25 @@ public enum BackgroundInput {
     // MARK: Keyboard
 
     /// Type text as Unicode key events, one character at a time, so any
-    /// script works whatever the keyboard layout or input method.
-    public static func type(_ text: String, in window: WindowInfo) throws -> String {
+    /// script works whatever the keyboard layout or input method. With
+    /// `chunk` above 1, each key event carries up to that many characters
+    /// (never splitting one), which types long text in a fraction of the time.
+    public static func type(_ text: String, in window: WindowInfo, chunk: Int = 1) throws -> String {
         try requireTrust()
+        let size = max(1, min(chunk, 20))
+        var pieces: [String] = []
+        var current = ""
+        for character in text {
+            if current.utf16.count + String(character).utf16.count > size, !current.isEmpty {
+                pieces.append(current)
+                current = ""
+            }
+            current.append(character)
+        }
+        if !current.isEmpty { pieces.append(current) }
         FocusGuard.shared.protect(target: window.pid) {
-            for character in text {
-                let units = Array(String(character).utf16)
+            for piece in pieces {
+                let units = Array(piece.utf16)
                 for down in [true, false] {
                     guard let event = CGEvent(keyboardEventSource: CGEventSource(stateID: .hidSystemState),
                                               virtualKey: 0, keyDown: down) else { continue }
@@ -210,7 +223,7 @@ public enum BackgroundInput {
                 }
             }
         }
-        return "event.unicode"
+        return size > 1 ? "event.unicode.chunk\(size)" : "event.unicode"
     }
 
     /// Press a key with modifiers. With cmd, the app is made front for the

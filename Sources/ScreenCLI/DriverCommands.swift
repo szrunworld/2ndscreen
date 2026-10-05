@@ -76,6 +76,12 @@ enum DriverCommands {
             guard let value = args.value("--value") else { throw CommandError("type needs --value TEXT") }
             action.value = value
             if args.has("--replace") { action.replace = true }
+            if let chunk = args.value("--chunk") {
+                guard let size = Int(chunk), (1...20).contains(size) else {
+                    throw CommandError("--chunk takes 1 to 20 characters per key event")
+                }
+                action.chunk = size
+            }
         case .key:
             guard let key = args.value("--key") else { throw CommandError("key needs --key NAME, such as return") }
             action.key = key
