@@ -6,6 +6,7 @@
 // line, startWorker for the background process that runs tasks.
 
 export * from './contracts.ts';
+export * from './agent-contracts.ts';
 export {
   loadSkills,
   openControlClient,
