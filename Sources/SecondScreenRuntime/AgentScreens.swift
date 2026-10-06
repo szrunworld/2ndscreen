@@ -7,17 +7,17 @@ import UniformTypeIdentifiers
 /// agent needs on them: launching an app there, moving windows there, and
 /// capturing what it shows.
 @MainActor
-final class AgentScreens {
-    final class Screen {
-        let name: String
-        let display: VirtualDisplay
-        let serialNumber: UInt32
-        let deadline: Date?
-        let idleTimeout: TimeInterval?
-        let ownerPID: pid_t?
+public final class AgentScreens {
+    public final class Screen {
+        public let name: String
+        public let display: VirtualDisplay
+        public let serialNumber: UInt32
+        public let deadline: Date?
+        public let idleTimeout: TimeInterval?
+        public let ownerPID: pid_t?
         /// Whether the screen should be HiDPI wherever its size allows, kept
         /// for when it is resized.
-        let prefersHiDPI: Bool
+        public let prefersHiDPI: Bool
         var lastUsed = Date()
         /// A resize is under way; the follow timer waits for it.
         var resizing = false
@@ -36,19 +36,19 @@ final class AgentScreens {
 
     /// Agents forget to clean up. Unless told otherwise, a screen nobody has
     /// named in a request for this long is destroyed.
-    static let defaultIdleTimeout: TimeInterval = 60 * 60
+    public static let defaultIdleTimeout: TimeInterval = 60 * 60
 
     /// Each display costs WindowServer memory and compositing time; this keeps
     /// a runaway agent from exhausting either.
-    static let limit = 8
+    public static let limit = 8
     /// Serials below this belong to the app's own display (1) and the
     /// vdisplay CLI (2). macOS remembers each serial's arrangement.
     /// A side instance numbers its displays apart from the usual instance's.
-    private static let firstSerial: UInt32 = ControlProtocol.isSideInstance ? 900 : 100
+    private let firstSerial: UInt32
     /// Serials to try before giving up on a unit number of its own.
     private static let serialAttempts = 8
 
-    private(set) var screens: [Screen] = []
+    public private(set) var screens: [Screen] = []
     /// Apps an agent placed on a screen. Apps open later windows wherever
     /// they like, usually on the main display, in front of the user; these
     /// get moved onto the app's screen as they appear.
@@ -57,15 +57,22 @@ final class AgentScreens {
     private var reapTimer: Timer?
     /// Called after a screen is created or removed, so the app can add or
     /// drop its agent cursor overlay and preview.
-    var onChange: (() -> Void)?
+    public var onChange: (() -> Void)?
     /// Called after a screen changes size, so its preview can follow.
-    var onResize: ((String) -> Void)?
+    public var onResize: ((String) -> Void)?
 
-    func screen(named name: String) -> Screen? {
+    /// `serialBase` numbers this instance's displays apart from any other
+    /// 2ndscreen instance on the Mac: the usual app starts at 100, a side
+    /// instance at 900, and a host app embedding the runtime picks its own.
+    public init(serialBase: UInt32 = ControlProtocol.isSideInstance ? 900 : 100) {
+        firstSerial = serialBase
+    }
+
+    public func screen(named name: String) -> Screen? {
         screens.first { $0.name == name }
     }
 
-    func info(_ screen: Screen) -> ScreenInfo {
+    public func info(_ screen: Screen) -> ScreenInfo {
         var info = ScreenInfo(name: screen.name, kind: .agent, displayID: screen.display.displayID,
                               width: screen.display.mode.width, height: screen.display.mode.height,
                               hiDPI: screen.display.hiDPI, frame: Frame(screen.display.bounds))
@@ -76,11 +83,11 @@ final class AgentScreens {
     }
 
     /// Note that an agent is still using `name`, postponing its idle timeout.
-    func touch(_ name: String) {
+    public func touch(_ name: String) {
         screen(named: name)?.lastUsed = Date()
     }
 
-    func destroyAll() {
+    public func destroyAll() {
         let arrangement = userArrangement()
         screens.removeAll()
         bindings.removeAll()
@@ -93,7 +100,7 @@ final class AgentScreens {
     /// - Parameters:
     ///   - hiDPI: what the agent asked for, or nil to use `defaultHiDPI`
     ///     where macOS allows 2x at this size.
-    func create(name requested: String?, width: Int, height: Int, hiDPI requestedHiDPI: Bool?,
+    public func create(name requested: String?, width: Int, height: Int, hiDPI requestedHiDPI: Bool?,
                 defaultHiDPI: Bool, ttl: TimeInterval?, idleTimeout: TimeInterval?, ownerPID: pid_t?) async -> ControlResponse {
         let name = requested ?? nextName()
         if let refused = AgentScreenAdmission.failure(name: name, existing: screens.map(\.name), limit: Self.limit, ownerPID: ownerPID) {
@@ -211,7 +218,7 @@ final class AgentScreens {
         weak var screen: Screen?
     }
 
-    func destroy(name: String) -> ControlResponse {
+    public func destroy(name: String) -> ControlResponse {
         guard screen(named: name) != nil else { return .failure("no agent screen named \"\(name)\"") }
         // Releasing the display removes it; macOS moves its windows elsewhere.
         remove(named: name)
@@ -220,7 +227,7 @@ final class AgentScreens {
 
     /// Launch an app without activating it, wait for its first window, and
     /// move that window onto `target`, any screen the app knows.
-    func launch(on target: ScreenInfo, bundleID: String?, path: String?, newInstance: Bool,
+    public func launch(on target: ScreenInfo, bundleID: String?, path: String?, newInstance: Bool,
                 fill: Bool, fitScreen: Bool = false) async -> ControlResponse {
         guard WindowMover.isTrusted else { return .failure("2ndscreen needs the Accessibility permission to place windows") }
 
@@ -285,7 +292,7 @@ final class AgentScreens {
         return response
     }
 
-    func moveWindows(to target: ScreenInfo, pid: pid_t, windowID: CGWindowID?, fill: Bool,
+    public func moveWindows(to target: ScreenInfo, pid: pid_t, windowID: CGWindowID?, fill: Bool,
                      fitScreen: Bool = false) async -> ControlResponse {
         guard WindowMover.isTrusted else { return .failure("2ndscreen needs the Accessibility permission to move windows") }
         let windows = WindowMover.windows(ofPID: pid).filter { windowID == nil || $0.windowID == windowID }
@@ -337,7 +344,7 @@ final class AgentScreens {
     /// Move an app's windows from `source` to the main display and stop
     /// pulling its windows back onto `source`. Without this, the only way to
     /// give a window back to the user is destroying the screen.
-    func releaseWindows(from source: ScreenInfo, pid: pid_t, windowID: CGWindowID?) async -> ControlResponse {
+    public func releaseWindows(from source: ScreenInfo, pid: pid_t, windowID: CGWindowID?) async -> ControlResponse {
         guard WindowMover.isTrusted else { return .failure("2ndscreen needs the Accessibility permission to move windows") }
         let bounds = CGDisplayBounds(source.displayID)
         let windows = WindowMover.windows(ofPID: pid).filter {
@@ -365,7 +372,7 @@ final class AgentScreens {
     }
 
     /// Capture `display` to a PNG at its full pixel size.
-    func screenshot(displayID: CGDirectDisplayID, to output: String) async -> ControlResponse {
+    public func screenshot(displayID: CGDirectDisplayID, to output: String) async -> ControlResponse {
         guard CGPreflightScreenCaptureAccess() else {
             return .failure("2ndscreen needs the Screen Recording permission to take screenshots")
         }
@@ -404,7 +411,7 @@ final class AgentScreens {
     /// two instances' screens alive, a display capture showed another
     /// screen of the same size. Windows of this app (the agent cursor) are
     /// left out; anything not covered by a window is light gray.
-    func windowsScreenshot(of screen: ScreenInfo, to output: String) async -> ControlResponse {
+    public func windowsScreenshot(of screen: ScreenInfo, to output: String) async -> ControlResponse {
         guard CGPreflightScreenCaptureAccess() else {
             return .failure("2ndscreen needs the Screen Recording permission to take screenshots")
         }
@@ -550,17 +557,17 @@ final class AgentScreens {
     // MARK: Sizing to a window
 
     /// Whether an app on `name` keeps the screen sized to its window.
-    func fitsWindow(_ name: String) -> Bool {
+    public func fitsWindow(_ name: String) -> Bool {
         bindings.values.contains { $0.screen == name && $0.fit }
     }
 
     /// Whether any app was placed on `name` (only those can be followed).
-    func hasPlacedApps(_ name: String) -> Bool {
+    public func hasPlacedApps(_ name: String) -> Bool {
         bindings.values.contains { $0.screen == name }
     }
 
     /// Turn following the window's size on or off for the apps on `name`.
-    func setFitsWindow(_ name: String, _ on: Bool) {
+    public func setFitsWindow(_ name: String, _ on: Bool) {
         for (pid, binding) in bindings where binding.screen == name {
             bindings[pid]?.fit = on
             bindings[pid]?.lastSize = nil
@@ -569,7 +576,7 @@ final class AgentScreens {
 
     /// The largest window of the apps placed on `name`: what the preview's
     /// buttons act on.
-    func mainWindow(on name: String) -> WindowInfo? {
+    public func mainWindow(on name: String) -> WindowInfo? {
         guard let screen = screen(named: name) else { return nil }
         let bounds = screen.display.bounds
         return bindings.filter { $0.value.screen == name }
@@ -582,7 +589,7 @@ final class AgentScreens {
     }
 
     /// Change a screen's size in place, keeping HiDPI where the size allows.
-    func resize(name: String, width: Int, height: Int) async -> ControlResponse {
+    public func resize(name: String, width: Int, height: Int) async -> ControlResponse {
         guard let screen = screen(named: name) else { return .failure("no agent screen named \"\(name)\"") }
         let largest = screen.display.largest
         guard (320...largest.width).contains(width), (240...largest.height).contains(height) else {
@@ -763,8 +770,8 @@ final class AgentScreens {
     private func nextSerial(excluding tried: Set<UInt32> = []) -> UInt32 {
         let key = "nextAgentSerial"
         let span: UInt32 = 100_000
-        func following(_ serial: UInt32) -> UInt32 { serial + 1 >= Self.firstSerial + span ? Self.firstSerial : serial + 1 }
-        var serial = max(UInt32(clamping: UserDefaults.standard.integer(forKey: key)), Self.firstSerial)
+        func following(_ serial: UInt32) -> UInt32 { serial + 1 >= firstSerial + span ? firstSerial : serial + 1 }
+        var serial = max(UInt32(clamping: UserDefaults.standard.integer(forKey: key)), firstSerial)
         while tried.contains(serial) || screens.contains(where: { $0.serialNumber == serial }) {
             serial = following(serial)
         }
