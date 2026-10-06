@@ -199,6 +199,12 @@ public struct WindowSummary: Codable {
 public struct InputAction: Codable {
     public enum Kind: String, Codable {
         case click, type, key, scroll, drag, hover
+        /// AXPress on one element of the window's last `window.state`, by
+        /// index, and nothing else: no pointer, focus, key or event fallback.
+        /// A kind of its own rather than a click option, so an app that
+        /// predates it refuses the request when decoding it instead of
+        /// clicking with events.
+        case accessibilityPress
     }
 
     public var kind: Kind

@@ -39,6 +39,9 @@ public enum AndroidPlan {
             }
             return [swipe(from, CGPoint(x: toX, y: toY), 0.5)]
 
+        case .accessibilityPress:
+            throw AndroidPlan.Failure("an accessibility press has no Android form")
+
         case .scroll:
             // Scrolling down shows what is below, so the finger moves up.
             let p = action.point ?? CGPoint(x: size.width / 2, y: size.height / 2)
