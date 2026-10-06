@@ -194,6 +194,20 @@ export function createBossResumesWorkflow(deps: {
 
 要求：`units` 覆盖 `BOSS_UNITS` 全部八个单元，persist_candidate 的 `allowedEffects` 为 `['artifact']`，任何单元不得包含 external-submit；`acquireResume` 只写入 `context.staging`，遇索取简历确认框返回 `unavailable / request_dialog` 且不点击确认；在线采集的完整性必须用 `captureCompleteness` 判定；未注入 vision 时需要 OCR 的分支返回失败原因而不是猜测；`verifyUnit` 是唯一的成功证据来源，模型的 finished 不算；测试位于 `packages/task-runtime/tests/boss-resumes.test.ts`，只用合成夹具。
 
+### Skill 自带工作流（`task.json` 的 `workflowModule`）
+
+Skill 可以不依赖编译进 runtime 的工作流，而在自己的目录里带一个 ES 模块：
+
+```json
+{ "workflow": "boss-resumes-v2", "workflowModule": "dist/workflow.mjs", "...": "..." }
+```
+
+- `workflowModule` 是相对 skill 目录的 `.mjs`/`.js` 路径；绝对路径、`..` 和经符号链接指向目录外的文件在 `loadSkills` 时拒绝。没有 `workflowModule` 时，`workflow` 必须是 runtime 内置的（目前只有 `boss-resumes-v1`）。
+- 模块导出 `createWorkflow(deps: WorkflowDeps)`，返回（或 Promise 返回）一个实现 `BossWorkflow` 的对象；`deps` 含 `vision`、`telemetry`、`clock`、`skillDir`、`spec`。返回对象的 `id` 必须等于 `spec.workflow`，且有 runner 调用的全部方法，否则 worker 拒绝加载。
+- 只有 worker 进程（`createSkillWorkflow`）import 这个模块；`2ndscreen task` 命令行只读 `task.json`，不执行 skill 代码。
+- 模块应自包含打包（esbuild `--bundle --format=esm --platform=node`），只留 `node:*` 外部导入。它会带一份自己的 `contracts.ts`；`isRuntimeError` 认 `Symbol.for('2ndscreen.task-runtime.RuntimeError')` 标记，所以模块抛出的 `RuntimeError` 在 runtime 里仍按错误码处理。
+- 范围：runner 按 `BossWorkflow` 契约驱动（固定单元、候选人列表、身份核对、简历获取），所以自带工作流目前只能是「收简历」形状。其他形状的 agent 需要另一个 runner。
+
 ### A5 探索桥接
 
 `packages/task-runtime/src/adapters/agent-bridge.ts`

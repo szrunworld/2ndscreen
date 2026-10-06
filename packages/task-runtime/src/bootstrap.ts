@@ -8,9 +8,10 @@
 // worker is running, and exits. The worker is the only process that drives
 // the app; it is started detached so it outlives the command that started it.
 
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { createBossResumesWorkflow } from './boss/workflow.ts';
 import {
   DEFAULT_PROMOTION,
@@ -20,6 +21,8 @@ import {
   validateTaskSpec,
   type BossWorkflow,
   type LineProcessSpawner,
+  type WorkflowDeps,
+  type WorkflowModule,
   type TaskRunner,
   type TaskSpec,
   type TaskStore,
@@ -128,10 +131,50 @@ export interface SkillPackage {
   dir: string;
   spec: TaskSpec;
   profile: WindowProfile;
+  /** Absolute path of the skill's own workflow module, when it ships one. */
+  workflowModule?: string;
 }
 
-/** Workflows this build can run, by TaskSpec.workflow. */
-const WORKFLOWS: Readonly<Record<string, true>> = { 'boss-resumes-v1': true };
+/** Workflows compiled into this build, by TaskSpec.workflow. */
+const WORKFLOWS: Readonly<Record<string, (deps: WorkflowDeps) => BossWorkflow>> = {
+  'boss-resumes-v1': (deps) => createBossResumesWorkflow(deps),
+};
+
+/** The methods the runner calls on a workflow. */
+const WORKFLOW_METHODS = ['classifyPage', 'readAccount', 'listCandidates', 'identify', 'verifyUnit', 'runScripted', 'acquireResume'] as const;
+
+/**
+ * The workflow for a skill: its own module when it ships one, else the one
+ * compiled in. Only the worker calls this; the command line never imports a
+ * skill's code.
+ */
+export async function createSkillWorkflow(skill: SkillPackage, deps: Omit<WorkflowDeps, 'skillDir' | 'spec'>): Promise<BossWorkflow> {
+  const full: WorkflowDeps = { ...deps, skillDir: skill.dir, spec: skill.spec };
+  let workflow: BossWorkflow;
+  const where = skill.workflowModule ?? `the built-in ${skill.spec.workflow}`;
+  if (skill.workflowModule) {
+    let module: Partial<WorkflowModule>;
+    try {
+      module = (await import(pathToFileURL(skill.workflowModule).href)) as Partial<WorkflowModule>;
+    } catch (error) {
+      throw new RuntimeError('capability_missing', `${skill.workflowModule}: could not load: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (typeof module.createWorkflow !== 'function')
+      throw new RuntimeError('capability_missing', `${skill.workflowModule}: does not export createWorkflow(deps)`);
+    workflow = await module.createWorkflow(full);
+  } else {
+    const make = WORKFLOWS[skill.spec.workflow];
+    if (!make) throw new RuntimeError('capability_missing', `workflow ${skill.spec.workflow} is not in this build`);
+    workflow = make(full);
+  }
+  if (typeof workflow !== 'object' || workflow === null) throw new RuntimeError('invalid_input', `${where}: createWorkflow returned no workflow`);
+  if (workflow.id !== skill.spec.workflow)
+    throw new RuntimeError('invalid_input', `${where}: implements ${String(workflow.id)}, but ${skill.spec.id} names ${skill.spec.workflow}`);
+  const missing = WORKFLOW_METHODS.filter((m) => typeof (workflow as unknown as Record<string, unknown>)[m] !== 'function');
+  if (missing.length || typeof workflow.units !== 'object' || workflow.units === null)
+    throw new RuntimeError('invalid_input', `${where}: not a workflow (missing ${[...missing, ...(typeof workflow.units === 'object' && workflow.units ? [] : ['units'])].join(', ')})`);
+  return workflow;
+}
 
 function validateProfile(raw: unknown, where: string): WindowProfile {
   const p = raw as Record<string, unknown>;
@@ -161,13 +204,24 @@ export function loadSkills(skillsDir: string): Map<string, SkillPackage> {
     const taskJson = join(dir, 'task.json');
     if (!existsSync(taskJson)) continue;
     const spec = assertValid(validateTaskSpec(JSON.parse(readFileSync(taskJson, 'utf8'))), `${taskJson}`);
-    if (!WORKFLOWS[spec.workflow]) throw new RuntimeError('capability_missing', `${taskJson}: workflow ${spec.workflow} is not in this build`);
+    let workflowModule: string | undefined;
+    if (spec.workflowModule !== undefined) {
+      workflowModule = resolve(dir, spec.workflowModule);
+      // The validator refused `..` and absolute paths; a symlink could still lead out.
+      const real = existsSync(workflowModule) ? realpathSync(workflowModule) : undefined;
+      const root = realpathSync(dir);
+      if (!real || !statSync(real).isFile()) throw new RuntimeError('capability_missing', `${taskJson}: workflowModule ${spec.workflowModule} is missing`);
+      if (relative(root, real).startsWith('..') || isAbsolute(relative(root, real)) || !real.startsWith(root + sep))
+        throw new RuntimeError('invalid_input', `${taskJson}: workflowModule ${spec.workflowModule} leads outside the skill`);
+    } else if (!WORKFLOWS[spec.workflow]) {
+      throw new RuntimeError('capability_missing', `${taskJson}: workflow ${spec.workflow} is not in this build and the skill ships no workflowModule`);
+    }
     const profilePath = join(dir, 'profiles', 'macos', `${spec.windowProfile}.json`);
     const profile = validateProfile(JSON.parse(readFileSync(profilePath, 'utf8')), profilePath);
     if (profile.id !== spec.windowProfile) throw new RuntimeError('invalid_input', `${profilePath}: id is not ${spec.windowProfile}`);
     if (profile.bundleId !== spec.application) throw new RuntimeError('invalid_input', `${profilePath}: bundleId is not ${spec.application}`);
     if (skills.has(spec.id)) throw new RuntimeError('invalid_input', `skill ${spec.id} is defined twice`);
-    skills.set(spec.id, { dir, spec, profile });
+    skills.set(spec.id, { dir, spec, profile, ...(workflowModule ? { workflowModule } : {}) });
   }
   return skills;
 }
@@ -351,7 +405,8 @@ export async function startWorker(config: RuntimeConfig, options: WorkerOptions 
     const explorer = async () => createAgentBridge({ cli: config.cli, spawn });
 
     const runners = new Map<string, TaskRunner>();
-    for (const { spec, profile } of skills.values()) {
+    for (const skill of skills.values()) {
+      const { spec, profile } = skill;
       const sessions = createSessionManager({
         adapter,
         leases: store,
@@ -362,7 +417,7 @@ export async function startWorker(config: RuntimeConfig, options: WorkerOptions 
       const engine = createProcedureEngine({ repository: store, rule: { ...DEFAULT_PROMOTION, promoteAfterSuccesses: spec.learning.promoteAfterSuccesses } });
       const learner = createLearner({ repository: store });
       const recovery = createRecovery({ engine, learner, explorer, telemetry: hub.shared });
-      const workflow = options.workflow?.(spec) ?? createBossResumesWorkflow({ vision, telemetry: hub.shared });
+      const workflow = options.workflow?.(spec) ?? (await createSkillWorkflow(skill, { vision, telemetry: hub.shared }));
       runners.set(
         spec.id,
         createTaskRunner({

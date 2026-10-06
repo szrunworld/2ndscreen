@@ -7,6 +7,7 @@
 
 export * from './contracts.ts';
 export {
+  createSkillWorkflow,
   loadSkills,
   openControlClient,
   preparePrivateDirs,

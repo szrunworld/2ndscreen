@@ -35,9 +35,17 @@ export type RuntimeErrorCode =
   | 'storage_full'
   | 'io';
 
+/**
+ * Marks a RuntimeError from any copy of this module. A skill's workflow module
+ * is bundled on its own, with its own copy of these contracts, so its errors
+ * are not `instanceof` the runtime's class; the registered symbol is shared.
+ */
+const RUNTIME_ERROR = Symbol.for('2ndscreen.task-runtime.RuntimeError');
+
 export class RuntimeError extends Error {
   readonly code: RuntimeErrorCode;
   readonly details?: Record<string, unknown>;
+  readonly [RUNTIME_ERROR] = true;
 
   constructor(code: RuntimeErrorCode, message: string, details?: Record<string, unknown>) {
     super(message);
@@ -48,7 +56,8 @@ export class RuntimeError extends Error {
 }
 
 export const isRuntimeError = (error: unknown, code?: RuntimeErrorCode): error is RuntimeError =>
-  error instanceof RuntimeError && (code === undefined || error.code === code);
+  (error instanceof RuntimeError || (typeof error === 'object' && error !== null && (error as Record<symbol, unknown>)[RUNTIME_ERROR] === true)) &&
+  (code === undefined || (error as RuntimeError).code === code);
 
 /** Throws `cancelled` if the signal has fired. Call before every side effect. */
 export function throwIfAborted(signal: AbortSignal | undefined): void {
@@ -115,6 +124,12 @@ export interface TaskSpec {
   application: string;
   windowProfile: string;
   workflow: string;
+  /**
+   * The skill's own workflow: an ES module inside the skill directory, given
+   * relative to it, that exports `createWorkflow(deps: WorkflowDeps)`. Absent
+   * for a workflow compiled into the runtime.
+   */
+  workflowModule?: string;
   inputSchema: string;
   capabilities: string[];
   submitAllowed: boolean;
@@ -1396,7 +1411,8 @@ export type AcquisitionResult =
 
 /** Business knowledge of BOSS直聘 for resume collection; drives nothing outside the session. */
 export interface BossWorkflow {
-  readonly id: 'boss-resumes-v1';
+  /** The TaskSpec.workflow it implements: 'boss-resumes-v1' for the built-in one. */
+  readonly id: string;
   readonly units: Readonly<Record<BossUnitName, UnitDefinition>>;
   classifyPage(observation: Observation): BossPageClass;
   /** The account visible in the window, if any can be read reliably. */
@@ -1410,6 +1426,25 @@ export interface BossWorkflow {
   runScripted(unit: BossUnitName, context: UnitContext): Promise<UnitRunResult> | undefined;
   /** Fetch the resume into the staging area by the capture mode. Never clicks a request-resume confirm. */
   acquireResume(context: UnitContext, mode: CaptureMode): Promise<AcquisitionResult>;
+}
+
+/** What the worker hands a skill's workflow module. */
+export interface WorkflowDeps {
+  vision?: LocalVision;
+  telemetry?: TelemetryRecorder;
+  clock?: Clock;
+  /** The skill's directory, for files the workflow ships beside itself. */
+  skillDir: string;
+  spec: TaskSpec;
+}
+
+/**
+ * A skill's workflow module (TaskSpec.workflowModule). The runner drives it
+ * through the BossWorkflow contract: units, candidate listing, identity and
+ * resume acquisition. Workflows of other shapes need a runner of their own.
+ */
+export interface WorkflowModule {
+  createWorkflow(deps: WorkflowDeps): BossWorkflow | Promise<BossWorkflow>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1484,6 +1519,11 @@ export function validateTaskSpec(raw: unknown): Validated<TaskSpec> {
     errors.push('learning.promoteAfterSuccesses must be an integer >= 1');
   if (!isObject(raw.defaults) || !oneOf(raw.defaults.captureMode, ['available', 'original-only']) || !oneOf(raw.defaults.analysis, ['off', 'on']))
     errors.push('defaults must name captureMode and analysis');
+  if (raw.workflowModule !== undefined) {
+    const m = raw.workflowModule;
+    if (!isNonEmpty(m) || isAbsolute(m) || m.split(/[\\/]/).includes('..') || !/\.(mjs|js)$/.test(m))
+      errors.push('workflowModule must be a relative .mjs or .js path inside the skill');
+  }
   return ok(raw as unknown as TaskSpec, errors);
 }
 
