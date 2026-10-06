@@ -3,6 +3,9 @@
 # 2ndscreen and vdisplay command-line tools in .build/release. adb and
 # scrcpy-server, for mirroring Android phones, are downloaded on first run
 # (scripts/fetch-android-tools.sh) and put in Contents/Resources/android.
+# The task runtime behind `2ndscreen task` — its own pinned Node, the built
+# runtime and the skills — goes in Contents/Resources/task-runtime
+# (scripts/install-task-runtime.sh).
 #
 # The bundle gives the app a stable identity, so macOS attributes the Screen
 # Recording grant (needed for the preview) to 2ndscreen instead of whichever
@@ -24,13 +27,20 @@ cd "$ROOT"
 # Build every product so the 2ndscreen CLI always matches the app.
 swift build -c release
 BIN="$(swift build -c release --show-bin-path)/SecondScreen"
+CLI="$(swift build -c release --show-bin-path)/2ndscreen"
 
 "$ROOT/scripts/fetch-android-tools.sh"
 
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/android"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/android" "$APP/Contents/Resources/bin"
 cp "$BIN" "$APP/Contents/MacOS/2ndscreen"
+# The command line tool of this very build, which the task runtime drives;
+# link it into the PATH (ln -s .../Contents/Resources/bin/2ndscreen) to use it.
+cp "$CLI" "$APP/Contents/Resources/bin/2ndscreen"
 cp "$ROOT/build/android-tools/adb" "$ROOT/build/android-tools/scrcpy-server" "$APP/Contents/Resources/android/"
+"$ROOT/scripts/install-task-runtime.sh" "$APP/Contents/Resources/task-runtime"
+# The bundled node keeps the Node.js project's own signature, which the app's seal accepts as is.
+codesign --verify --strict "$APP/Contents/Resources/task-runtime/bin/node"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -105,6 +115,7 @@ restore_keychains() { security list-keychains -d user -s "${ORIGINAL_KEYCHAINS[@
 security list-keychains -d user -s "${ORIGINAL_KEYCHAINS[@]}" "$KEYCHAIN"
 # Nested code is signed before the bundle that seals it.
 if ! codesign --force --keychain "$KEYCHAIN" --sign "$IDENTITY" "$APP/Contents/Resources/android/adb" \
+    || ! codesign --force --keychain "$KEYCHAIN" --sign "$IDENTITY" --identifier "$BUNDLE_ID.cli" "$APP/Contents/Resources/bin/2ndscreen" \
     || ! codesign --force --keychain "$KEYCHAIN" --sign "$IDENTITY" --identifier "$BUNDLE_ID" "$APP"; then
     restore_keychains
     exit 1

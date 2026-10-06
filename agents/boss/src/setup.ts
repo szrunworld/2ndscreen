@@ -23,6 +23,8 @@ export interface SetupOptions {
   /** Move a BOSS直聘 this assistant did not launch onto its screen. */
   takeOver: boolean;
   log: (line: string) => void;
+  /** Throws when this process may no longer act on BOSS直聘 (its lease is gone). */
+  fence?: () => void;
 }
 
 export function defaults(screen = 'boss'): Omit<SetupOptions, 'takeOver' | 'log'> {
@@ -54,6 +56,11 @@ export class Setup {
   constructor(readonly options: SetupOptions, readonly store: Store) {}
 
   private run(words: string[]): Promise<Record<string, any>> {
+    try {
+      this.options.fence?.();
+    } catch (error) {
+      return Promise.reject(error);
+    }
     return new Promise((resolveRun) => {
       execFile(this.options.cli, words, { env: { ...process.env, SECONDSCREEN_SOCKET: this.options.socket } },
         (error, stdout, stderr) => {
@@ -109,6 +116,7 @@ export class Setup {
    * or undefined while BOSS直聘 belongs to someone else.
    */
   async ensure(): Promise<{ pid: number; windowId?: number } | undefined> {
+    this.options.fence?.();
     await this.instance();
     await this.screen();
     for (let attempt = 0; attempt < 3; attempt++) {
