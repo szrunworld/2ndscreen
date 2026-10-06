@@ -256,7 +256,9 @@ public enum BackgroundInput {
                     // letter would otherwise arrive as Shift held.
                     event.flags = []
                     SkyLight.postKey(event, to: window.pid)
-                    Thread.sleep(forTimeInterval: down ? 0.008 : 0.03)
+                    // Enough for the app to take each event in order; longer
+                    // gaps only slowed typing (120 characters took 5 s at 38 ms).
+                    Thread.sleep(forTimeInterval: 0.004)
                 }
             }
         }

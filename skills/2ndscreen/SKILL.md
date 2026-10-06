@@ -168,6 +168,9 @@ anything they did not ask for.
   user's windows onto your screen to get around that.
 - Indexes come from the window's latest `state`. Run `state` again after
   the UI changes before reusing an index.
+- A window must lie wholly on its screen, or screenshots of it are clipped
+  and your points miss: `state` reports `windowOnScreen`, and `state
+  --screenshot` refuses a clipped window. Run `window move --fill` first.
 - Frames are global, top-left-origin points. macOS rearranges displays
   whenever a screen is added or removed; call `screen list` before using
   a screen's frame.

@@ -135,6 +135,12 @@ enum DriverCommands {
         guard let window = response.window else { throw CommandError("no window to capture") }
         var request = ControlRequest(command: .screenshot)
         request.screen = try screenName(containing: window.frame)
+        // A clipped picture of the window would put every point off; refuse it.
+        let screen = CGRect(try screenFrame(request.screen!))
+        if let overhang = WindowContainment.overhang(of: CGRect(window.frame), beyond: screen) {
+            throw CommandError("window \(window.windowID) reaches \(overhang) of screen \"\(request.screen!)\", so its"
+                + " screenshot would be clipped; nothing was captured. Bring it back with window move --fill")
+        }
         let scratch = NSTemporaryDirectory() + "2ndscreen-state-\(getpid()).png"
         request.output = scratch
         request.windowsOnly = true
@@ -169,6 +175,7 @@ enum DriverCommands {
             output["app"] = window.app
             output["windowFrame"] = json(window.frame)
         }
+        if let onScreen = response.windowOnScreen { output["windowOnScreen"] = onScreen }
         if let elements = response.elements { output["elements"] = elements.map(json) }
         if let tree = response.tree { output["tree"] = tree }
         if let route = response.route { output["route"] = route }

@@ -128,6 +128,13 @@ Things to know:
   `window move`.
 - **`--fill`** sizes the window to the screen's visible area where the
   app allows it.
+- **Windows stay wholly on their screen.** A window that reaches past its
+  screen is clipped in every screenshot, so the points an agent works out
+  from one miss. `app launch` and `window move` place a window inside, and
+  if the app moves or grows it back out they place it again, twice, then
+  report failure. `state` says `windowOnScreen`, and `state --screenshot`
+  refuses a clipped window rather than write a misleading picture; `window
+  move --fill` brings it back.
 - **Destroying** a screen moves its windows to your other displays.
 - **Screens expire** so a forgetful agent cannot leave them behind:
   `--ttl 30m` destroys a screen 30 minutes after creation,

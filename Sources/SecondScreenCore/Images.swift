@@ -40,14 +40,21 @@ public enum Images {
     }
 
     /// Write the part of a screen screenshot at `path` that shows `frame`,
-    /// both in global points, to `output`.
+    /// both in global points, to `output`. Refuses a frame that reaches past
+    /// the picture rather than write a clipped image of it.
     public static func crop(_ path: String, to output: String, frame: Frame, screenFrame: Frame) throws {
-        let image = try load(path)
+        try png(try crop(try load(path), frame: frame, screenFrame: screenFrame)).write(to: URL(fileURLWithPath: output))
+    }
+
+    static func crop(_ image: CGImage, frame: Frame, screenFrame: Frame) throws -> CGImage {
         let scale = Double(image.width) / screenFrame.width
         let rect = CGRect(x: (frame.x - screenFrame.x) * scale, y: (frame.y - screenFrame.y) * scale,
                           width: frame.width * scale, height: frame.height * scale).integral
-        guard let cropped = image.cropping(to: rect) else { throw ImageError("the window is off its screen") }
-        try png(cropped).write(to: URL(fileURLWithPath: output))
+        let picture = CGRect(x: 0, y: 0, width: image.width, height: image.height)
+        guard WindowContainment.contains(picture, rect), let cropped = image.cropping(to: rect) else {
+            throw ImageError("the window reaches past its screen, so its screenshot would be clipped")
+        }
+        return cropped
     }
 }
 
