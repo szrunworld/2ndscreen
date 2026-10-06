@@ -162,22 +162,53 @@ $CLI scroll --screen test-a --pid 1234 --index 5 --direction down [--amount N] [
 
 The app runs them itself, with its Accessibility permission, and refuses
 any window that is not on the named screen, so an agent cannot act on the
-user's own windows. Each result names the `route` it took:
+user's own windows. Each result names the `route` it took, and the route
+says how far `ok` can be trusted:
 
-- **`ax.press`, `ax.insert`**: accessibility, for native controls and
-  text fields. No input event is involved, and an insert counts only if
-  the field's value shows the text afterwards.
-- **`event.click`, `event.right`, `event.double`, `event.wheel`**: mouse
-  events posted to the app's process and stamped with the window's
-  number, so they reach a window that is not in front. Before a left
-  click the window is made its app's key window without being raised;
-  the user's app keeps the foreground and gets its focus back after.
-- **`event.unicode`, `event.key`, `event.key.menu`**: keystrokes posted to
-  the process. Text goes as Unicode, so any script works whatever the
-  input method. A shortcut with cmd makes the app front for the instant
-  its event is queued, since menu key equivalents such as cmd+a and cmd+v
-  only reach the menu that way. They act on the window's app only once the
-  window has been clicked: a window just launched ignores them.
+- **Accessibility, confirmed**: `ax.press`, `ax.press.explicit`,
+  `ax.insert`, `ax.value`. No input event is involved. A press ran the
+  control's own action, and the app accepted it; an insert or value counts only
+  if the field's value shows the text afterwards. `ax.press.explicit` is
+  the route of `ax-press`, below.
+- **Accessibility, unconfirmed**: `ax.insert.unconfirmed`,
+  `ax.value.unconfirmed`. The app took the text but its tree had not
+  caught up when 2ndscreen read it back. Run `state` and read the field
+  before writing it again; typing again could put the text in twice.
+- **Events, not confirmed**: everything starting `event.` or `hid.`.
+  The input was posted to the app, and nothing reports whether the app
+  acted on it. Check the result with a fresh `state` or a screenshot.
+  - `event.click`, `event.double`, `event.right`, `event.wheel`,
+    `event.hover`: mouse events posted to the app's process and stamped
+    with the window's number, so they reach a window that is not in
+    front. Before a left click the window is made its app's key window
+    without being raised; the user's app keeps the foreground and gets
+    its focus back after. A `.overlay` suffix (`event.click.overlay`)
+    means the point lay in another window of the app, such as a popup
+    or menu over the target, and the events went to that window.
+  - `event.unicode`, `event.key`, `event.key.menu`: keystrokes posted to
+    the process. Text goes as Unicode, so any script works whatever the
+    input method. A shortcut with cmd (`event.key.menu`) makes the app
+    front for the instant its event is queued, since menu key equivalents
+    such as cmd+a and cmd+v only reach the menu that way. They act on the
+    window's app only once the window has been clicked: a window just
+    launched ignores them. `event.key.held` is a shortcut whose modifiers
+    were pressed as keys of their own around it, keeping the app behind.
+  - `event.click+event.unicode`: `type` clicked into a web field and then
+    typed the text as keys.
+  - `hid.drag`: the real pointer moved through a `drag`.
+
+A default `click` on a native control is pressed through accessibility
+when the control offers a press, and falls back to events otherwise, so
+the same command can answer `ax.press` once and `event.click` the next
+time. When a click answers `event.click` and the UI did not change, the
+control may ignore posted clicks: `ax-press --index N` presses it through
+accessibility only, never falls back to events, and fails if the control
+has no press. Keep it to native controls: in web content Chromium
+answers a press with success while the page never sees it.
+
+```bash
+$CLI ax-press --screen test-a --pid 1234 --index 7
+```
 
 Web content (Chrome, Electron, web views) always takes events: Chromium
 answers accessibility presses and writes there with success while a
