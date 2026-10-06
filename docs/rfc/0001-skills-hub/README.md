@@ -12,6 +12,7 @@ state: draft
 | --- | --- |
 | 2026-10-07 | 初稿 |
 | 2026-10-07 | 吸收 OpenShell 的模式：provider profile、租约式授权与三种审批模式、审批前校验摘要、结构化拒绝、动作前检查链；改为 RFC 格式（第十四节） |
+| 2026-10-07 | 管理面补齐：安装时内容校验、内容寻址存储与版本回滚、发布前两层扫描与安全等级、多设备同步边界、agent 入口；参考 skills-hub、agent-skills-hub、PromptHub（第十四节） |
 
 本文描述把 2ndscreen 的 Task Runtime 扩展为一个可挂载、可管理的技能宿主（Skills Hub）的方案：任何语言实现的技能通过协议接入 Runtime，由 Runtime 代为操作桌面，并由我们统一分发、授权和管理。依据 2026 年 10 月 7 日读取的 `vdisplay-prototype`（a879db0）、`remotedesk-boss-agent`（`greet-skill`）和 `wechat-agent` 编写。它是待实施方案，不代表功能已经交付。
 
@@ -197,31 +198,41 @@ Runtime → 技能：
 
 **八 管理面**
 
-本地注册表：`~/Library/Application Support/2ndscreen/skills/` 为安装目录，`skills/` 仓库目录只放内置技能。注册表 SQLite 表记录每个技能的来源、版本、签名校验结果、启用状态、授权。
+本地注册表：`~/Library/Application Support/2ndscreen/skills/` 为安装目录，`skills/` 仓库目录只放内置技能。包按内容寻址存放（`store/<sha256>/`），`installed/<id>` 指向当前版本，所以同一技能的多个版本可以并存，回滚只是改一个指针。注册表 SQLite 表记录每个技能的来源、当前版本与历史版本、签名校验结果、安全等级、启用状态、授权。
+
+安装时的内容校验，签名验证通过之后、解包登记之前执行，任一项不过即拒绝：路径（无绝对路径、无 `..`、无越出包根的符号链接）、压缩包（炸弹检测、条目数与解压后体积上限）、符号链接（包内一律不允许）、体积（单文件与整包上限）、必需文件（`skill.json`、`SKILL.md`、声明的 profile 与入口）、指纹（每个文件的哈希与清单里的 `files` 表一致，索引里的包哈希与下载结果一致）。包根的 `.skillignore` 只在打包时生效，决定哪些文件不进包。安装默认非破坏性：目标已存在且版本相同则不动，版本不同则并存并切换指针，从不覆盖已有版本的文件。
 
 命令行（MCP 提供同名 `skill_*` 工具）：
 
 ```
 2ndscreen skill list                      已安装技能、版本、启用状态、兼容性
 2ndscreen skill install <path|url|id>     校验签名与清单，解包，登记
-2ndscreen skill update [<id>]             按远端索引更新
+2ndscreen skill update [<id>]             按远端索引更新；旧版本保留
+2ndscreen skill rollback <id> [<version>]  切回上一个或指定的已安装版本
+2ndscreen skill pin <id> <version>        固定版本，update 跳过
 2ndscreen skill enable|disable <id>
 2ndscreen skill grant <id> --account K --effect external-submit [--expires 7d | --durable]
 2ndscreen skill grant <id> … --mode trusted_within_ceiling
 2ndscreen skill revoke …
 2ndscreen skill providers                 已配置的 provider profile 与各技能用量
 2ndscreen task approve|reject <task> <approval-id> [--guidance HINT…]
-2ndscreen skill inspect <id>              清单、声明的 effect、限额、已授权项、最近运行
+2ndscreen skill inspect <id>              清单、声明的 effect、限额、已授权项、安全等级与扫描结果、版本历史、最近运行
 2ndscreen task run <id> …                 不变；SKILL_ID 来自注册表
 ```
 
-远端索引：一个静态 JSON 索引加包文件，放在 Cloudflare（R2 加 Worker 即可），记录每个技能每个版本的 `runtimeContract`、`applicationVersions`、下载地址、哈希与签名。索引本身也签名。
+远端索引：一个静态 JSON 索引加包文件，放在 Cloudflare（R2 加 Worker 即可），记录每个技能每个版本的 `runtimeContract`、`applicationVersions`、下载地址、哈希与签名，以及安全扫描结果 `securityGrade`（`safe` / `caution` / `unsafe` / `reject`）、`securityScore`、`securityFlags`、`securityScannedAt`。索引本身也签名。`reject` 的版本即使签名有效也拒绝安装；`unsafe` 需要 `--allow-unsafe` 并记录；`caution` 在 `skill install` 和 `inspect` 里显示命中的模式。
+
+发布流水线：技能仓库打包 → 静态扫描 → 签名 → 写索引。静态扫描分两层：规则层对每个版本自动跑（危险命令、网络外联、读取包外路径、读取凭据、提示注入模式），输出等级；深扫层用 SkillSpector 一类的 AST 与 YARA 扫描器，只对规则层标为 `caution` 以上的版本跑，结果必须经人工复核才写入索引，因为这类扫描器的误报率很高。签名证明来源，扫描证明内容，两者缺一不发布。
 
 签名：包用 Ed25519 签名，公钥内置在 Runtime 里，可以配置多个发布者。未签名或签名不符的包默认拒绝安装；开发模式（`--allow-unsigned`）只对本地路径生效，并在 `skill list` 里标出。
 
 兼容矩阵：Runtime 升级时按 `runtimeContract` 判断已安装技能是否还能加载，不能加载的标记为 `incompatible` 并在 `task run` 时明确报错。
 
-遥测：每个技能每次任务的结果、外发次数、模型调用、暂停原因、Driver 错误分类，写本地账本；是否上报到远端由宿主客户端决定，Runtime 只提供导出。
+遥测：每个技能每次任务的结果、外发次数、模型调用、暂停原因、Driver 错误分类，写本地账本；是否上报到远端由宿主客户端决定，Runtime 只提供导出。索引里的质量信号只来自这些遥测（成功率、人工接管率、`unknown` 比率），不用 star 数一类的仓库热度。
+
+多设备：注册表里哪些内容可以跨设备同步，哪些不能，必须分清。可同步的是已安装技能的 id 与版本、启用状态、用户对技能的备注。**授权（grant）、provider 凭据、账号绑定、本机路径一律不同步**，换一台机器重新授权。同步只允许一个活动来源，避免两个来源互相覆盖。
+
+给 agent 用的入口：`2ndscreen skill` 全部命令输出单行 JSON，并附一份 `manage-skills` 的 `SKILL.md`，让通用 agent（Claude Code 等）能替用户安装、更新、查看技能，和 `skills/2ndscreen/SKILL.md` 同一形式。
 
 **九 仓库划分**
 
@@ -263,7 +274,7 @@ Runtime → 技能：
 | P2 第一个外部技能 | `wechat-agent` 改为 process 技能并签名打包；`skill install/list/enable/disable`；本地注册表 | 从包安装到任务完成不改任何 Runtime 代码；未签名包被拒 |
 | P3 外发授权 | 租约式 `grant/revoke`、三种审批模式、动作前检查链、`ask_approval` 后果摘要、`reject_with_guidance`、审计表、`unknown` 不重发 | 用 FakeDriver 夹具跑限额与审批的混沌测试；真机上 BOSS 求简历 20 次全部有审计记录 |
 | P4 boss-agent 接入 | `RuntimeDriver`；删除 boss-agent 内与 Runtime 重叠的基础设施 | boss-agent 的 1308 个测试在 `RuntimeDriver` 上通过；真机值守一天 |
-| P5 远端索引与发行 | 索引、发布流水线、`skill update`；`remotedesk-agent` 发行版 | 新机从索引安装两个技能并运行 |
+| P5 远端索引与发行 | 索引、发布流水线（打包、两层扫描、签名、写索引）、`skill update/rollback/pin`、安全等级展示；`remotedesk-agent` 发行版 | 新机从索引安装两个技能并运行；一个被标为 `reject` 的测试包被拒绝；更新后 `rollback` 回到旧版并能跑任务 |
 
 每个阶段结束都留下能运行的版本。
 
@@ -272,7 +283,8 @@ Runtime → 技能：
 - **Runtime 变成关键路径**：审批、风控、模型出口都压到 Runtime 上，它必须先于技能稳定。P1 的合成技能测试和 P3 的混沌测试是对此的防线。
 - **每步一次 JSONL 往返的开销**：一次 `observe` 含完整元素树可能有几百 KB。方案是 `observe` 支持子树与增量（只回 `snapshotId` 变化的部分），截图只传路径。需要在 P1 实测。
 - **Python 运行时打包**：`bundled: true` 意味着技能包含 CPython，体积约 40 MB。可接受；替代方案是宿主客户端统一提供 Python，由清单声明依赖。P2 用 TypeScript 技能先行，P4 前决定。
-- **沙箱程度**：技能进程没有 TCC 权限，但仍是宿主用户的普通进程，能读文件、访问网络。首版靠签名与审查约束，不做系统级沙箱；是否用 App Sandbox 或 `sandbox-exec` 包裹留作后续。
+- **沙箱程度**：技能进程没有 TCC 权限，但仍是宿主用户的普通进程，能读文件、访问网络。首版靠签名、安装时内容校验与发布前扫描约束，不做系统级沙箱；是否用 App Sandbox 或 `sandbox-exec` 包裹留作后续。
+- **命名**：`skills-hub`、`agent-skills-hub`、`PromptHub` 都已是现成的开源项目名，而且都指 `SKILL.md` 管理器。产品对外命名要避开这几个词，并说清我们管理的是可执行技能，不是提示文件。
 - **Windows**：协议与清单与平台无关；Runtime 的 Windows 侧依赖 `windows/` 下的 C# 核心进度，本文不展开。
 - **Provider 的 key**：Runtime 本地持有 key 适合个人用户；托管用户走宿主客户端的服务端代理。两条路径都通过同一个 provider 服务，技能无感。profile 的 endpoint 白名单是防止 key 被技能借道外传的唯一控制，必须和限额一样不可由技能放宽。
 - **协议版本化**：`skill-jsonl/1` 冻结后只增消息类型，不改已有字段；破坏性变更升 `/2`，Runtime 同时支持相邻两个版本一个发布周期。
@@ -301,3 +313,13 @@ NVIDIA OpenShell（Rust，Apache 2.0，2026 年 10 月读取）解决的是另�
 | RFC 流程与目录格式 | 第十三节 |
 
 不采用：内核级沙箱、L4/L7 出口代理、多副本 gateway 与 Kubernetes 驱动、多租户 workspace、形式化 prover。它的 “skills” 只是给 coding agent 看的 `SKILL.md`，与本文的技能包无关。
+
+另外三个 `SKILL.md` 管理器（2026 年 10 月读取）只与第八节的管理面重叠，它们没有执行体、权限模型和运行时：
+
+| 项目 | 形态 | 本文采用 |
+| --- | --- | --- |
+| qufei1993/skills-hub（Rust，Tauri，MIT） | 中央库投影到 48 个工具目录 | 安装默认非破坏性；多设备同步排除本机路径、工具目标与凭据；给 agent 用的 CLI 与 `manage-skills` 技能 |
+| zhuyansen/agent-skills-hub（Python，MIT） | 纯索引，综合评分 | 两层安全扫描（规则层全量、深扫按需加人工复核）；索引字段 `securityGrade / Score / Flags / ScannedAt` 与 `reject` 阻止安装 |
+| legeling/PromptHub（TypeScript，Electron，**AGPL**） | Prompt、Skill、Agent 三类资产 | 安装时内容校验清单（路径、压缩包、符号链接、体积、必需文件、指纹）；版本历史与回滚；内容寻址存储；只允许一个活动同步源 |
+
+不采用它们的评分体系（star、fork、活跃度）；质量信号只来自遥测。PromptHub 是 AGPL，只借思路，不引用代码。
