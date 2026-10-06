@@ -48,7 +48,7 @@ extension TarsAgent {
         case .type where named == nil:
             // Keys to whatever has focus, which the step before gave it.
             return step
-        case .click, .type, .scroll:
+        case .click, .type, .scroll, .hover:
             if let named, let reference = ElementRef(named, in: frame) {
                 step.target = reference
                 return step

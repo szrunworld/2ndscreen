@@ -11,7 +11,7 @@ screenshots, while the user keeps their screen, pointer and frontmost app.
 
 It needs the 2ndscreen menu bar app running (`open build/2ndscreen.app` in
 the repository), with the Accessibility permission for `state`, `click`,
-`type`, `key`, `scroll` and `drag`. Every command prints one JSON object;
+`type`, `key`, `scroll`, `drag` and `hover`. Every command prints one JSON object;
 `ok` is false, and the exit status non-zero, on failure.
 
 ```bash
@@ -77,6 +77,16 @@ CLI=2ndscreen   # or <repo>/.build/release/2ndscreen
    ```bash
    $CLI scroll --screen login-test --pid PID --index 5 --direction down --amount 5
    $CLI scroll --screen login-test --pid PID --x 2400 --y 500 --direction up --by page
+   ```
+
+   A menu or panel a page opens on hover: `hover` rests the pointer on
+   its trigger without clicking (the page sees a middle click, so not on
+   a link), and the panel stays open for `click`s on its options. Try a
+   `click --x --y` on the trigger first; most such panels open on a
+   click as well.
+
+   ```bash
+   $CLI hover --screen login-test --pid PID --text "筛选"
    ```
 
    `drag` presses at one global point and releases at another. macOS has no
@@ -154,7 +164,7 @@ anything they did not ask for.
 ## Rules
 
 - Act only on windows of apps you launched. `state`, `click`, `type`,
-  `key`, `scroll` and `drag` refuse windows that are not on the named screen; do not move the
+  `key`, `scroll`, `drag` and `hover` refuse windows that are not on the named screen; do not move the
   user's windows onto your screen to get around that.
 - Indexes come from the window's latest `state`. Run `state` again after
   the UI changes before reusing an index.

@@ -109,6 +109,7 @@ public final class TarsAgent {
         type(content='') #If you want to submit your input, use "\\n" at the end of `content`.
         type(content='', element='N') #Type into text field N from the Elements list.
         scroll(start_box='[x1, y1, x2, y2]', direction='down or up or right or left')
+        hover(start_box='[x1, y1, x2, y2]') #Rest the pointer there, to open a menu or panel that shows on hover.
         wait() #Sleep for 5s and take a screenshot to check for any changes.
         finished(content='') #Use this when the task is done; put any answer in content.
         call_user() # Submit the task and call the user when the task is unsolvable, or when you need the user's help.

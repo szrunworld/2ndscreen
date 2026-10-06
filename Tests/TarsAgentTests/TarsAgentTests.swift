@@ -83,6 +83,12 @@ func stopReason(_ steps: [Step]) -> (Outcome, String)? {
         #expect(stopReason(Planner.plan(ParsedAction(type: "click"), context))?.0 == .user)
     }
 
+    @Test func hoverRestsOnThePoint() {
+        let steps = inputs(Planner.plan(action("hover(start_box='[500, 500, 500, 500]')"), context))
+        #expect(steps.count == 1 && steps[0].kind == .hover && steps[0].x == 2560 && steps[0].y == 400)
+        #expect(Planner.plan(ParsedAction(type: "hover"), context).isEmpty)
+    }
+
     @Test func typingThatWouldSubmitStops() {
         let steps = Planner.plan(action("type(content='好的，明天见\\n')"), context)
         #expect(inputs(steps).map(\.value) == ["好的，明天见"])

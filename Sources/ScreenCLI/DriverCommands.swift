@@ -2,12 +2,12 @@ import CoreGraphics
 import Foundation
 import SecondScreenCore
 
-/// `state`, `click`, `type`, `key`, `scroll` and `drag`: observe and drive a
+/// `state`, `click`, `type`, `key`, `scroll`, `drag` and `hover`: observe and drive a
 /// window on an agent screen through the running app, which holds the
 /// Accessibility permission and checks the window is on the named screen.
 /// Each prints one JSON object and exits non-zero on failure.
 enum DriverCommands {
-    static let verbs: Set<String> = ["state", "click", "type", "key", "scroll", "drag"]
+    static let verbs: Set<String> = ["state", "click", "type", "key", "scroll", "drag", "hover"]
 
     static func run(_ verb: String, _ args: Arguments) -> Never {
         do {
@@ -50,6 +50,7 @@ enum DriverCommands {
         case "type": .type
         case "key": .key
         case "scroll": .scroll
+        case "hover": .hover
         default: .drag
         }
         var action = InputAction(kind)
@@ -90,6 +91,11 @@ enum DriverCommands {
                 action.by = by
             }
             try setPoint(&action, args, "--x", "--y")
+        case .hover:
+            try setPoint(&action, args, "--x", "--y")
+            guard action.point != nil || action.index != nil || action.text != nil else {
+                throw CommandError("give --index N, --text TEXT, or --x X --y Y")
+            }
         case .drag:
             try setPoint(&action, args, "--from-x", "--from-y")
             guard let to = try point(args, "--to-x", "--to-y"), action.point != nil else {

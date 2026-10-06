@@ -198,7 +198,7 @@ public struct WindowSummary: Codable {
 /// top-left-origin points and must fall in the window.
 public struct InputAction: Codable {
     public enum Kind: String, Codable {
-        case click, type, key, scroll, drag
+        case click, type, key, scroll, drag, hover
     }
 
     public var kind: Kind

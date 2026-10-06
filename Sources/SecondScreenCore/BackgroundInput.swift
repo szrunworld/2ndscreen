@@ -52,6 +52,56 @@ public enum BackgroundInput {
         return (count == 2 ? "event.double" : "event.click") + (overlay ? ".overlay" : "")
     }
 
+    /// Rest the pointer on `point` in the background, without clicking, for
+    /// menus, panels and tooltips a web page opens on hover. Chromium ignores
+    /// posted mouse moves, but takes hover from a button event, so this is
+    /// a middle-button press and release at the point, after the off-screen
+    /// press that satisfies its activation gate. The page sees `auxclick`
+    /// and no `click`, and keeps the hover until the next mouse event. The
+    /// real pointer does not move. Not for links: Chromium opens a link on
+    /// middle click.
+    public static func hover(at point: CGPoint, in window: WindowInfo) throws -> String {
+        try requireTrust()
+        let hit = topWindow(at: point, pid: window.pid) ?? window
+        let overlay = hit.windowID != window.windowID
+        let user = NSWorkspace.shared.frontmostApplication
+        FocusGuard.shared.protect(target: nil, allowing: window.pid) {
+            let focused = !overlay && SkyLight.focusWithoutRaise(windowID: window.windowID, pid: window.pid)
+            Thread.sleep(forTimeInterval: 0.05)
+            middlePress(at: point, in: hit)
+            Thread.sleep(forTimeInterval: 0.05)
+            guard let user, user.processIdentifier != window.pid else { return }
+            let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
+            if front == window.pid {
+                if !FocusGuard.shared.userActedRecently() { user.activate(options: []) }
+            } else if focused, front == user.processIdentifier {
+                SkyLight.restoreFocus(after: window.windowID, pid: window.pid, user: user)
+            }
+        }
+        return "event.hover" + (overlay ? ".overlay" : "")
+    }
+
+    /// A left press off screen, as a click sends first, then a middle press
+    /// and release at `point`, stamped like a click's events.
+    private static func middlePress(at point: CGPoint, in window: WindowInfo) {
+        let group = clickGroup()
+        let source = CGEventSource(stateID: .hidSystemState)
+        func post(_ type: CGEventType, _ at: CGPoint, phase: Int64, middle: Bool, pause: Double) {
+            guard let event = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: at,
+                                      mouseButton: middle ? .center : .left) else { return }
+            event.flags = []
+            SkyLight.set(event, .mouseEventNumber, phase)
+            stamp(event, window: window, group: group, clicks: 1, button: middle ? 2 : 0, subtype: 3, location: at)
+            SkyLight.postMouse(event, to: window.pid, alsoPublic: false)
+            Thread.sleep(forTimeInterval: pause)
+        }
+        let offscreen = CGPoint(x: -1, y: -1)
+        post(.leftMouseDown, offscreen, phase: 1, middle: false, pause: 0.001)
+        post(.leftMouseUp, offscreen, phase: 2, middle: false, pause: 0.05)
+        post(.otherMouseDown, point, phase: 3, middle: true, pause: 0.02)
+        post(.otherMouseUp, point, phase: 3, middle: true, pause: 0)
+    }
+
     /// The app's frontmost window under the point. Popup menus, sheets and
     /// dialogs are windows of their own above the main one, and an event
     /// stamped with the main window's number goes through them to whatever
