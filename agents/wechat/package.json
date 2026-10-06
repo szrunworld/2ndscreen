@@ -1,0 +1,20 @@
+{
+  "name": "@2ndscreen/wechat",
+  "private": true,
+  "description": "Watch WeChat on a 2ndscreen agent screen, read it from pixels, and add friends with a person's approval",
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/cli.ts",
+    "test": "tsx --test src/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "build:ocr": "swiftc -O ocr/ocr.swift -o ocr/ocr"
+  },
+  "dependencies": {
+    "openai": "^5"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "tsx": "^4",
+    "typescript": "^5"
+  }
+}
