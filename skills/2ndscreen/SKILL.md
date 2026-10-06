@@ -11,7 +11,7 @@ screenshots, while the user keeps their screen, pointer and frontmost app.
 
 It needs the 2ndscreen menu bar app running (`open build/2ndscreen.app` in
 the repository), with the Accessibility permission for `state`, `click`,
-`type`, `key`, `scroll`, `drag` and `hover`. Every command prints one JSON object;
+`type`, `key`, `scroll`, `drag`, `hover` and `ax-press`. Every command prints one JSON object;
 `ok` is false, and the exit status non-zero, on failure.
 
 ```bash
@@ -87,6 +87,14 @@ CLI=2ndscreen   # or <repo>/.build/release/2ndscreen
 
    ```bash
    $CLI hover --screen login-test --pid PID --text "筛选"
+   ```
+
+   A control that ignores a click at its point but answers an accessibility
+   press (one under an overlay, say): `ax-press --index N` presses it through
+   accessibility alone, with no pointer event.
+
+   ```bash
+   $CLI ax-press --screen login-test --pid PID --index 12
    ```
 
    `drag` presses at one global point and releases at another. macOS has no

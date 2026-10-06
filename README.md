@@ -148,8 +148,8 @@ Things to know:
 - The menu lists agent screens, each with its own preview, its windows,
   and **Destroy**.
 
-Agents then look and act with `state`, `click`, `type`, `key`, `scroll`
-and `hover`, which work in the background and show the agent cursor:
+Agents then look and act with `state`, `click`, `type`, `key`, `scroll`,
+`hover` and `ax-press`, which work in the background and show the agent cursor:
 
 ```bash
 $CLI state --screen test-a --pid 1234 [--screenshot before.png]   # elements + accessibility tree
@@ -198,6 +198,11 @@ the point: the page sees `auxclick` and no `click`. Not for links, which
 Chromium opens on a middle click. Many panels that look hover-only open on
 a click too: BOSS直聘's 筛选 panel opens with `click --x --y`, and its
 options take clicks, in the background.
+
+`ax-press --index N` presses one element of the last `state` through
+accessibility alone, with no pointer event: for a control that answers an
+accessibility press but not a click at its point, such as one under an
+overlay. It takes only `--index`.
 
 While an action runs, and for a second after, a guard puts the user's app
 back if the target or anything else takes the foreground. An activation
