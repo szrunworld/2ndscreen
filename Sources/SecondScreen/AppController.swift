@@ -1,6 +1,7 @@
 import AppKit
 import Carbon.HIToolbox
 import SecondScreenCore
+import SecondScreenRuntime
 
 /// Persisted user choices. The app restores them on launch.
 struct Preferences {
@@ -46,31 +47,6 @@ struct Preferences {
     }
 }
 
-/// The area a full-screen window gets on a physical display, offered as a
-/// match target so the full-screen preview shows the virtual display pixel
-/// for pixel. On displays with a camera housing that area excludes the strip
-/// beside it, so it is shorter than the display itself.
-struct DisplayMatch {
-    let name: String
-    let mode: VirtualDisplay.Mode
-    let hiDPI: Bool
-
-    var title: String { "Match \(name) Full Screen — \(mode)\(hiDPI ? " HiDPI" : "")" }
-
-    /// Every connected display except `excluding` (the virtual display itself).
-    static func connected(excluding displayID: CGDirectDisplayID?) -> [DisplayMatch] {
-        NSScreen.screens.compactMap { screen in
-            guard screen.displayID != displayID else { return nil }
-            return DisplayMatch(
-                name: screen.localizedName,
-                mode: VirtualDisplay.Mode(
-                    width: Int(screen.frame.width),
-                    height: Int(screen.frame.height - screen.safeAreaInsets.top)),
-                hiDPI: screen.backingScaleFactor > 1)
-        }
-    }
-}
-
 /// Owns the status item, the virtual display, and its optional preview.
 @MainActor
 final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -80,14 +56,15 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private var display: VirtualDisplay?
     private var preview: DisplayPreview?
-    /// One agent cursor overlay per screen, keyed by display ID.
+    /// The agent cursor overlay on the primary screen, keyed by display ID;
+    /// the runtime draws the ones on agent screens.
     private var cursorOverlays: [CGDirectDisplayID: AgentCursorOverlay] = [:]
     private var moveHotKey: HotKey?
-    private let agentScreens = AgentScreens()
-    private let input = InputEngine()
+    /// Agent screens, input into them, and the socket agents reach them on.
+    private let runtime = AgentRuntime()
+    private var agentScreens: AgentScreens { runtime.screens }
     /// Live previews of agent screens, keyed by screen name.
     private var agentPreviews: [String: DisplayPreview] = [:]
-    private var controlServer: ControlServer?
     /// Open Android mirror windows, keyed by adb serial.
     private var androidMirrors: [String: AndroidMirrorWindow] = [:]
     /// Control-only sessions, for agents typing on phones whose mirror is
@@ -146,24 +123,25 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             Self.reconnect(known, keeping: [])
         }
 
-        agentScreens.onChange = { [weak self] in self?.agentScreensChanged() }
+        runtime.hostScreens = { [weak self] in self?.primaryScreenInfo().map { [$0] } ?? [] }
+        runtime.excludedFromDefaultSize = { [weak self] in self?.display?.displayID }
+        runtime.fallback = { [weak self] request in
+            await self?.handleAppCommand(request) ?? .failure("2ndscreen is shutting down")
+        }
+        runtime.onScreensChanged = { [weak self] in self?.agentScreensChanged() }
         agentScreens.onResize = { [weak self] name in
             guard let preview = self?.agentPreviews[name] else { return }
             Task { @MainActor in try? await preview.restartStream() }
         }
-        let server = ControlServer { [weak self] request in
-            await self?.handle(request) ?? .failure("2ndscreen is shutting down")
-        }
         do {
-            try server.start()
-            controlServer = server
+            try runtime.start()
         } catch {
             presentError("Agents cannot reach 2ndscreen: \(error.localizedDescription)")
         }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        controlServer?.stop()
+        runtime.stop()
         // Stops each mirror's server on its phone.
         for window in androidMirrors.values {
             window.close()
@@ -231,126 +209,38 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: Agent screens
 
-    /// Keep overlays and previews in step with the agent screens that exist.
+    /// Keep previews in step with the agent screens that exist; the runtime
+    /// keeps their cursor overlays.
     private func agentScreensChanged() {
-        let live = Set(agentScreens.screens.map(\.display.displayID))
-        let primary = display?.displayID
-        for id in cursorOverlays.keys where id != primary && !live.contains(id) {
-            removeCursorOverlay(for: id)
-        }
         let names = Set(agentScreens.screens.map(\.name))
         for (name, preview) in agentPreviews where !names.contains(name) {
             preview.stop()
             agentPreviews.removeValue(forKey: name)
         }
-        // The overlay needs the display's NSScreen, which appears a moment
-        // after creation.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
-            guard let self else { return }
-            for screen in self.agentScreens.screens where self.cursorOverlays[screen.display.displayID] == nil {
-                self.cursorOverlays[screen.display.displayID] = AgentCursorOverlay(displayID: screen.display.displayID)
-            }
-        }
+    }
+
+    /// The primary screen as agents see it, while it is on.
+    private func primaryScreenInfo() -> ScreenInfo? {
+        guard let display else { return nil }
+        return ScreenInfo(
+            name: Self.displayName, kind: .primary, displayID: display.displayID,
+            width: display.mode.width, height: display.mode.height, hiDPI: display.hiDPI,
+            frame: Frame(display.bounds))
     }
 
     /// The primary screen and every agent screen, as agents see them.
-    private func allScreens() -> [ScreenInfo] {
-        var screens: [ScreenInfo] = []
-        if let display {
-            screens.append(ScreenInfo(
-                name: Self.displayName, kind: .primary, displayID: display.displayID,
-                width: display.mode.width, height: display.mode.height, hiDPI: display.hiDPI,
-                frame: Frame(display.bounds)))
-        }
-        return screens + agentScreens.screens.map(agentScreens.info)
-    }
+    private func allScreens() -> [ScreenInfo] { runtime.allScreens() }
 
-    private func handle(_ request: ControlRequest) async -> ControlResponse {
-        lastRequest = Date()
+    /// Commands the runtime leaves to the app: phones.
+    private func handleAppCommand(_ request: ControlRequest) async -> ControlResponse {
         func target() -> ScreenInfo? {
             guard let name = request.screen else { return nil }
             return allScreens().first { $0.name == name }
         }
         let missingScreen = ControlResponse.failure(
             request.screen.map { "no screen named \"\($0)\"" } ?? "give a screen with --screen")
-        if let name = request.screen {
-            agentScreens.touch(name)
-        }
 
         switch request.command {
-        case .screenCreate:
-            // By default, match the main display's full-screen area, so a
-            // full-screen preview of the new screen is pixel for pixel.
-            let main = DisplayMatch.connected(excluding: display?.displayID).first
-            return await agentScreens.create(
-                name: request.screen,
-                width: request.width ?? main?.mode.width ?? 1440,
-                height: request.height ?? main?.mode.height ?? 900,
-                hiDPI: request.hiDPI, defaultHiDPI: main?.hiDPI ?? false,
-                ttl: request.ttl, idleTimeout: request.idleTimeout, ownerPID: request.ownerPID)
-        case .screenList:
-            var response = ControlResponse()
-            response.screens = allScreens()
-            return response
-        case .screenDestroy:
-            guard let name = request.screen else { return missingScreen }
-            if name == Self.displayName {
-                return .failure("the primary screen is managed from the menu bar")
-            }
-            return agentScreens.destroy(name: name)
-        case .screenResize:
-            guard let name = request.screen else { return missingScreen }
-            guard let width = request.width, let height = request.height else {
-                return .failure("give the new size with --size WIDTHxHEIGHT")
-            }
-            return await agentScreens.resize(name: name, width: width, height: height)
-        case .appLaunch:
-            guard let screen = target() else { return missingScreen }
-            return await agentScreens.launch(
-                on: screen, bundleID: request.bundleID, path: request.path,
-                newInstance: request.newInstance ?? false, fill: request.fill ?? false,
-                fitScreen: request.fitScreen ?? false)
-        case .windowMove:
-            guard let screen = target() else { return missingScreen }
-            guard let pid = request.pid else { return .failure("give the window's app with --pid") }
-            return await agentScreens.moveWindows(to: screen, pid: pid, windowID: request.windowID,
-                                            fill: request.fill ?? false, fitScreen: request.fitScreen ?? false)
-        case .windowRelease:
-            guard let screen = target() else { return missingScreen }
-            guard screen.kind == .agent else {
-                return .failure("window release works on agent screens; use the menu bar for the primary screen")
-            }
-            guard let pid = request.pid else { return .failure("give the window's app with --pid") }
-            return await agentScreens.releaseWindows(from: screen, pid: pid, windowID: request.windowID)
-        case .screenshot:
-            guard let screen = target() else { return missingScreen }
-            guard let output = request.output else { return .failure("give a PNG path with --output") }
-            if request.windowsOnly == true {
-                return await agentScreens.windowsScreenshot(of: screen, to: output)
-            }
-            return await agentScreens.screenshot(displayID: screen.displayID, to: output)
-        case .windowState, .input:
-            guard let screen = target() else { return missingScreen }
-            guard let pid = request.pid else { return .failure("give the app with --pid PID") }
-            // Input sleeps between events; keep the main actor, which draws
-            // the agent cursor, free while it runs.
-            let input = input
-            return await Task.detached {
-                do {
-                    let window = try InputEngine.window(pid: pid, windowID: request.windowID, on: screen)
-                    var response: ControlResponse
-                    if request.command == .windowState {
-                        response = try input.state(window, query: request.query)
-                    } else {
-                        guard let action = request.input else { return .failure("input needs an action") }
-                        response = try input.perform(action, in: window, on: screen)
-                    }
-                    response.windowOnScreen = WindowContainment.contains(CGRect(screen.frame), window.frame)
-                    return response
-                } catch {
-                    return .failure(error.localizedDescription)
-                }
-            }.value
         case .androidList:
             return await androidList()
         case .androidShow:
@@ -366,13 +256,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return await androidList()
         case .androidScreenshot, .androidTap, .androidSwipe, .androidType, .androidKey:
             return await androidAction(request)
+        default:
+            return .failure("\(request.command.rawValue) is not a 2ndscreen command")
         }
     }
 
     // MARK: Test copies
 
-    /// When an agent last sent a request.
-    private var lastRequest = Date()
     /// A side instance quits after this long without requests, unless it
     /// still has an agent screen or a phone's mirror open.
     private static let sideInstanceIdleQuit: TimeInterval = 30 * 60
@@ -380,7 +270,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func quitWhenIdle() {
         Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self, Date().timeIntervalSince(self.lastRequest) > Self.sideInstanceIdleQuit,
+                guard let self, Date().timeIntervalSince(self.runtime.lastRequest) > Self.sideInstanceIdleQuit,
                       self.agentScreens.screens.isEmpty, self.androidMirrors.isEmpty else { return }
                 NSApp.terminate(nil)
             }

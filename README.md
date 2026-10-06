@@ -564,6 +564,35 @@ cursor on the virtual display, visible in the preview:
 
 `click`, `type` and `scroll` move it for you.
 
+## Embedding 2ndscreen
+
+An app that wants to give agents screens of its own, without shipping
+2ndscreen.app beside itself, links this package instead. `SecondScreenRuntime`
+holds the agent screens, input into the apps on them, the agent cursor and
+the control socket; `SecondScreenCore` the virtual display, capture, window
+and input code under it; `TarsAgent` the vision agent.
+
+```swift
+// Package.swift
+.package(url: "https://github.com/szrunworld/2ndscreen.git", branch: "vdisplay-prototype"),
+.product(name: "SecondScreenRuntime", package: "2ndscreen"),
+```
+
+```swift
+import SecondScreenRuntime
+
+let runtime = AgentRuntime(serialBase: 500)   // not 100 (2ndscreen.app) or 900 (its side instances)
+runtime.hostScreens = { [...] }                // screens the host owns, if any
+runtime.fallback = { request in ... }          // commands the host answers itself
+try runtime.start(socketPath: socket)
+```
+
+The `2ndscreen` command of the same build, bundled inside the host app,
+reaches that runtime with `SECONDSCREEN_SOCKET=socket`, so agents and the
+task runtime work unchanged. macOS asks the host app for Screen Recording
+and Accessibility. The serial base keeps the host's displays apart from
+2ndscreen.app's on the same Mac: macOS remembers each serial's arrangement.
+
 ## Command-line display
 
 `vdisplay` creates a display without the app, for scripting:

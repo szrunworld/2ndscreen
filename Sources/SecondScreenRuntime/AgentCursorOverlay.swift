@@ -9,7 +9,7 @@ import SecondScreenCore
 /// screenshots of the virtual display. It ignores mouse events, so it never
 /// blocks clicks on the apps beneath it.
 @MainActor
-final class AgentCursorOverlay {
+public final class AgentCursorOverlay {
     private let displayID: CGDirectDisplayID
     private let window: NSWindow
     private let cursor = CAShapeLayer()
@@ -18,7 +18,7 @@ final class AgentCursorOverlay {
     private static let glideDuration: CFTimeInterval = 0.35
     private static let idleHideDelay: TimeInterval = 4
 
-    init(displayID: CGDirectDisplayID) {
+    public init(displayID: CGDirectDisplayID) {
         self.displayID = displayID
         window = NSWindow(contentRect: .zero, styleMask: .borderless, backing: .buffered, defer: false)
         window.isOpaque = false
@@ -49,12 +49,12 @@ final class AgentCursorOverlay {
         window.orderFrontRegardless()
     }
 
-    func close() {
+    public func close() {
         hideWorkItem?.cancel()
         window.close()
     }
 
-    func handle(_ event: AgentCursorEvent) {
+    public func handle(_ event: AgentCursorEvent) {
         fitToDisplay()
         switch event.action {
         case .hide:

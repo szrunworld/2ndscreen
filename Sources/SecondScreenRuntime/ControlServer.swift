@@ -6,8 +6,8 @@ import SecondScreenCore
 ///
 /// Each client connection is read on a background queue; the handler runs
 /// on the main actor, where all display and window state lives.
-final class ControlServer {
-    typealias Handler = @MainActor (ControlRequest) async -> ControlResponse
+public final class ControlServer {
+    public typealias Handler = @MainActor (ControlRequest) async -> ControlResponse
 
     private let path: String
     private let handler: Handler
@@ -15,12 +15,12 @@ final class ControlServer {
     private var source: DispatchSourceRead?
     private let clients = DispatchQueue(label: "2ndscreen.control.clients", attributes: .concurrent)
 
-    init(path: String = ControlProtocol.socketURL.path, handler: @escaping Handler) {
+    public init(path: String = ControlProtocol.socketURL.path, handler: @escaping Handler) {
         self.path = path
         self.handler = handler
     }
 
-    func start() throws {
+    public func start() throws {
         let directory = (path as NSString).deletingLastPathComponent
         try FileManager.default.createDirectory(
             atPath: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -47,7 +47,7 @@ final class ControlServer {
         self.source = source
     }
 
-    func stop() {
+    public func stop() {
         source?.cancel()
         source = nil
         if listener >= 0 {
