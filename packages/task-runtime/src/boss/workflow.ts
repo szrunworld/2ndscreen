@@ -26,7 +26,7 @@ import {
   type UnitContext,
   type UnitDefinition,
   type UnitRunResult,
-} from '../../../../packages/task-runtime/src/contracts.ts';
+} from '../contracts.ts';
 import { clickElement, delivered, look, pollFor, pressElement, pressKey, scrollOver, Trace, type Env } from './actions.ts';
 import { findRows, identify, identityIncomplete, listCandidates, listContinues, listEnded, listLoading, matchJob, normalize, rowElement } from './candidates.ts';
 import {

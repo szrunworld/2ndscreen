@@ -1,7 +1,7 @@
 // Builds the task runtime as it ships inside 2ndscreen.app
 // (Contents/Resources/task-runtime): two self-contained ES modules for the
-// bundled Node, with every import — this package, the BOSS workflow under
-// agents/boss/src/resumes and its parsers — compiled in, and the skills.
+// bundled Node, with every import — this package, including the BOSS
+// workflow and its parsers under src/boss — compiled in, and the skills.
 // Nothing is loaded from node_modules, npx or the working directory at run
 // time; Node's built-ins (node:sqlite among them) are the only imports left.
 //

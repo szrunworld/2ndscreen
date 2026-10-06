@@ -48,12 +48,12 @@ import {
   type WorkItem,
 } from '../src/contracts.ts';
 import { createArtifactStore } from '../src/artifacts.ts';
-import { createBossResumesWorkflow, createBossResumesWorkflowWith } from '../../../agents/boss/src/resumes/workflow.ts';
-import { chatHeaderName, classifyPage, jobFilter, resumeOverlay } from '../../../agents/boss/src/resumes/pages.ts';
-import { identify, listCandidates, matchJob } from '../../../agents/boss/src/resumes/candidates.ts';
-import { captureOnlineResume, footerVisible, headerShowsName, overlayShowsName, resumeText } from '../../../agents/boss/src/resumes/capture.ts';
-import { Trace } from '../../../agents/boss/src/resumes/actions.ts';
-import type { AttachmentRoute } from '../../../agents/boss/src/resumes/capture.ts';
+import { createBossResumesWorkflow, createBossResumesWorkflowWith } from '../src/boss/workflow.ts';
+import { chatHeaderName, classifyPage, jobFilter, resumeOverlay } from '../src/boss/pages.ts';
+import { identify, listCandidates, matchJob } from '../src/boss/candidates.ts';
+import { captureOnlineResume, footerVisible, headerShowsName, overlayShowsName, resumeText } from '../src/boss/capture.ts';
+import { Trace } from '../src/boss/actions.ts';
+import type { AttachmentRoute } from '../src/boss/capture.ts';
 
 // ---------------------------------------------------------------------------
 // Synthetic PNGs, so the real artifact store can validate what is staged
@@ -712,7 +712,7 @@ test('defines all eight units; persist only touches artifacts; nothing may submi
 
 test('classifies the existing redacted list and chat fixtures with the old parsers', () => {
   const fixture = (name: string): Observation => {
-    const raw = JSON.parse(readFileSync(new URL(`../../../agents/boss/src/fixtures/${name}.json`, import.meta.url), 'utf8'));
+    const raw = JSON.parse(readFileSync(new URL(`./fixtures/boss/${name}.json`, import.meta.url), 'utf8'));
     const f = raw.windowFrame;
     return { snapshotId: name, sessionId: 's', takenAt: '', window: { pid: 1, windowId: 1, bundleId: 'com.zhipin.www', title: '', frame: f, contentFrame: f, scale: 2, displayId: 1 }, elements: raw.elements };
   };

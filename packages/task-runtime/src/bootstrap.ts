@@ -11,7 +11,7 @@
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
-import { createBossResumesWorkflow } from '../../../agents/boss/src/resumes/workflow.ts';
+import { createBossResumesWorkflow } from './boss/workflow.ts';
 import {
   DEFAULT_PROMOTION,
   RuntimeError,

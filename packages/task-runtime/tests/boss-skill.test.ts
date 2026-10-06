@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readdir, readFile } from 'node:fs/promises';
 import { CLI_COMMANDS } from '../src/cli.ts';
 import { BOSS_UNITS, validateProcedure, validateTaskSpec, type Action, type ProcedureV2, type TaskSpec } from '../src/contracts.ts';
-import { BOSS_RESUME_UNITS } from '../../../agents/boss/src/resumes/workflow.ts';
+import { BOSS_RESUME_UNITS } from '../src/boss/workflow.ts';
 
 // skills/boss-resumes is the package the runtime loads: every machine file
 // must pass the contract validators and agree with the others.
