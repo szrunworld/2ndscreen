@@ -1456,6 +1456,10 @@ export interface CliIO {
 
 export type CliCommand = 'run' | 'status' | 'pause' | 'resume' | 'cancel' | 'artifacts' | 'inspect-procedure';
 
+/** How `task usage` groups provider calls (agent-ledgers.ts summarizeUsage). */
+export type UsageGroupBy = 'agent' | 'provider' | 'model' | 'task';
+export const USAGE_GROUPS: readonly UsageGroupBy[] = ['agent', 'provider', 'model', 'task'];
+
 // ---------------------------------------------------------------------------
 // Validators
 

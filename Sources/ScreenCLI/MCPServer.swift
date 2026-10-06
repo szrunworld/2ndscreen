@@ -511,6 +511,23 @@ extension MCPServer {
                           required: ["task_id", "account"],
                           words: { a in ["task", "bind-account"] + [a["task_id"], a["account"]].compactMap { $0 as? String } },
                           check: checker(["task_id": .string, "account": .string])))
+        tools.append(Tool(name: "task_agents",
+                          description: "Agent runs, blocked ones first, each with its state (working, idle, blocked, paused, done, failed) and, when blocked, what it waits for: an approval, an answer from the user, or something the agent reported. Use it to find the run that needs a person.",
+                          properties: ["all": described(boolean, "Also list finished runs")], required: [],
+                          words: { a in ["task", "agents"] + (a["all"] as? Bool == true && isBool(a["all"]) ? ["--all"] : []) },
+                          check: checker(["all": .boolean])))
+        tools.append(Tool(name: "task_usage",
+                          description: "Provider calls, tokens and cost summed per agent, provider, model or task, over the last 24 hours or since a time. Unknown token counts stay unknown, and calls without a price are counted apart.",
+                          properties: ["by": ["type": "string", "enum": ["agent", "provider", "model", "task"], "description": "Default agent"],
+                                       "since": described(string, "ISO time with a zone; default 24 hours ago")],
+                          required: [],
+                          words: { a in
+                              var w = ["task", "usage"]
+                              if let v = a["by"] as? String { w += ["--by", v] }
+                              if let v = a["since"] as? String { w += ["--since", v] }
+                              return w
+                          },
+                          check: checker(["by": .string, "since": .string])))
         return tools
     }()
 

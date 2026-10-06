@@ -20,7 +20,7 @@ import Foundation
 /// 2ndscreen.app. $SECONDSCREEN_NODE (absolute) replaces <runtime>/bin/node.
 /// Without a runtime, every task command fails with capability_missing.
 enum TaskCommand {
-    static let commands = ["run", "status", "pause", "resume", "cancel", "artifacts", "inspect-procedure", "bind-account"]
+    static let commands = ["run", "status", "pause", "resume", "cancel", "artifacts", "inspect-procedure", "bind-account", "agents", "usage"]
 
     static let usage = """
     usage:
@@ -31,10 +31,14 @@ enum TaskCommand {
       2ndscreen task status|pause|resume|cancel|artifacts TASK_ID
       2ndscreen task inspect-procedure PROCEDURE_ID
       2ndscreen task bind-account TASK_ID ACCOUNT_KEY
+      2ndscreen task agents [--all]
+      2ndscreen task usage [--by agent|provider|model|task] [--since ISO_TIME]
 
     Runs skill tasks such as boss.collect-resumes in the background through the
     task runtime bundled with 2ndscreen.app. Every command prints one JSON line
     and exits 0 when done, 1 when the runtime refuses or fails, 2 on bad words.
+    agents lists agent runs, blocked ones first with what they wait for; usage
+    sums provider calls, tokens and cost per agent, provider, model or task.
     """
 
     static func run(_ words: [String]) -> Never {

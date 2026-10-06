@@ -370,3 +370,17 @@ Swift 侧：`Sources/SecondScreenCore/LocalVision.swift`（实现与协议）、
 
 尚未覆盖：常驻模式与排程、输入按 `inputSchema` 校验、组织档案。
 
+### 运行状态、提问与用量（`agent-status.ts`、`agent-ledgers.ts`）
+
+| 项 | 规定 |
+| --- | --- |
+| `StatusBoard` / `createStatusBoard` | 每次运行一条 `AgentRunEntry`。`reportAgent(runId, seq, state)` 只接受比上次更大的 `seq`；`activity` 让有动作的运行显示为 working；`block` / `unblock` 记未决的审批与提问，最早的一个显示在 `blockedOn`，agent 的心跳盖不掉它；`finish` 之后不再变化。`waitFor` 只认指定运行，已在目标状态立即返回，取消或运行以别的状态结束时拒绝 |
+| 状态文件 | `createFileStatusPersister(path)` 每次变化原子写入快照（0600）；`readStatusFile` 读取，文件不存在时为空列表。持久化失败不影响 agent |
+| `formatAgentList` | 卡住的在最前，一行一条：标记、状态、agent、任务、在等什么或最近摘要、多久了 |
+| 宿主接入 | `runAgentTask` 的 `status` 选项：启动登记、有动作即 working、审批与带 `questionId` 的提问期间 blocked、结束 done 或 failed |
+| 提问 | `ask_user` 带 `questionId` 时交给 `asker`，回 `user_answer`；回答不在 `choices` 内重问，最多三次；同一 `questionId` 问两次是协议错误；没有 `asker` 时保持 blocked 到取消或超时。不带 `questionId` 只是提示，阻塞到下一条消息 |
+| `createFileEffectLedger` | 限额计数落盘（JSONL，0600）。读到无法解析的记录即报 `io`，不计数就不放行。崩溃留下的未写完尾行在下次追加前截掉；被截掉的那次与「发出后未及记账就崩溃」一样不计 |
+| Provider 用量 | `ProviderUsageRecord`：每次真正发出的调用一条，未声明的 provider 与用途不调用也不记。`createFileUsageLedger` 读到坏行跳过并计数。`summarizeUsage(records, by, prices)` 按 agent / provider / model / task 汇总，token 用 `addTokens`（未知不当 0），成本按币种分别相加，算不出的单独计 `uncosted` |
+| 路径 | `agentDataPaths(tasksDir)`：`<tasksDir>/agents/` 下 `status.json`、`effects.jsonl`、`provider-usage.jsonl`、`prices.json`；`prepareAgentDataDir` 建目录并收紧为 0700 |
+| 命令行 | `2ndscreen task agents [--all]`、`2ndscreen task usage [--by …] [--since …]`，MCP `task_agents`、`task_usage`。只读文件，不需要 worker |
+

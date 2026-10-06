@@ -13,10 +13,14 @@ import {
   runAgentTask,
   type AgentTaskOptions,
   type Approver,
+  type Asker,
   type EffectUse,
+  type UserQuestion,
   type HostEvent,
 } from '../src/agent-host.ts';
-import { DEFAULT_BUDGET, isRuntimeError, type ActionRequest, type ActionStatus, type Clock, type Session, type WindowGeometry } from '../src/contracts.ts';
+import { createStatusBoard } from '../src/agent-status.ts';
+import { createFileEffectLedger, createMemoryUsageLedger, summarizeUsage } from '../src/agent-ledgers.ts';
+import { DEFAULT_BUDGET, RuntimeError, isRuntimeError, type ActionRequest, type ActionStatus, type Clock, type Session, type WindowGeometry } from '../src/contracts.ts';
 
 // A real child process plays the agent: it sends the steps its task input
 // lists, one at a time, waiting for each answer, then reports the answers
@@ -41,7 +45,7 @@ rl.on('line', (line) => {
     send({ type: 'task_failed', taskId, reason: 'cancelled', message: 'cancelled' });
     process.exit(1);
   }
-  const key = m.requestId ?? m.approvalId;
+  const key = m.requestId ?? m.approvalId ?? m.questionId;
   const resolve = pending.get(key);
   if (resolve) { pending.delete(key); resolve(m); }
 });
@@ -61,6 +65,12 @@ async function run() {
   for (const raw of input.steps ?? []) {
     if (raw.rawLine) { process.stdout.write(raw.rawLine + '\n'); continue; }
     const step = fill(raw);
+    if (step.type === 'ask_user' && step.questionId) {
+      const r = await ask({ taskId, ...step }, step.questionId);
+      responses.push({ type: r.type, answer: r.answer });
+      continue;
+    }
+    if (step.pauseMs) { await new Promise((r) => setTimeout(r, step.pauseMs)); continue; }
     if (['heartbeat', 'item', 'artifact', 'ask_user', 'unit_started', 'unit_finished'].includes(step.type)) { send({ taskId, ...step }); continue; }
     if (step.type === 'ask_approval') {
       const id = 'a' + ++n;
@@ -449,4 +459,172 @@ test('the effective limit is the tightest of every level', () => {
     }),
     undefined,
   );
+});
+
+// ---------------------------------------------------------------------------
+// Status board, questions and provider usage (herdr's status model, nasiko's two pauses and per-agent cost)
+
+test('the status board follows the run: working, blocked on approval then on input, then done', async () => {
+  const board = createStatusBoard();
+  const seen: Array<{ state: string; kind?: string }> = [];
+  board.subscribe((e) => {
+    const last = seen.at(-1);
+    const next = { state: e.state, ...(e.blockedOn && { kind: e.blockedOn.kind }) };
+    if (!last || last.state !== next.state || last.kind !== next.kind) seen.push(next);
+  });
+  const asked: UserQuestion[] = [];
+  const asker: Asker = {
+    ask: async (q) => {
+      asked.push(q);
+      // A first answer outside the choices is asked again.
+      return asked.length === 1 ? '运营' : '前端';
+    },
+  };
+  const approver: Approver = { request: async () => ({ decision: 'grant' }) };
+  const { outcome, report } = await runEcho(
+    {
+      steps: [
+        { type: 'heartbeat', state: 'working', summary: '读取消息列表' },
+        { type: 'observe', app: BOSS },
+        { type: 'ask_approval', effect: 'external-submit', summary: '向陈一求简历', target: 'c1' },
+        { type: 'ask_user', reason: 'job_ambiguous', message: '两个岗位都叫工程师，选哪个？', questionId: 'q1', choices: ['前端', '后端'] },
+        { type: 'heartbeat', state: 'idle', summary: '没有新消息' },
+      ],
+    },
+    { status: board, approver, asker, grants: [grantFor('human_in_the_loop')] },
+  );
+  assert.equal(outcome.status, 'succeeded', JSON.stringify(outcome));
+  assert.deepEqual(report!.responses.slice(1), [
+    { type: 'grant', hints: null },
+    { type: 'user_answer', answer: '前端' },
+  ]);
+  assert.equal(asked.length, 2);
+  assert.deepEqual(asked[0]!.choices, ['前端', '后端']);
+  assert.deepEqual(seen, [
+    { state: 'starting' },
+    { state: 'working' },
+    { state: 'blocked', kind: 'approval' },
+    { state: 'working' },
+    { state: 'blocked', kind: 'input' },
+    { state: 'working' },
+    { state: 'idle' },
+    { state: 'working' },
+    { state: 'done' },
+  ]);
+  const [run] = board.list({ includeFinished: true });
+  assert.equal(run!.state, 'done');
+  assert.equal(run!.summary, '没有新消息');
+});
+
+test('a question nobody can answer keeps the run blocked on input until it is cancelled', async () => {
+  const board = createStatusBoard();
+  const controller = new AbortController();
+  board.subscribe((e) => {
+    if (e.state === 'blocked') controller.abort();
+  });
+  const { outcome } = await runEcho(
+    { steps: [{ type: 'ask_user', reason: 'login_required', message: '请扫码登录', questionId: 'q1' }] },
+    { status: board, signal: controller.signal },
+  );
+  assert.equal(outcome.failure, 'cancelled');
+  const [run] = board.list({ includeFinished: true });
+  assert.equal(run!.state, 'failed');
+  assert.equal(run!.failure, 'cancelled');
+});
+
+test('a note without a question blocks the run until the agent moves on, and an agent may report itself blocked', async () => {
+  const board = createStatusBoard();
+  const states: string[] = [];
+  board.subscribe((e) => states.push(e.state === 'blocked' ? `blocked:${e.blockedOn!.kind}:${e.blockedOn!.message}` : e.state));
+  await runEcho(
+    {
+      steps: [
+        { type: 'ask_user', reason: 'captcha', message: '出现验证码' },
+        { type: 'observe', app: BOSS },
+        { type: 'heartbeat', state: 'blocked', summary: '等待 BOSS 加载' },
+      ],
+    },
+    { status: board },
+  );
+  assert.ok(states.includes('blocked:input:出现验证码'), states.join(' | '));
+  assert.ok(states.includes('blocked:agent:等待 BOSS 加载'), states.join(' | '));
+  assert.equal(states.at(-1), 'done');
+});
+
+test('asking the same question id twice ends the task as a protocol failure', async () => {
+  const asker: Asker = { ask: async () => 'ok' };
+  const { outcome } = await runEcho(
+    {
+      steps: [
+        { type: 'ask_user', reason: 'job_ambiguous', message: 'a', questionId: 'q1' },
+        { type: 'ask_user', reason: 'job_ambiguous', message: 'b', questionId: 'q1' },
+      ],
+    },
+    { asker },
+  );
+  assert.equal(outcome.failure, 'protocol');
+});
+
+test('every provider call is recorded against the agent, task and run, with the model and tokens', async () => {
+  const usage = createMemoryUsageLedger();
+  let calls = 0;
+  const { outcome } = await runEcho(
+    {
+      steps: [
+        { type: 'provider', providerId: 'ark-text', purpose: 'draft', input: 'a' },
+        { type: 'provider', providerId: 'ark-text', purpose: 'draft', input: 'b' },
+        { type: 'provider', providerId: 'ark-text', purpose: 'draft', input: 'c' },
+        { type: 'provider', providerId: 'openai', purpose: 'draft', input: 'never called' },
+      ],
+    },
+    {
+      usage,
+      providers: {
+        call: async () => {
+          calls += 1;
+          if (calls === 2) throw new RuntimeError('model_unavailable', 'down');
+          return calls === 1
+            ? { output: 'x', model: 'doubao-seed-2-1-lite', usage: { inputTokens: 1000, outputTokens: 200 } }
+            : { output: 'y', model: 'doubao-seed-2-1-lite', usage: { inputTokens: 500, outputTokens: 'unknown' } };
+        },
+      },
+    },
+  );
+  assert.equal(outcome.status, 'succeeded');
+  assert.equal(usage.all.length, 3, 'the undeclared provider is never called, so never recorded');
+  assert.deepEqual(
+    usage.all.map((r) => [r.agentId, r.taskId, r.providerId, r.model ?? null, r.ok, r.inputTokens, r.outputTokens]),
+    [
+      ['test.echo', 't1', 'ark-text', 'doubao-seed-2-1-lite', true, 1000, 200],
+      ['test.echo', 't1', 'ark-text', null, false, 'unknown', 'unknown'],
+      ['test.echo', 't1', 'ark-text', 'doubao-seed-2-1-lite', true, 500, 'unknown'],
+    ],
+  );
+  assert.equal(new Set(usage.all.map((r) => r.runId)).size, 1);
+  const [row] = summarizeUsage(usage.all, 'agent', { 'ark-text/doubao-seed-2-1-lite': { currency: 'CNY', inputPerMTok: 0.3, outputPerMTok: 0.6 } });
+  assert.equal(row!.key, 'test.echo');
+  assert.equal(row!.calls, 3);
+  assert.equal(row!.failed, 1);
+  assert.equal(row!.inputTokens, 'unknown');
+  assert.deepEqual(row!.costs, { CNY: (1000 * 0.3 + 200 * 0.6) / 1_000_000 });
+  assert.equal(row!.uncosted, 2);
+});
+
+test('limits recorded in the file ledger survive a new host, and an unreadable line fails closed', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'effects-'));
+  try {
+    const path = join(dir, 'effects.jsonl');
+    const opts = { spec: trustedSpec, grants: [grantFor('trusted_within_ceiling')], ceilings: { user: { 'external-submit': { perDay: 1 } } } };
+    const first = await runEcho({ steps: [submit('c1')] }, { ...opts, ledger: createFileEffectLedger(path) });
+    assert.deepEqual(first.report!.responses, [{ type: 'action_result', status: 'ok' }]);
+    // A new ledger object over the same file, as after a restart.
+    const second = await runEcho({ steps: [submit('c2')] }, { ...opts, ledger: createFileEffectLedger(path) });
+    assert.equal(second.report!.responses[0]!.refusal, 'quota_exhausted');
+    await writeFile(path, 'garbage\n', { flag: 'a' });
+    const third = await runEcho({ steps: [submit('c3')] }, { ...opts, ledger: createFileEffectLedger(path) });
+    assert.equal(third.outcome.status, 'failed');
+    assert.equal(third.outcome.actions.length, 0, 'nothing is sent when the limits cannot be read');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

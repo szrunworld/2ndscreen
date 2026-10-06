@@ -202,7 +202,7 @@ test('every agent message type parses when well-formed', () => {
     { seq: 3, type: 'wait', taskId: 't1', requestId: 'r3', app: 'com.zhipin.www', wait: { condition: { kind: 'text', pattern: '已发送', present: true }, timeoutMs: 5000 } },
     { seq: 4, type: 'provider', taskId: 't1', requestId: 'r4', providerId: 'ark-text', purpose: 'draft', input: { prompt: '…' } },
     { seq: 5, type: 'ask_approval', taskId: 't1', approvalId: 'a1', effect: 'external-submit', summary: '向 1 位候选人求简历', app: 'com.zhipin.www', action: click, target: 'cand:abc' },
-    { seq: 6, type: 'ask_user', taskId: 't1', reason: 'login_required', message: '请登录' },
+    { seq: 6, type: 'ask_user', taskId: 't1', reason: 'job_ambiguous', message: '选哪个岗位', questionId: 'q1', choices: ['前端', '后端'] },
     { seq: 7, type: 'create_task', requestId: 'r5', taskType: 'request-resumes', input: { candidateKey: 'k' } },
     { seq: 8, type: 'item', taskId: 't1', itemId: 'i1', status: 'committed', data: { count: 1 } },
     { seq: 9, type: 'artifact', taskId: 't1', path: 'resume.pdf', kind: 'original', completeness: 'complete', sha256: 'a'.repeat(64) },
@@ -255,6 +255,9 @@ test('malformed agent message bodies are named', () => {
   refuse({ seq: 1, type: 'item', taskId: 't', itemId: 'i', status: 'done' }, 'status is not a work item status');
   refuse({ seq: 1, type: 'artifact', taskId: 't', path: 'a', kind: 'original', completeness: 'complete', sha256: 'xyz' }, 'sha256 must be 64 hex digits');
   refuse({ seq: 1, type: 'heartbeat', state: 'sleeping' }, 'state must be');
+  refuse({ seq: 1, type: 'heartbeat', state: 'waiting' }, 'state must be one of idle, working, blocked, paused');
+  refuse({ seq: 1, type: 'ask_user', taskId: 't', reason: 'job_ambiguous', message: 'm', choices: ['a'] }, 'choices need a questionId');
+  refuse({ seq: 1, type: 'ask_user', taskId: 't', reason: 'job_ambiguous', message: 'm', questionId: 'q', choices: [] }, 'choices must be a non-empty list');
   refuse({ seq: 1, type: 'task_finished', taskId: 't', status: 'failed' }, 'status must be succeeded or partial');
   refuse({ seq: 1, type: 'task_failed', taskId: 't', reason: 'oops', message: 'x' }, 'reason is not a failure reason');
   refuse({ seq: 1, type: 'agent_stopped', reason: 'bored' }, 'reason must be stop, work_hours or error');
@@ -320,6 +323,7 @@ test('every runtime message type parses when well-formed', () => {
     { seq: 12, type: 'resume', taskId: 't1' },
     { seq: 13, type: 'cancel', taskId: 't1' },
     { seq: 14, type: 'stop' },
+    { seq: 15, type: 'user_answer', taskId: 't1', questionId: 'q1', answer: '前端' },
   ];
   let last = 0;
   for (const m of messages) {
@@ -343,4 +347,5 @@ test('runtime messages are checked for the same base and shape rules', () => {
   refuseRuntime({ seq: 1, type: 'deny', taskId: 't', approvalId: 'a', guidance: { hints: ['because'] } }, 'guidance.hints must be approval hints');
   refuseRuntime({ seq: 1, type: 'stop', agentRunId: 'other' }, 'another agent run');
   refuseRuntime({ seq: 1, type: 'teleport' }, 'type is not a runtime message type');
+  refuseRuntime({ seq: 1, type: 'user_answer', taskId: 't', answer: 'x' }, 'questionId is required');
 });

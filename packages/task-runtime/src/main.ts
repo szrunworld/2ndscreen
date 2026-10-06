@@ -6,8 +6,10 @@
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RuntimeError, isRuntimeError, type TaskControl } from './contracts.ts';
-import { runCli } from './cli.ts';
-import { openControlClient, resolveConfig, type ControlClient } from './bootstrap.ts';
+import { runCli, type AgentViewControl } from './cli.ts';
+import { openControlClient, resolveConfig, runtimePaths, type ControlClient } from './bootstrap.ts';
+import { agentDataPaths, createFileUsageLedger, formatUsage, readPriceTable, summarizeUsage } from './agent-ledgers.ts';
+import { formatAgentList, readStatusFile } from './agent-status.ts';
 
 const entryDir = dirname(fileURLToPath(import.meta.url));
 
@@ -43,7 +45,20 @@ const control = {
   inspectProcedure: async (procedureId) => (await open()).control.inspectProcedure(procedureId),
   bindAccount: async (taskId: string, account: Parameters<ControlClient['control']['bindAccount']>[1]) =>
     (await open()).control.bindAccount(taskId, account),
-} satisfies TaskControl & Pick<ControlClient['control'], 'bindAccount'>;
+  // Agent views read what the hosts wrote; they open no ledger and start no worker.
+  async agents({ includeFinished }) {
+    const snapshot = readStatusFile(agentDataPaths(runtimePaths().tasksDir).status);
+    const runs = includeFinished ? snapshot.runs : snapshot.runs.filter((r) => r.state !== 'done' && r.state !== 'failed');
+    return { writtenAt: snapshot.writtenAt, runs, lines: formatAgentList(runs) };
+  },
+  async usage({ by, since }) {
+    const paths = agentDataPaths(runtimePaths().tasksDir);
+    const from = since ?? new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const ledger = createFileUsageLedger(paths.usage);
+    const rows = summarizeUsage(await ledger.list({ since: from }), by, readPriceTable(paths.prices));
+    return { by, since: from, rows, skippedLines: ledger.skipped(), lines: formatUsage(rows) };
+  },
+} satisfies TaskControl & Pick<ControlClient['control'], 'bindAccount'> & AgentViewControl;
 
 const code = await runCli(process.argv.slice(2), {
   stdout: (line) => process.stdout.write(line + '\n'),

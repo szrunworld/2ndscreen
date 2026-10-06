@@ -21,12 +21,25 @@ import {
   type CollectResumesInput,
   type TaskControl,
   type TaskRecord,
+  USAGE_GROUPS,
+  type UsageGroupBy,
 } from './contracts.ts';
 
-/** The contract's commands, and bind-account for the explicit BOSS account. */
-export type TaskCliCommand = CliCommand | 'bind-account';
+/** The contract's commands, bind-account for the explicit BOSS account, and the agent views. */
+export type TaskCliCommand = CliCommand | 'bind-account' | 'agents' | 'usage';
 
-export const CLI_COMMANDS: readonly TaskCliCommand[] = ['run', 'status', 'pause', 'resume', 'cancel', 'artifacts', 'inspect-procedure', 'bind-account'];
+export const CLI_COMMANDS: readonly TaskCliCommand[] = ['run', 'status', 'pause', 'resume', 'cancel', 'artifacts', 'inspect-procedure', 'bind-account', 'agents', 'usage'];
+
+
+/**
+ * What the runtime adds for agents (RFC 0001): the list of agent runs with
+ * the stuck ones first, and provider usage attributed per agent. Both read
+ * what the hosts wrote; neither needs the worker.
+ */
+export interface AgentViewControl {
+  agents(options: { includeFinished: boolean }): Promise<unknown>;
+  usage(options: { by: UsageGroupBy; since?: string }): Promise<unknown>;
+}
 
 /**
  * What the runtime's daemon adds to TaskControl for accounts: a submit that
@@ -51,6 +64,8 @@ export const CLI_USAGE = [
   '  2ndscreen task artifacts TASK_ID',
   '  2ndscreen task inspect-procedure PROCEDURE_ID',
   '  2ndscreen task bind-account TASK_ID ACCOUNT_KEY',
+  '  2ndscreen task agents [--all]',
+  '  2ndscreen task usage [--by agent|provider|model|task] [--since ISO_TIME]',
   '',
   '--limit is how many resumes must be committed; --output is an absolute directory, the',
   'task writes under DIR/TASK_ID. --source defaults to conversations, --mode to available.',
@@ -59,6 +74,9 @@ export const CLI_USAGE = [
   '(waiting_user, account_changed) until bind-account names it. A task keeps its account for good, and',
   'its candidates are never mixed with another account\'s.',
   `Budget fields: ${[...Object.keys(DEFAULT_BUDGET), 'taskTokens'].join(', ')}.`,
+  'agents lists agent runs, blocked ones first with what they wait for (an approval, an answer, or',
+  'something the agent reported); --all adds finished runs. usage sums provider calls, tokens and',
+  'cost per agent (default), provider, model or task, since a time (default: the last 24 hours).',
   'Every command prints one JSON line: {"ok":true,"command":…,"result":…} or {"ok":false,…,"error":{code,message}}.',
 ].join('\n');
 
@@ -107,6 +125,13 @@ function help(io: CliIO): number {
 }
 
 async function dispatch(command: TaskCliCommand, words: readonly string[], control: TaskControl): Promise<unknown> {
+  if (command === 'agents') {
+    if (words.some((w) => w === '--help' || w === '-h')) throw HELP_REQUESTED;
+    const extra = words.filter((w) => w !== '--all');
+    if (extra.length > 0) throw usageError(`agents takes only --all, not ${quote(extra[0]!)}`);
+    return agentViewControl(control).agents({ includeFinished: words.includes('--all') });
+  }
+  if (command === 'usage') return agentViewControl(control).usage(parseUsage(words));
   if (command === 'run') {
     const { skillId, input, account } = parseRun(words);
     if (account === undefined) return control.submit(skillId, input);
@@ -140,6 +165,36 @@ async function dispatch(command: TaskCliCommand, words: readonly string[], contr
       return procedure;
     }
   }
+}
+
+function agentViewControl(control: TaskControl): AgentViewControl {
+  const candidate = control as TaskControl & Partial<AgentViewControl>;
+  if (typeof candidate.agents !== 'function' || typeof candidate.usage !== 'function')
+    throw new RuntimeError('capability_missing', 'this task runtime has no agent views');
+  return candidate as AgentViewControl;
+}
+
+/** Words after `usage`. */
+export function parseUsage(words: readonly string[]): { by: UsageGroupBy; since?: string } {
+  const errors: string[] = [];
+  let by: UsageGroupBy = 'agent';
+  let since: string | undefined;
+  for (let i = 0; i < words.length; i++) {
+    const word = words[i]!;
+    if (word === '--help' || word === '-h') throw HELP_REQUESTED;
+    const value = words[i + 1];
+    if (word === '--by') {
+      if (value === undefined || !(USAGE_GROUPS as readonly string[]).includes(value)) errors.push(`--by takes one of ${USAGE_GROUPS.join(', ')}`);
+      else by = value as UsageGroupBy;
+      i += 1;
+    } else if (word === '--since') {
+      if (value === undefined || !ISO_TIME.test(value)) errors.push('--since takes an ISO time with a zone, e.g. 2026-10-07T00:00:00+08:00');
+      else since = new Date(value).toISOString();
+      i += 1;
+    } else errors.push(`unknown word ${quote(word)}`);
+  }
+  if (errors.length > 0) throw new RuntimeError('invalid_input', `usage: ${errors.join('; ')}`, { errors });
+  return { by, ...(since !== undefined && { since }) };
 }
 
 function accountControl(control: TaskControl): AccountControl {

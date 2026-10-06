@@ -29,6 +29,8 @@ import {
   type ProviderPurpose,
   type RuntimeMessage,
 } from './agent-contracts.ts';
+import type { StatusBoard } from './agent-status.ts';
+import type { ProviderUsageLedger } from './agent-ledgers.ts';
 import {
   RuntimeError,
   encodeJsonLine,
@@ -49,6 +51,7 @@ import {
   type ObserveOptions,
   type Session,
   type TerminationReason,
+  type WaitReason,
   type WorkItemStatus,
 } from './contracts.ts';
 
@@ -137,7 +140,24 @@ export interface ProviderService {
   call(request: { agentId: string; taskId?: string; providerId: string; purpose: ProviderPurpose; input: unknown }, signal: AbortSignal): Promise<{
     output: unknown;
     usage?: { inputTokens: number | 'unknown'; outputTokens: number | 'unknown' };
+    /** The model that answered, for cost attribution. */
+    model?: string;
   }>;
+}
+
+/** A question an agent put to a person (ask_user with a questionId). */
+export interface UserQuestion {
+  agentId: string;
+  taskId: string;
+  questionId: string;
+  reason: WaitReason;
+  message: string;
+  choices?: string[];
+}
+
+/** Gets a person's answer; rejects when the signal fires. An answer outside `choices` is asked again. */
+export interface Asker {
+  ask(question: UserQuestion, signal: AbortSignal): Promise<string>;
 }
 
 export interface AuditRecord {
@@ -157,7 +177,7 @@ export interface AuditRecord {
 export type HostEvent =
   | { type: 'item'; itemId: string; status: WorkItemStatus; data?: Record<string, unknown> }
   | { type: 'artifact'; path: string; kind: ArtifactKind; completeness: ArtifactCompleteness; sha256?: string }
-  | { type: 'ask_user'; reason: string; message: string }
+  | { type: 'ask_user'; reason: string; message: string; questionId?: string; answer?: string }
   | { type: 'unit'; unit: string; unitAttemptId: string; phase: 'started' | 'finished'; ok?: boolean }
   | { type: 'heartbeat'; state: string; summary?: string }
   | { type: 'audit'; record: AuditRecord }
@@ -183,7 +203,13 @@ export interface AgentTaskOptions {
   ledger: EffectLedger;
   ceilings?: Ceilings;
   approver?: Approver;
+  /** Answers questions; without one a question stays open until the task is cancelled or times out. */
+  asker?: Asker;
   providers?: ProviderService;
+  /** Where every provider call is recorded, attributed to the agent, task and run. */
+  usage?: ProviderUsageLedger;
+  /** Kept current for the whole run: working, idle, blocked on what, finished. */
+  status?: StatusBoard;
   /** Whether now is inside the work hours; absent means always. */
   workHours?: (now: Date) => boolean;
   identity?: { displayName: string; organization?: string; role?: string };
@@ -382,7 +408,12 @@ export async function runAgentTask(options: AgentTaskOptions): Promise<AgentTask
   const controller = new AbortController();
   const outer = options.signal;
 
-  if (outer?.aborted) return run.outcome(null, 'cancelled');
+  options.status?.start({ runId, agentId: spec.id, mode: spec.mode, taskId: task.taskId });
+  const settle = (outcome: AgentTaskOutcome): AgentTaskOutcome => {
+    options.status?.finish(runId, { ok: outcome.status !== 'failed', ...(outcome.failure !== undefined && { failure: outcome.failure }) });
+    return outcome;
+  };
+  if (outer?.aborted) return settle(run.outcome(null, 'cancelled'));
   const child = options.spawn(command.file, command.args, agentEnvironment(runId, spec, options.hostEnv ?? process.env));
   run.attach(child);
 
@@ -454,7 +485,7 @@ export async function runAgentTask(options: AgentTaskOptions): Promise<AgentTask
     const exit = await child.exited();
     gone = true;
     await reading;
-    return run.outcome(exit.code, stopping);
+    return settle(run.outcome(exit.code, stopping));
   } finally {
     for (const t of timers) clearTimeout(t);
     outer?.removeEventListener('abort', onAbort);
@@ -476,6 +507,9 @@ class HostRun {
   readonly artifacts: AgentTaskOutcome['artifacts'] = [];
   private terminal?: Extract<AgentMessage, { type: 'task_finished' | 'task_failed' }>;
   private stopReason?: AgentTaskFailure;
+  /** The id under which a question-less ask_user blocks the run, until the agent's next message. */
+  private openNote?: string;
+  private readonly askedQuestions = new Set<string>();
   broken = false;
   finished = false;
 
@@ -524,6 +558,13 @@ class HostRun {
     if (this.terminal) return this.breakWith();
     const { task } = this.options;
     if ('taskId' in m && m.taskId !== undefined && m.taskId !== task.taskId) return this.breakWith();
+    const board = this.options.status;
+    // A note without a question blocks the run only until the agent moves on.
+    if (this.openNote !== undefined && m.type !== 'ask_user') {
+      board?.unblock(this.runId, this.openNote);
+      this.openNote = undefined;
+    }
+    if (board && m.type !== 'heartbeat' && m.type !== 'ask_user' && m.type !== 'task_finished' && m.type !== 'task_failed') board.activity(this.runId, m.seq);
     switch (m.type) {
       case 'observe': {
         const session = this.session(m.app);
@@ -572,8 +613,8 @@ class HostRun {
         await this.askApproval(m, signal);
         return 'ok';
       case 'ask_user':
-        this.emit({ type: 'ask_user', reason: m.reason, message: m.message });
-        return 'ok';
+        await this.askUser(m, signal);
+        return this.broken ? 'protocol' : 'ok';
       case 'item': {
         const event = { type: 'item' as const, itemId: m.itemId, status: m.status, ...(m.data && { data: m.data }) };
         this.items.push(event);
@@ -593,6 +634,7 @@ class HostRun {
         this.emit({ type: 'unit', unit: m.unit, unitAttemptId: m.unitAttemptId, phase: 'finished', ok: m.ok });
         return 'ok';
       case 'heartbeat':
+        board?.reportAgent(this.runId, m.seq, m.state, m.summary);
         this.emit({ type: 'heartbeat', state: m.state, ...(m.summary !== undefined && { summary: m.summary }) });
         return 'ok';
       case 'task_finished':
@@ -718,10 +760,32 @@ class HostRun {
     if (!need) return this.send({ ...base, ok: false, reason: 'provider_undeclared', message: `${m.providerId} is not declared` });
     if (!need.purposes.includes(m.purpose)) return this.send({ ...base, ok: false, reason: 'purpose_not_allowed', message: `${m.purpose} is not a declared purpose of ${m.providerId}` });
     if (!o.providers) return this.send({ ...base, ok: false, reason: 'provider_unavailable', message: 'no provider service is configured' });
+    const started = this.clock.now();
+    const record = async (ok: boolean, usage?: { inputTokens: number | 'unknown'; outputTokens: number | 'unknown' }, model?: string) => {
+      try {
+        await o.usage?.record({
+          at: started.toISOString(),
+          agentId: o.spec.id,
+          runId: this.runId,
+          taskId: o.task.taskId,
+          providerId: m.providerId,
+          ...(model !== undefined && { model }),
+          purpose: m.purpose,
+          ok,
+          inputTokens: usage?.inputTokens ?? 'unknown',
+          outputTokens: usage?.outputTokens ?? 'unknown',
+          latencyMs: this.clock.now().getTime() - started.getTime(),
+        });
+      } catch {
+        // Accounting that cannot be written must not change the agent's answer.
+      }
+    };
     try {
       const answer = await o.providers.call({ agentId: o.spec.id, taskId: o.task.taskId, providerId: m.providerId, purpose: m.purpose, input: m.input }, signal);
+      await record(true, answer.usage, answer.model);
       this.send({ ...base, ok: true, output: answer.output, ...(answer.usage && { usage: answer.usage }) });
     } catch (error) {
+      await record(false);
       if (signal.aborted) return;
       const unavailable = isRuntimeError(error, 'model_unavailable');
       this.send({ ...base, ok: false, reason: unavailable ? 'provider_unavailable' : 'error', message: unavailable ? 'the provider is unavailable' : 'the provider call failed' });
@@ -761,11 +825,14 @@ class HostRun {
     };
     let decision: ApprovalDecision = { decision: 'deny', guidance: { text: 'no one can approve on this machine', hints: ['not_now'] } };
     if (o.approver) {
+      o.status?.block(this.runId, { kind: 'approval', id: m.approvalId, message: m.summary });
       try {
         decision = await o.approver.request(request, signal);
       } catch {
         if (signal.aborted) return;
         decision = { decision: 'deny', guidance: { text: 'the approval could not be asked', hints: ['not_now'] } };
+      } finally {
+        o.status?.unblock(this.runId, m.approvalId);
       }
     }
     this.emit({ type: 'approval', request, decision });
@@ -773,6 +840,43 @@ class HostRun {
       record.granted = true;
       this.send({ type: 'grant', taskId: o.task.taskId, approvalId: m.approvalId });
     } else this.send({ type: 'deny', taskId: o.task.taskId, approvalId: m.approvalId, ...(decision.guidance && { guidance: decision.guidance }) });
+  }
+
+  private async askUser(m: Extract<AgentMessage, { type: 'ask_user' }>, signal: AbortSignal): Promise<void> {
+    const o = this.options;
+    if (m.questionId === undefined) {
+      const id = `note:${m.seq}`;
+      o.status?.block(this.runId, { kind: 'input', id, message: m.message });
+      this.openNote = id;
+      this.emit({ type: 'ask_user', reason: m.reason, message: m.message });
+      return;
+    }
+    if (this.askedQuestions.has(m.questionId)) {
+      // One answer per question id; asking again under the same id is a protocol slip.
+      this.broken = true;
+      return;
+    }
+    this.askedQuestions.add(m.questionId);
+    o.status?.block(this.runId, { kind: 'input', id: m.questionId, message: m.message });
+    this.emit({ type: 'ask_user', reason: m.reason, message: m.message, questionId: m.questionId });
+    if (!o.asker) return; // Stays blocked; cancel or the timeout ends it.
+    let answer: string | undefined;
+    try {
+      // Ask again, up to three times, until the answer is one of the choices offered.
+      for (let attempt = 0; attempt < 3 && answer === undefined; attempt++) {
+        const given = await o.asker.ask(
+          { agentId: o.spec.id, taskId: o.task.taskId, questionId: m.questionId, reason: m.reason, message: m.message, ...(m.choices && { choices: m.choices }) },
+          signal,
+        );
+        if (!m.choices || m.choices.includes(given)) answer = given;
+      }
+    } catch {
+      return; // Cancelled, or the asker failed: the run is stopping or stays blocked.
+    }
+    if (answer === undefined) return;
+    o.status?.unblock(this.runId, m.questionId);
+    this.emit({ type: 'ask_user', reason: m.reason, message: m.message, questionId: m.questionId, answer });
+    this.send({ type: 'user_answer', taskId: o.task.taskId, questionId: m.questionId, answer });
   }
 
   outcome(exitCode: number | null, stopped?: AgentTaskFailure): AgentTaskOutcome {
