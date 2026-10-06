@@ -8,6 +8,8 @@
 export * from './contracts.ts';
 export * from './agent-contracts.ts';
 export * from './agent-host.ts';
+export * from './agent-status.ts';
+export * from './agent-ledgers.ts';
 export {
   loadSkills,
   openControlClient,

@@ -14,6 +14,7 @@ state: draft
 | 2026-10-07 | 吸收 OpenShell 的模式：provider profile、租约式授权与三种审批模式、审批前校验摘要、结构化拒绝、动作前检查链；改为 RFC 格式（第十五节） |
 | 2026-10-07 | 管理面补齐：安装时内容校验、内容寻址存储与版本回滚、发布前两层扫描与安全等级、多设备同步边界、agent 入口；参考 skills-hub、agent-skills-hub、PromptHub（第十五节） |
 | 2026-10-07 | **改题为 Agent Hub**：托管的单元是 agent，不是 skill；skill 一词只留给 `SKILL.md`。产品定位为 Agent Desktop，新增常驻模式、多应用、身份、组织档案（第九节）；`remotedesk-agent` 从独立客户端改为 RemoteDesk 的组织档案与 agent 索引 |
+| 2026-10-07 | 吸收 herdr、nasiko、google/ax：运行状态与卡住原因（第六节「状态面板」）、缺信息与要授权两种暂停及问答往返、按 agent 归集 provider 用量与成本（第十五节）；限额计数落盘 |
 
 本文描述 **Agent Desktop** 的 agent 运行时与注册表（Agent Hub）：任何语言实现的 agent 通过协议接入 2ndscreen 的 Runtime，由 Runtime 代为操作桌面，并由我们统一分发、授权和管理。依据 2026 年 10 月 7 日读取的 `vdisplay-prototype`（a879db0）、`remotedesk-boss-agent`（`greet-skill`）、`wechat-agent` 和 `amplifistudio/remotedesk-agent`（f551e87）编写。它是待实施方案，不代表功能已经交付。
 
@@ -164,6 +165,7 @@ Runtime → agent：
 | `provider_result` | 对应某个 `provider` 请求的回答与用量 |
 | `grant` / `deny` | 对某个 `ask_approval` 的裁决。`deny` 可带 `guidance`：自由文本加结构化提示（`too_fast`、`wrong_target`、`outside_quota`、`needs_time_limit`、`not_now`），agent 据此修正后重提或降级 |
 | `task_created` | 对常驻 agent `create_task` 的回应，带 `taskId`；或 Runtime 代用户创建的任务 |
+| `user_answer` | 对带 `questionId` 的 `ask_user` 的回答，任务原地继续 |
 | `pause` / `resume` / `cancel` / `stop` | 控制。`cancel` 针对任务；`stop` 针对常驻 agent，收到后应在当前步结束时发 `agent_stopped` 并退出 |
 
 agent → Runtime：
@@ -175,12 +177,12 @@ agent → Runtime：
 | `wait` | 一个 `WaitSpec`，Runtime 轮询条件后以 `observation` 回复 |
 | `provider` | 请求外部服务：`providerId`、`purpose`（ui / repair / analysis / draft / submit）、输入、可选截图引用、输出约束。模型调用是其一种 |
 | `ask_approval` | 请求对某个 effect 或某个具体动作的人工批准，附给人看的摘要 |
-| `ask_user` | 需要用户介入（登录、验证码、歧义选择），任务进入 `waiting_user` |
+| `ask_user` | 缺信息，需要用户介入（登录、验证码、歧义选择）。带 `questionId`（可带 `choices`）时 Runtime 回 `user_answer`；不带时只是提示。与 `ask_approval`（要授权）分开 |
 | `create_task` | 常驻 agent 发现了要做的事（如新来一个候选人），请求 Runtime 建一个任务。Runtime 校验类型与输入、写账本、回 `task_created` |
 | `item` | 工作项状态变化（discovered → … → committed），Runtime 写账本 |
 | `artifact` | 声明一个产物文件及其完整性 |
 | `unit_started` / `unit_finished` | 可选的单元边界，用于学习与回放 |
-| `heartbeat` | 常驻 agent 每 `idlePollSeconds` 至少一条，带当前状态摘要；超时两次 Runtime 视为失联 |
+| `heartbeat` | 自报状态 `working / idle / blocked / paused` 与摘要；常驻 agent 每 `idlePollSeconds` 至少一条，超时两次 Runtime 视为失联 |
 | `task_finished` / `task_failed` | 任务的最后一条，含终止原因 |
 | `agent_stopped` | 常驻 agent 退出前的最后一条 |
 
@@ -212,7 +214,10 @@ agent → Runtime：
 | 身份 | 无 | 组织档案登录后 Runtime 持有用户身份令牌；`identity.required` 的 agent 的 provider 调用自动附带，受众按清单限定。agent 进程只收到不可用于鉴权的身份摘要（显示名、组织、角色） |
 | 动作前检查链 | 无 | 第五节第 2 条的有序检查链。内置级：声明、授权、限额、时段、快照、目标；可插拔级：组织或用户安装的检查器，接口与内置级相同（输入动作与上下文，输出放行、改写或拒绝加结构化原因），默认 `fail_closed`。检查器产出的记录只含类别、计数、置信度，不含候选人原文 |
 | 学习与回放 | builtin 工作流专用 | process agent 发 `unit_*` 边界即可参与；不发则只执行不学习 |
-| 状态上报 | `task status` | 不变；增加 `agent status`：常驻 agent 的在岗状态、今日用量、暂停原因；per-agent 聚合（成功率、provider 调用、暂停原因） |
+| 状态上报 | `task status` | 不变；增加 per-agent 聚合（成功率、provider 调用、暂停原因） |
+| 状态面板 | 无 | 每次 agent 运行一条：`starting / working / idle / blocked / paused / done / failed`。agent 用心跳自报 `working / idle / blocked / paused`，按协议 `seq` 丢弃过期上报；Runtime 根据未决的审批与提问自己判定「卡在审批」「卡在输入」，agent 无法用心跳盖掉。卡住的排在最前并写明在等什么。可订阅，可等到某状态（固定在一次运行上）。快照原子写入 `<tasksDir>/agents/status.json`，`2ndscreen task agents` 与 MCP `task_agents` 读取。已实现：`agent-status.ts` |
+| 提问 | 无 | `ask_user` 带 `questionId`（可带 `choices`）时，Runtime 交给注入的 `Asker`，回 `user_answer`，任务原地继续；不在选项内的回答重问，最多三次。不带 `questionId` 的只是提示，阻塞到 agent 的下一条消息。与 `ask_approval` 分开：前者缺信息，后者要授权。已实现 |
+| Provider 用量 | 无 | 每次真正发出的 provider 调用记一条：agent、运行、任务、provider、模型、用途、成败、token、耗时，写 `<tasksDir>/agents/provider-usage.jsonl`。`2ndscreen task usage --by agent|provider|model|task` 与 MCP `task_usage` 汇总；价目表 `prices.json` 按 `provider/model` 或 `provider` 计价；未知 token 不当 0，算不出成本的调用单独计数。已实现：`agent-ledgers.ts` |
 
 **七 外发动作授权模型**
 
@@ -393,3 +398,13 @@ NVIDIA OpenShell（Rust，Apache 2.0，2026 年 10 月读取）自我定位为 a
 | legeling/PromptHub（TypeScript，Electron，**AGPL**） | Prompt、Skill、Agent 三类资产 | 安装时内容校验清单（路径、压缩包、符号链接、体积、必需文件、指纹）；版本历史与回滚；内容寻址存储；只允许一个活动同步源 |
 
 不采用它们的评分体系（star、fork、活跃度）；质量信号只来自遥测。PromptHub 是 AGPL，只借思路，不引用代码。
+
+另有三个 agent 运行时（2026 年 10 月读取），都不做桌面 GUI agent：
+
+| 项目 | 形态 | 本文采用 |
+| --- | --- | --- |
+| herdrdev/herdr（Rust，Apache 2.0） | 终端里编码 agent 的运行时：后台保持会话、多机一个窗口、标出卡住的 pane | 运行状态词汇 working / idle / blocked / done；上报带单调递增序号、过期即丢；等待固定在一次运行上；卡住的排最前；宿主给 agent 注入固定环境变量（`AGENT_DESKTOP_*`） |
+| Nasiko-Labs/nasiko（Rust，Apache 2.0） | A2A 协议的 agent 控制面：OCI 打包、模型路由、MCP 网关 | 缺信息（`INPUT_REQUIRED`）与要授权（`AUTH_REQUIRED`）两种暂停分开，回答由平台转交、任务原地继续；按 agent 与模型归集用量和成本 |
+| google/ax（Go，Apache 2.0） | 仿 kubectl 的集群编排：Task / Workspace / Model 三种资源 | 只印证结构：任务、组织档案、provider 三分 |
+
+不采用：nasiko 的 OCI 镜像打包与集群控制面，ax 的集群调度，agentscope-runtime 的 Linux 容器沙箱（目标应用不在 Linux 上）。

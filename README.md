@@ -412,6 +412,19 @@ To install it elsewhere:
 export SECONDSCREEN_TASK_RUNTIME=/some/dir
 ```
 
+Agents hosted by the runtime (RFC 0001, `docs/rfc/0001-agent-hub`) are
+listed with the stuck ones first, each saying what it waits for: an
+approval, an answer from the user, or something the agent reported.
+Provider calls are counted per agent, with tokens and, when
+`agents/prices.json` in the tasks directory names a price, the cost:
+
+```bash
+2ndscreen task agents [--all]
+2ndscreen task usage [--by agent|provider|model|task] [--since ISO_TIME]
+```
+
+MCP has them as `task_agents` and `task_usage`.
+
 Task runs take a lease on BOSS直聘 in the task ledger (`leaseScopeKey` in
 `packages/task-runtime/src/contracts.ts`), so two of them, or another
 agent that takes the same lease, never act on it at the same time.

@@ -516,6 +516,8 @@ export type RuntimeMessage = MessageBase &
     | { type: 'grant'; taskId: string; approvalId: string }
     | { type: 'deny'; taskId: string; approvalId: string; guidance?: { text?: string; hints: ApprovalHint[] } }
     | { type: 'task_created'; requestId: string; taskId: string }
+    /** The person's answer to an `ask_user` that carried a questionId; the task goes on where it stopped. */
+    | { type: 'user_answer'; taskId: string; questionId: string; answer: string }
     | { type: 'pause'; taskId: string }
     | { type: 'resume'; taskId: string }
     | { type: 'cancel'; taskId: string }
@@ -527,7 +529,14 @@ export type RuntimeMessageType = RuntimeMessage['type'];
 // ---------------------------------------------------------------------------
 // Protocol: agent → runtime
 
-export type HeartbeatState = 'idle' | 'working' | 'waiting' | 'paused';
+/**
+ * What an agent says it is doing, in herdr's vocabulary: `working` (a turn
+ * in progress), `idle` (nothing to do), `blocked` (waiting on something the
+ * runtime cannot see, with a message), `paused`. The runtime derives
+ * blocked-on-approval and blocked-on-input itself from pending requests.
+ */
+export type HeartbeatState = 'idle' | 'working' | 'blocked' | 'paused';
+export const HEARTBEAT_STATES: readonly HeartbeatState[] = ['idle', 'working', 'blocked', 'paused'];
 
 export type AgentMessage = MessageBase &
   (
@@ -552,7 +561,13 @@ export type AgentMessage = MessageBase &
     | { type: 'wait'; taskId: string; requestId: string; app: string; wait: WaitSpec }
     | { type: 'provider'; taskId?: string; requestId: string; providerId: string; purpose: ProviderPurpose; input: unknown; screenshotRef?: string }
     | { type: 'ask_approval'; taskId: string; approvalId: string; effect: EffectClass; summary: string; app?: string; action?: Action; target?: string }
-    | { type: 'ask_user'; taskId: string; reason: WaitReason; message: string }
+    /**
+     * The task needs a person. Two kinds of pause are kept apart: this is
+     * missing input (login, captcha, a choice); approvals go through
+     * `ask_approval`. With a questionId the runtime answers with
+     * `user_answer`; without one it only shows the message.
+     */
+    | { type: 'ask_user'; taskId: string; reason: WaitReason; message: string; questionId?: string; choices?: string[] }
     | { type: 'create_task'; requestId: string; taskType: string; input: unknown }
     | { type: 'item'; taskId: string; itemId: string; status: WorkItemStatus; data?: Record<string, unknown> }
     | { type: 'artifact'; taskId: string; path: string; kind: ArtifactKind; completeness: ArtifactCompleteness; sha256?: string }
@@ -700,6 +715,11 @@ export function parseAgentMessage(line: string, expected?: ExpectedMessage): Val
     case 'ask_user':
       if (!oneOf(raw.reason, WAIT_REASONS)) errors.push('reason is not a wait reason');
       if (!isString(raw.message)) errors.push('message must be a string');
+      if (raw.questionId !== undefined && !isNonEmpty(raw.questionId)) errors.push('questionId must be a non-empty string when present');
+      if (raw.choices !== undefined) {
+        if (raw.questionId === undefined) errors.push('choices need a questionId');
+        if (!Array.isArray(raw.choices) || raw.choices.length === 0 || !raw.choices.every(isNonEmpty)) errors.push('choices must be a non-empty list of strings');
+      }
       break;
     case 'create_task':
       needRequest();
@@ -725,7 +745,7 @@ export function parseAgentMessage(line: string, expected?: ExpectedMessage): Val
       if (typeof raw.ok !== 'boolean') errors.push('ok must be boolean');
       break;
     case 'heartbeat':
-      if (!oneOf(raw.state, ['idle', 'working', 'waiting', 'paused'])) errors.push('state must be idle, working, waiting or paused');
+      if (!oneOf(raw.state, HEARTBEAT_STATES)) errors.push(`state must be one of ${HEARTBEAT_STATES.join(', ')}`);
       if (raw.summary !== undefined && !isString(raw.summary)) errors.push('summary must be a string when present');
       break;
     case 'task_finished':
@@ -753,6 +773,7 @@ const RUNTIME_MESSAGE_TYPES: readonly RuntimeMessageType[] = [
   'grant',
   'deny',
   'task_created',
+  'user_answer',
   'pause',
   'resume',
   'cancel',
@@ -907,6 +928,11 @@ export function parseRuntimeMessage(line: string, expected?: ExpectedMessage): V
     case 'task_created':
       needRequest();
       needTask();
+      break;
+    case 'user_answer':
+      needTask();
+      if (!isNonEmpty(raw.questionId)) errors.push('questionId is required');
+      if (!isString(raw.answer)) errors.push('answer must be a string');
       break;
     case 'pause':
     case 'resume':
