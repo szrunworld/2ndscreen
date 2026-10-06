@@ -342,6 +342,10 @@ with `open` and `window move` instead.
 `skills/2ndscreen/SKILL.md` is the agent-facing guide; give it to an
 agent, or install it as a Claude Code skill.
 
+Agents for particular apps live in their own repositories and call the
+`2ndscreen` command; none ship in this one. The BOSS直聘 recruiting
+executor, for example, is `amplifistudio/remotedesk-boss-agent`.
+
 ### MCP
 
 `2ndscreen mcp` serves the commands above, except `agent`, as MCP tools over stdio:
