@@ -284,6 +284,10 @@ public struct ControlResponse: Codable {
     public var output: String?
     /// `window.state` and `input`: the window acted on.
     public var window: WindowSummary?
+    /// `window.state` and `input`: whether the window lies wholly within its
+    /// screen. A window reaching past it is clipped in screenshots, so points
+    /// taken from them miss; `window move --fill` brings it back inside.
+    public var windowOnScreen: Bool?
     /// `window.state`: the elements, and the tree they come from.
     public var elements: [AXElementInfo]?
     public var tree: String?

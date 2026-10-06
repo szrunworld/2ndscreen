@@ -338,11 +338,15 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return await Task.detached {
                 do {
                     let window = try InputEngine.window(pid: pid, windowID: request.windowID, on: screen)
+                    var response: ControlResponse
                     if request.command == .windowState {
-                        return try input.state(window, query: request.query)
+                        response = try input.state(window, query: request.query)
+                    } else {
+                        guard let action = request.input else { return .failure("input needs an action") }
+                        response = try input.perform(action, in: window, on: screen)
                     }
-                    guard let action = request.input else { return .failure("input needs an action") }
-                    return try input.perform(action, in: window, on: screen)
+                    response.windowOnScreen = WindowContainment.contains(CGRect(screen.frame), window.frame)
+                    return response
                 } catch {
                     return .failure(error.localizedDescription)
                 }

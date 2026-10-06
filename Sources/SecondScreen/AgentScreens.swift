@@ -276,6 +276,12 @@ final class AgentScreens {
         response.pid = pid
         response.screen = target
         response.windows = await Self.settledSummaries(of: pid, on: target.displayID)
+        if moved, !fitScreen, let clipped = await Self.keepWithinScreen([window.windowID], of: pid, on: target, fill: fill) {
+            response = .failure(clipped)
+            response.pid = pid
+            response.screen = target
+            response.windows = WindowMover.windows(ofPID: pid).map { WindowSummary($0) }
+        }
         return response
     }
 
@@ -293,7 +299,39 @@ final class AgentScreens {
         var response = failed.isEmpty ? ControlResponse() : .failure("\(failed.count) window(s) refused to move")
         response.screen = target
         response.windows = await Self.settledSummaries(of: pid, on: target.displayID)
+        if failed.isEmpty, !fitScreen, let clipped = await Self.keepWithinScreen(moved, of: pid, on: target, fill: fill) {
+            response = .failure(clipped)
+            response.screen = target
+            response.windows = WindowMover.windows(ofPID: pid).map { WindowSummary($0) }
+        }
         return response
+    }
+
+    /// Placing a window keeps it inside the screen, but an app can resize or
+    /// move itself once placed, and then part of it is off the screen: every
+    /// screenshot of the screen clips it and the points an agent works out
+    /// from one miss. Re-place such a window, twice at most, and if it still
+    /// reaches past the screen say so instead of reporting success.
+    private static func keepWithinScreen(_ windowIDs: Set<CGWindowID>, of pid: pid_t, on target: ScreenInfo,
+                                         fill: Bool) async -> String? {
+        let bounds = CGDisplayBounds(target.displayID)
+        func protruding() -> [WindowInfo] {
+            WindowMover.windows(ofPID: pid).filter {
+                windowIDs.contains($0.windowID) && !WindowContainment.contains(bounds, $0.frame)
+            }
+        }
+        var outside = protruding()
+        for _ in 0..<2 where !outside.isEmpty {
+            for window in outside { WindowMover.move(window, to: target.displayID, fill: fill) }
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            outside = protruding()
+        }
+        guard let window = outside.first else { return nil }
+        let overhang = WindowContainment.overhang(of: window.frame, beyond: bounds) ?? "past the screen"
+        return "window \(window.windowID) (\(window.label)) reaches \(overhang) of screen \"\(target.name)\" even after"
+            + " placing it again: the app keeps it \(Int(window.frame.width))x\(Int(window.frame.height)), so"
+            + (fill ? " create a larger screen" : " pass --fill, or create a larger screen")
+            + "; screenshots of it would be clipped"
     }
 
     /// Move an app's windows from `source` to the main display and stop
