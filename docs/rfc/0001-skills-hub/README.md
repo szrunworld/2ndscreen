@@ -1,4 +1,17 @@
-# Agent Skills Hub 设计方案
+---
+authors:
+  - "@szrunworld"
+state: draft
+---
+
+# RFC 0001 - Agent Skills Hub
+
+## 修订记录
+
+| 日期 | 变更 |
+| --- | --- |
+| 2026-10-07 | 初稿 |
+| 2026-10-07 | 吸收 OpenShell 的模式：provider profile、租约式授权与三种审批模式、审批前校验摘要、结构化拒绝、动作前检查链；改为 RFC 格式（第十四节） |
 
 本文描述把 2ndscreen 的 Task Runtime 扩展为一个可挂载、可管理的技能宿主（Skills Hub）的方案：任何语言实现的技能通过协议接入 Runtime，由 Runtime 代为操作桌面，并由我们统一分发、授权和管理。依据 2026 年 10 月 7 日读取的 `vdisplay-prototype`（a879db0）、`remotedesk-boss-agent`（`greet-skill`）和 `wechat-agent` 编写。它是待实施方案，不代表功能已经交付。
 
@@ -78,11 +91,12 @@ Hub 是这三条的实现方式：**技能通过协议嵌入 Runtime，而不是
   },
   "inputSchema": "request-resumes-input-v1",
   "effects": ["read", "navigation", "external-submit"],
-  "capabilities": ["ui.read", "ui.navigate", "model.text", "artifact.write"],
+  "capabilities": ["ui.read", "ui.navigate", "artifact.write"],
+  "providers": [{ "id": "ark-text", "purposes": ["draft"] }],
   "limits": {
     "external-submit": { "perDay": 20, "minIntervalMs": 45000 }
   },
-  "approval": { "external-submit": "per-task" },
+  "approval": { "external-submit": "human_in_the_loop" },
   "foregroundAllowed": false,
   "learning": { "promoteAfterSuccesses": 3 },
   "defaults": {}
@@ -92,9 +106,10 @@ Hub 是这三条的实现方式：**技能通过协议嵌入 Runtime，而不是
 规则：
 
 - `runtimeContract` 与 Runtime 的 `CONTRACT_VERSION` 不匹配、`applicationVersions` 与实际应用版本不匹配、平台不符，加载即拒绝，错误码 `capability_missing`，不带病运行。
-- `effects` 是技能**声明**会用到的 effect 类别。未声明的类别出现在动作请求里，Runtime 拒绝并以 `forbidden_effect` 终止该单元。
+- `effects` 是技能**声明**会用到的 effect 类别。未声明的类别出现在动作请求里，Runtime 拒绝该动作，`action_result` 带 `reason: effect_undeclared`；连续三次即终止任务。
 - `limits` 是技能自己声明的上限。Runtime 持有每个 effect 类别的全局硬上限（第七节），技能只能声明得更严，不能更松。
-- `approval` 说明哪些 effect 需要人工审批，粒度 `never`（Runtime 仍可按用户设置要求）、`per-task`、`per-action`。
+- `providers` 声明技能需要的外部服务（模型、邮件、对象存储等）及用途。技能包里不允许出现任何 key；Runtime 按第六节的 provider profile 代为调用。未声明的 provider 请求一律拒绝。
+- `approval` 说明每类 effect 的审批模式，取值见第七节：`human_in_the_loop`（每次外发都要人批）、`trusted_within_ceiling`（在授权租约与硬上限内由 Runtime 自动放行）、`locked_down`（可见但禁止执行）。技能只能声明得比用户设置更严。
 - `executor.runtime.bundled: true` 表示包内自带语言运行时；否则声明对宿主机的要求，安装时检查。
 - 清单一律经 `validateSkillSpec` 校验，一次列出全部错误，和现有校验器同一风格。
 - `task.json`（schemaVersion 1）继续被接受，视为 `executor.kind = builtin`、`effects` 不含 external-submit 的技能。
@@ -115,9 +130,9 @@ Runtime → 技能：
 | --- | --- |
 | `task_start` | 任务输入（已按 `inputSchema` 校验）、账号范围、预算、授权快照（哪些 effect 已获批）、会话信息（不含 socket 路径） |
 | `observation` | 一次读取：`snapshotId`、窗口几何、元素树或子树、截图路径（Runtime 私有目录内）、文字、`pageClass` |
-| `action_result` | 对应某个 `act` 的 `ActionResult`，含前后快照 ID |
+| `action_result` | 对应某个 `act` 的 `ActionResult`，含前后快照 ID。被 Runtime 拒绝时附结构化原因 `reason`（如 `effect_undeclared`、`not_granted`、`quota_exhausted`、`too_fast`、`snapshot_stale`、`target_unknown_result`）与 `next_steps`（可机器读取的建议：等待多久、改走只读路径、请求授权） |
 | `model_result` | 对应某个 `model` 请求的回答与 token 用量 |
-| `grant` / `deny` | 对某个 `ask_approval` 的裁决 |
+| `grant` / `deny` | 对某个 `ask_approval` 的裁决。`deny` 可带 `guidance`：自由文本加结构化提示（`too_fast`、`wrong_target`、`outside_quota`、`needs_time_limit`、`not_now`），技能据此修正后重提或降级 |
 | `pause` / `resume` / `cancel` | 控制。`cancel` 后技能应在当前步结束时发 `task_finished` 并退出 |
 
 技能 → Runtime：
@@ -138,7 +153,7 @@ Runtime → 技能：
 执行语义：
 
 1. 技能进程由 Runtime 在持有 `Session.withExclusiveActor('skill', …)` 的授权期间启动，一个任务一个进程。进程退出前 Runtime 不收回动作权。
-2. `act` 到达时 Runtime 依次检查：effect 在清单 `effects` 内；effect 已获授权；限额未超；`snapshotId` 未过期。任一不满足以对应错误码回 `action_result`，external-submit 的拒绝同时写审计。
+2. `act` 到达时经过 Runtime 的**动作前检查链**，每级可放行、改写或拒绝，顺序固定：声明检查（effect 在清单 `effects` 内）→ 授权检查（已获 grant 且未过期）→ 限额检查（全局硬上限与技能声明的更严值、最小间隔）→ 快照检查（`snapshotId` 未过期）→ 目标检查（同一目标无 `unknown` 历史）→ 用户安装的附加检查（如内容脱敏、工作时段）。任一级拒绝即短路，以结构化 `reason` 和 `next_steps` 回 `action_result`；检查链自身出错按 `fail_closed` 处理。external-submit 的每次通过与拒绝都写审计。
 3. external-submit 的 `act` 执行后若结果为 `unknown`，Runtime 把该候选项标记为"结果不明"，拒绝同一任务对同一目标再次 external-submit。
 4. 无模型配置时 `model` 请求立刻得到 `model_unavailable`，技能自行决定降级还是失败，不得伪装成功。
 5. 不合法的行、乱序的 `seq`、属于别的任务的消息，使任务失败并终止子进程，和 Bridge 规则一致。
@@ -157,7 +172,8 @@ Runtime → 技能：
 | 限额与风控 | 无 | 每个 effect 类别的全局硬上限与最小间隔，按账号与应用计数，持久化，重启后仍生效；触发平台风控（如 BOSS 安全验证页面）时全局暂停该应用的所有技能 |
 | 人工审批 | 无 | `ask_approval` 队列；审批入口是 `2ndscreen task approve`、MCP `task_approve`、以及宿主客户端的 UI |
 | 审计 | 事件流 | 每个 external-submit 的请求、裁决、执行结果单独一张表，脱敏摘要加证据路径 |
-| 模型出口 | Bridge 内部直连 Ark | `model` 服务统一出口；key 由 Runtime 持有或由托管服务代为调用（`archive/llm-worker` 为先例）；技能包里不允许出现 key |
+| Provider profile | Bridge 内部直连 Ark | 每个外部服务一份 profile：允许的 endpoint、凭据注入方式、用途白名单、按技能的用量上限。技能只声明 `providers`，请求经 Runtime 代发，凭据只附加到 profile 声明的 endpoint，技能进程永远拿不到 key。`model` 消息是 provider 服务的一种。key 由 Runtime 本地持有或由托管服务代为调用（`archive/llm-worker` 为先例） |
+| 动作前检查链 | 无 | 第五节第 2 条的有序检查链。内置级：声明、授权、限额、快照、目标；可插拔级：用户或宿主安装的检查器，接口与内置级相同（输入动作与上下文，输出放行、改写或拒绝加结构化原因），默认 `fail_closed`。检查器产出的记录只含类别、计数、置信度，不含候选人原文 |
 | 学习与回放 | builtin 工作流专用 | process 技能发 `unit_*` 边界即可参与；不发则只执行不学习 |
 | 状态上报 | `task status` | 不变；增加 per-skill 聚合（成功率、模型调用、暂停原因） |
 
@@ -167,8 +183,15 @@ Runtime → 技能：
 
 - 默认：任何技能、任何账号的 external-submit 都是禁止的。
 - 授权单位：`(skillId, application, accountKey, effect)`，由用户通过 `2ndscreen skill grant` 或宿主 UI 授予，写入账本，可撤销。
-- 任务启动时 Runtime 把授权快照放进 `task_start`；技能请求未授权的 effect 时得到 `forbidden_effect`，任务不终止，技能可降级为只读路径。
-- `approval.per-action` 的技能，每个 external-submit 先 `ask_approval`，用户批准后才执行；`per-task` 在任务开始时一次批准。
+- **授权默认是有时限的租约。** `grant` 不带 `--expires` 时默认 7 天，到期自动失效；长期授权要显式 `--durable`，并在 `skill inspect` 里单独标出。自动放行只在租约有效期内发生。
+- 三层结构：**硬上限**（Runtime 内置，不可配置放宽）→ **用户或服务端上限**（只能在硬上限内收窄）→ **技能声明**（只能再收窄）。任何一级都不能放宽上一级。
+- 三种审批模式，按 effect 设置，用户设置与技能声明取更严者：
+  - `human_in_the_loop`：每个 external-submit 先 `ask_approval`，批准后才执行。默认值。
+  - `trusted_within_ceiling`：租约有效、限额未超、检查链全部通过时由 Runtime 自动放行，不再逐个询问；任一条件不满足回落到人工审批。适合已经跑稳的技能。
+  - `locked_down`：技能可以提出，Runtime 一律拒绝并记录，用于观察一个新技能想做什么而不让它做。
+- **审批展示的是后果，不是请求。** `ask_approval` 到达用户前，Runtime 补上校验结果：今日该 effect 已用与剩余额度、距上次外发的间隔、目标账号与候选人键、该目标是否有过 `unknown` 结果、是否在用户设置的工作时段内。用户看到的是一段摘要加一个按钮，不是技能写的原始理由。
+- 拒绝有三种：`reject`（本次不做）、`reject_with_guidance`（附结构化提示，技能可修正后重提）、`revoke`（顺带撤销该授权）。
+- 任务启动时 Runtime 把授权快照放进 `task_start`；技能请求未授权的 effect 时得到带 `reason: not_granted` 与 `next_steps` 的拒绝，任务不终止，技能可降级为只读路径。
 - Runtime 的全局硬上限优先级最高。以 BOSS 为例，依据 2026-10-06 的实测，20 分钟内约 45 个对象、间隔 10 到 20 秒触发了安全验证；硬上限因此定为每类外发动作每日 20 次、最小间隔 45 秒加 0 到 15 秒随机，技能和服务端策略只能更严。
 - 结果 `unknown` 的 external-submit 永不重发，这条由 Runtime 而不是技能保证。
 
@@ -183,8 +206,11 @@ Runtime → 技能：
 2ndscreen skill install <path|url|id>     校验签名与清单，解包，登记
 2ndscreen skill update [<id>]             按远端索引更新
 2ndscreen skill enable|disable <id>
-2ndscreen skill grant <id> --account K --effect external-submit
+2ndscreen skill grant <id> --account K --effect external-submit [--expires 7d | --durable]
+2ndscreen skill grant <id> … --mode trusted_within_ceiling
 2ndscreen skill revoke …
+2ndscreen skill providers                 已配置的 provider profile 与各技能用量
+2ndscreen task approve|reject <task> <approval-id> [--guidance HINT…]
 2ndscreen skill inspect <id>              清单、声明的 effect、限额、已授权项、最近运行
 2ndscreen task run <id> …                 不变；SKILL_ID 来自注册表
 ```
@@ -235,7 +261,7 @@ Runtime → 技能：
 | --- | --- | --- |
 | P1 协议与清单 | `skill.json` schemaVersion 2 校验器；`skill-jsonl/1` 消息类型与 `parseSkillMessage`；Runtime 的 process 执行体宿主；`boss.collect-resumes` 走同一内部接口 | 现有 Runtime 测试全绿；用一个合成的 echo 技能跑完 observe / act / wait / item / finished 全链路，含取消与超时 |
 | P2 第一个外部技能 | `wechat-agent` 改为 process 技能并签名打包；`skill install/list/enable/disable`；本地注册表 | 从包安装到任务完成不改任何 Runtime 代码；未签名包被拒 |
-| P3 外发授权 | `grant/revoke`、`ask_approval`、全局硬上限、审计表、`unknown` 不重发 | 用 FakeDriver 夹具跑限额与审批的混沌测试；真机上 BOSS 求简历 20 次全部有审计记录 |
+| P3 外发授权 | 租约式 `grant/revoke`、三种审批模式、动作前检查链、`ask_approval` 后果摘要、`reject_with_guidance`、审计表、`unknown` 不重发 | 用 FakeDriver 夹具跑限额与审批的混沌测试；真机上 BOSS 求简历 20 次全部有审计记录 |
 | P4 boss-agent 接入 | `RuntimeDriver`；删除 boss-agent 内与 Runtime 重叠的基础设施 | boss-agent 的 1308 个测试在 `RuntimeDriver` 上通过；真机值守一天 |
 | P5 远端索引与发行 | 索引、发布流水线、`skill update`；`remotedesk-agent` 发行版 | 新机从索引安装两个技能并运行 |
 
@@ -248,7 +274,7 @@ Runtime → 技能：
 - **Python 运行时打包**：`bundled: true` 意味着技能包含 CPython，体积约 40 MB。可接受；替代方案是宿主客户端统一提供 Python，由清单声明依赖。P2 用 TypeScript 技能先行，P4 前决定。
 - **沙箱程度**：技能进程没有 TCC 权限，但仍是宿主用户的普通进程，能读文件、访问网络。首版靠签名与审查约束，不做系统级沙箱；是否用 App Sandbox 或 `sandbox-exec` 包裹留作后续。
 - **Windows**：协议与清单与平台无关；Runtime 的 Windows 侧依赖 `windows/` 下的 C# 核心进度，本文不展开。
-- **模型出口的 key**：Runtime 本地持有 key 适合个人用户；托管用户走宿主客户端的服务端代理。两条路径都通过同一个 `model` 服务，技能无感。
+- **Provider 的 key**：Runtime 本地持有 key 适合个人用户；托管用户走宿主客户端的服务端代理。两条路径都通过同一个 provider 服务，技能无感。profile 的 endpoint 白名单是防止 key 被技能借道外传的唯一控制，必须和限额一样不可由技能放宽。
 - **协议版本化**：`skill-jsonl/1` 冻结后只增消息类型，不改已有字段；破坏性变更升 `/2`，Runtime 同时支持相邻两个版本一个发布周期。
 - **与 Bridge 的关系**：Bridge 继续作为 Runtime 内部的探索器存在；是否把它也改写为一个 `builtin` 技能，等 P1 之后看是否有收益。
 
@@ -257,3 +283,21 @@ Runtime → 技能：
 - `docs/task-runtime-contracts.md`：P1 时新增"技能包 v2"与"Skill JSONL 协议"两节，"安全边界"一节的 `submitAllowed=false` 改写为第七节的授权模型。
 - `docs/skill-runtime-boss-plan.md`：其"首版不包含主动打招呼、求简历、自动回复"的边界由本文的 P3 与 P4 接续。
 - `README.md`："Skill tasks"一节增加 `2ndscreen skill` 命令与注册表位置。
+- 文档形态：本文及后续方案改用 RFC 格式管理，`docs/rfc/NNNN-<name>/README.md`，frontmatter 带作者与状态（draft / accepted / superseded），正文含修订记录、决定与明确推迟的事项。本文即 `docs/rfc/0001-skills-hub/README.md`，实施 PR 引用它的编号。
+
+**十四 先例**
+
+NVIDIA OpenShell（Rust，Apache 2.0，2026 年 10 月读取）解决的是另一层问题：agent 进程能碰哪些文件、网络与凭据，由 Landlock、seccomp 和 L4/L7 出口代理在内核层强制。它的沙箱层对 macOS GUI 技能不适用，但下列模式被本文采用：
+
+| OpenShell | 本文对应 |
+| --- | --- |
+| Provider profiles：agent 看不到凭据，supervisor 只对 profile 声明的 endpoint 注入 | 第六节 provider profile 服务 |
+| 策略分层（org ceiling / effective / proposal），只能在上限内收窄；授权持久度 `ephemeral_lease` / `durable` / `promoted` | 第七节三层上限与租约式授权 |
+| 审批模式 `human_in_the_loop` / `trusted_agent_within_ceiling` / `manual_only_locked_down`；`reject_with_guidance` 带结构化提示 | 第七节审批模式与拒绝方式 |
+| Validation before approval：审批者看到的是验证后的后果摘要 | 第七节“审批展示的是后果” |
+| Structured deny feedback：拒绝带机器可读原因与 `next_steps` | 第五节 `action_result.reason` / `next_steps` |
+| Supervisor middleware（RFC 0009）：热路径上的有序检查链，`fail_closed` 默认，findings 不含原始敏感值 | 第五节与第六节的动作前检查链 |
+| 驱动接口走 gRPC 而非进程内 trait（RFC 0001 否决的替代方案） | 第五节技能一律进程外的选择 |
+| RFC 流程与目录格式 | 第十三节 |
+
+不采用：内核级沙箱、L4/L7 出口代理、多副本 gateway 与 Kubernetes 驱动、多租户 workspace、形式化 prover。它的 “skills” 只是给 coding agent 看的 `SKILL.md`，与本文的技能包无关。
