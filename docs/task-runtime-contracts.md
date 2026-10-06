@@ -334,3 +334,21 @@ Swift 侧：`Sources/SecondScreenCore/LocalVision.swift`（实现与协议）、
 - 开发 agent 的测试只用临时目录与合成夹具，不启动或控制 BOSS，不访问生产账号。
 - 无模型时，稳定流程照常运行；需要探索的单元给出 `model_unavailable`，不伪装成功。
 - 不完整的采集保存为诊断产物，从不计入成功数量；数量不足以 partial 结束并写明终止原因。
+
+## Agent 包与 Agent JSONL 协议（RFC 0001，P1 进行中）
+
+`packages/task-runtime/src/agent-contracts.ts`，只含类型、校验器与纯规则，依赖本文件之外的只有 `contracts.ts`。设计依据 `docs/rfc/0001-agent-hub/README.md` 第四、五、七节；Runtime 侧的执行体宿主、排程器与检查链在后续 P1 变更中落地，只接受这些校验器放行的内容。
+
+| 项 | 规定 |
+| --- | --- |
+| `AgentSpec` / `validateAgentSpec` | `agent.json`，`schemaVersion: 2`。未知字段、重复的 bundleId、未声明 effect 上的 `limits` 或 `approval`、声明了 external-submit 却没有 `approval.external-submit`、`resident` 没有 `schedule` 或用 `builtin` 执行体、执行体命令指向包外，一律报错，一次列全 |
+| `agentSpecFromTaskSpec` | `task.json`（schemaVersion 1）读成 agent：单应用、`mode: task`、`builtin` 执行体、effects 不含 external-submit。现有技能包继续经它加载 |
+| `parseVersionRange` / `satisfiesRange` | 范围是空格分隔、全部成立的比较子（`>=2 <3`、`=1.7.4`，裸版本即 `=`），最多三段数字，缺段为 0，预发布标签忽略。`runtimeContract` 对 `AGENT_RUNTIME_CONTRACT_VERSION`（`2.0.0`）判断，`applications[].versions` 对实际应用版本判断，不满足即 `capability_missing` |
+| `ApprovalMode` / `stricterApproval` | `trusted_within_ceiling` < `human_in_the_loop` < `locked_down`，各级设置取更严者 |
+| `Grant` | `(agentId, application, accountKey, effect)` 加 `mode`；`durable: false` 时必须有 `expiresAt` |
+| `ActionRefusalReason` / `NextStep` / `ApprovalHint` | 检查链拒绝的结构化原因与机器可读的下一步；`deny` 的 `guidance.hints` |
+| `AgentMessage` / `parseAgentMessage` | agent → Runtime 的 15 种消息。每条带 `v: 1`、`agentRunId`、严格递增的 `seq`、`at`；`observe` / `act` / `wait` / `ask_approval` / `ask_user` / `item` / `artifact` / `unit_*` / `task_finished` / `task_failed` 必须带 `taskId`，`create_task` / `heartbeat` / `agent_stopped` 属于整次运行。`act` 只查形状（含 `effect` 必填），effect 是否声明、是否授权、是否超限由 Runtime 的检查链判断，不在解析器 |
+| `RuntimeMessage` / `parseRuntimeMessage` | Runtime → agent 的 12 种消息，同样的基础规则；`action_result` 恰带 `result` 或 `refusal` 之一；其他语言写的 agent 用同一套规则校验输入 |
+
+与 Bridge JSONL 的关系：共用 `Observation`、`Action`、`ActionResult`、`WaitSpec`、`Locator` 等类型与 `validateAction`、`validateWaitSpec`；Bridge 是 Runtime 给单元目标、子进程自己执行，Agent 协议是子进程给每一步、Runtime 执行。两者并存，Bridge 不改。
+
