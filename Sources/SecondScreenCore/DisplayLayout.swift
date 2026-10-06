@@ -23,9 +23,12 @@ public enum DisplayLayout {
 
     /// Return every display still active to its origin in `before`, and put
     /// `newDisplay`, which `before` did not have, beside them. Returns true
-    /// once nothing needed moving, false after it asked macOS to rearrange.
+    /// once nothing needed moving, false after it asked macOS to rearrange
+    /// or while `configurator` is still busy with an earlier transaction.
+    /// The rearrangement runs on `configurator`, never on the caller's thread.
     @discardableResult
-    public static func place(_ newDisplay: CGDirectDisplayID?, restoring before: [CGDirectDisplayID: CGPoint]) -> Bool {
+    public static func place(_ newDisplay: CGDirectDisplayID?, restoring before: [CGDirectDisplayID: CGPoint],
+                             configurator: DisplayConfigurator = .shared) -> Bool {
         let active = Set(activeDisplays())
         let kept = before.filter { $0.key != newDisplay && active.contains($0.key) }
         var wanted = kept
@@ -35,13 +38,15 @@ public enum DisplayLayout {
         }
         let moves = wanted.filter { CGDisplayBounds($0.key).origin != $0.value }
         guard !moves.isEmpty else { return true }
-        var config: CGDisplayConfigRef?
-        guard CGBeginDisplayConfiguration(&config) == .success else { return false }
         // The main display anchors global coordinates at 0,0; it never moves.
-        for (id, origin) in wanted where id != CGMainDisplayID() {
-            CGConfigureDisplayOrigin(config, id, Int32(origin.x), Int32(origin.y))
+        let main = CGMainDisplayID()
+        let origins = wanted.filter { $0.key != main }
+        // Busy: this round is skipped; callers check again on their next round.
+        configurator.submit("arrangement of \(origins.count) display(s)") {
+            DisplayConfigurator.transaction { config in
+                for (id, origin) in origins { CGConfigureDisplayOrigin(config, id, Int32(origin.x), Int32(origin.y)) }
+            }
         }
-        CGCompleteDisplayConfiguration(config, .forSession)
         return false
     }
 

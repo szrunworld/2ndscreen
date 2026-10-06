@@ -57,6 +57,17 @@ public final class InputEngine {
         }
         var response = ControlResponse()
         response.window = WindowSummary(window)
+        if action.kind == .accessibilityPress {
+            // Only the element as the last state showed it; nothing is read afresh or resolved by text.
+            try Self.checkAccessibilityPress(action)
+            let snapshot = try cachedSnapshot(of: window)
+            guard let index = action.index, let info = snapshot.element(index: index), snapshot.handle(index) != nil else {
+                throw AccessibilityError("no element \(action.index ?? -1) in the window; run state again")
+            }
+            response.element = info
+            response.route = try Self.pressExplicitly(info) { AXActions.press(snapshot, index: index) }
+            return response
+        }
         let element = try resolve(action, in: window)
         response.element = element?.info
 
@@ -169,6 +180,10 @@ public final class InputEngine {
             response.route = try BackgroundInput.scroll(at: point, in: window, direction: direction,
                                                         notches: amount, byPage: action.by == "page")
 
+        case .accessibilityPress:
+            // Served above, before any element is resolved or any point checked.
+            throw AccessibilityError("accessibilityPress is not an event action")
+
         case .drag:
             guard let from = action.point, let toX = action.toX, let toY = action.toY else {
                 throw AccessibilityError("drag needs --from-x X --from-y Y --to-x X --to-y Y")
@@ -189,6 +204,45 @@ public final class InputEngine {
                                                                 duration: Double(action.durationMs ?? 500) / 1000)
         }
         return response
+    }
+
+    // MARK: Explicit accessibility press
+
+    /// The route an explicit accessibility press reports, distinct from the
+    /// `ax.press` a default click may take on a native control.
+    public static let explicitPressRoute = "ax.press.explicit"
+
+    /// An explicit press names one element by index and nothing else: no
+    /// text to resolve, no point, button, count, modifiers or other options.
+    public static func checkAccessibilityPress(_ action: InputAction) throws {
+        guard action.kind == .accessibilityPress else { throw AccessibilityError("not an accessibility press") }
+        guard let index = action.index, index >= 0 else {
+            throw AccessibilityError("an accessibility press needs --index N from state")
+        }
+        var extra: [String] = []
+        if action.text != nil { extra.append("--text") }
+        if action.x != nil || action.y != nil || action.toX != nil || action.toY != nil { extra.append("a point") }
+        if action.button != nil { extra.append("--right") }
+        if action.count != nil { extra.append("--double") }
+        if action.modifiers != nil { extra.append("--modifiers") }
+        if action.value != nil || action.replace != nil || action.key != nil || action.holdModifiers != nil
+            || action.direction != nil || action.amount != nil || action.by != nil
+            || action.foreground != nil || action.durationMs != nil { extra.append("options of other actions") }
+        guard extra.isEmpty else {
+            throw AccessibilityError("an accessibility press takes only --index; drop \(extra.joined(separator: ", "))")
+        }
+    }
+
+    /// Press `element` through accessibility: it must advertise AXPress and
+    /// the press must succeed. Nothing else is tried when it does not.
+    public static func pressExplicitly(_ element: AXElementInfo, press: () -> Bool) throws -> String {
+        guard AXActions.canPress(element) else {
+            throw AccessibilityError("element \(element.index) does not advertise AXPress; nothing was pressed")
+        }
+        guard press() else {
+            throw AccessibilityError("AXPress on element \(element.index) failed; no other input was sent")
+        }
+        return explicitPressRoute
     }
 
     // MARK: Helpers
@@ -223,6 +277,15 @@ public final class InputEngine {
             return Resolved(snapshot: snapshot, info: info)
         }
         return nil
+    }
+
+    /// The snapshot the last `window.state` of this window stored, never a new one.
+    private func cachedSnapshot(of window: WindowInfo) throws -> AXSnapshot {
+        lock.lock()
+        let cached = snapshots[window.windowID]
+        lock.unlock()
+        guard let cached else { throw AccessibilityError("no state of this window to take the index from; run state first") }
+        return cached
     }
 
     private func lastSnapshot(of window: WindowInfo) throws -> AXSnapshot {

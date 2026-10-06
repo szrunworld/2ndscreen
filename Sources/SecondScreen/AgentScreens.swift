@@ -95,18 +95,12 @@ final class AgentScreens {
     ///     where macOS allows 2x at this size.
     func create(name requested: String?, width: Int, height: Int, hiDPI requestedHiDPI: Bool?,
                 defaultHiDPI: Bool, ttl: TimeInterval?, idleTimeout: TimeInterval?, ownerPID: pid_t?) async -> ControlResponse {
-        guard screens.count < Self.limit else {
-            return .failure("at most \(Self.limit) agent screens can exist at once")
-        }
         let name = requested ?? nextName()
-        guard !name.isEmpty, screen(named: name) == nil, name != "2ndscreen" else {
-            return .failure("a screen named \"\(name)\" already exists")
+        if let refused = AgentScreenAdmission.failure(name: name, existing: screens.map(\.name), limit: Self.limit, ownerPID: ownerPID) {
+            return .failure(refused)
         }
         guard (320...6016).contains(width), (240...3384).contains(height) else {
             return .failure("size must be between 320x240 and 6016x3384 points")
-        }
-        if let ownerPID, kill(ownerPID, 0) != 0, errno == ESRCH {
-            return .failure("owner pid \(ownerPID) is not running")
         }
         if let ttl, ttl <= 0 { return .failure("--ttl must be positive") }
         let mode = VirtualDisplay.Mode(width: width, height: height)
@@ -116,24 +110,44 @@ final class AgentScreens {
                 + " on its long side and 525 on its short side; use --no-hidpi or a larger --size")
         }
         let hiDPI = requestedHiDPI ?? (defaultHiDPI && hiDPIAllowed)
+        // Not while a configuration WindowServer has not finished is outstanding,
+        // nor while the user's displays sleep; the displays are kept awake meanwhile.
+        return await displayWork.run("2ndscreen: creating agent screen \(name)", refused: { .failure($0.message()) }) {
+            await createDisplay(name: name, mode: mode, hiDPI: hiDPI, requestedHiDPI: requestedHiDPI,
+                                defaultHiDPI: defaultHiDPI, ttl: ttl, idleTimeout: idleTimeout, ownerPID: ownerPID)
+        }
+    }
+
+    private func createDisplay(name: String, mode: VirtualDisplay.Mode, hiDPI: Bool, requestedHiDPI: Bool?,
+                               defaultHiDPI: Bool, ttl: TimeInterval?, idleTimeout: TimeInterval?,
+                               ownerPID: pid_t?) async -> ControlResponse {
+        // displayWork may have waited: another request can have taken the name or the
+        // last slot, or the owner exited. Checked again here, with no suspension point
+        // from now until the screen is appended.
+        if let refused = AgentScreenAdmission.failure(name: name, existing: screens.map(\.name), limit: Self.limit, ownerPID: ownerPID) {
+            return .failure(refused)
+        }
         let arrangement = DisplayLayout.origins()
         let windowsBefore = WindowMover.allWindows()
         // A serial whose remembered unit number is already taken gives a
         // screen that captures as another one; try the next serial instead.
         var tried: Set<UInt32> = []
-        var created: (VirtualDisplay, UInt32)?
+        var created: (VirtualDisplay, UInt32, ScreenRef)?
         while created == nil, tried.count < Self.serialAttempts {
             let serial = nextSerial(excluding: tried)
             tried.insert(serial)
+            // One per attempt: macOS tearing a display down removes the screen made from that
+            // display only; a display given up for its unit number never removes anything.
+            let owner = ScreenRef()
             guard let display = VirtualDisplay(
                 name: name, mode: mode, hiDPI: hiDPI, reserving: [mode], serialNumber: serial,
-                onTerminate: { [weak self] in self?.remove(named: name) })
+                onTerminate: { [weak self] in owner.screen.map { self?.remove($0) } })
             else {
                 return .failure("macOS refused to create a \(mode)\(hiDPI ? " HiDPI" : "") display")
             }
-            if !VirtualDisplay.sharesUnitNumber(display.displayID) { created = (display, serial) }
+            if !VirtualDisplay.sharesUnitNumber(display.displayID) { created = (display, serial, owner) }
         }
-        guard let (display, serial) = created else {
+        guard let (display, serial, owner) = created else {
             return .failure("macOS gave every new display the unit number of an existing one;"
                 + " destroy a screen and try again")
         }
@@ -142,6 +156,7 @@ final class AgentScreens {
                             deadline: ttl.map { Date().addingTimeInterval($0) },
                             idleTimeout: idle > 0 ? idle : nil, ownerPID: ownerPID,
                             prefersHiDPI: requestedHiDPI ?? defaultHiDPI)
+        owner.screen = screen
         screens.append(screen)
         startReaping()
         onChange?()
@@ -155,16 +170,45 @@ final class AgentScreens {
         }
         // macOS can accept the settings yet run the display in another mode.
         // A screen of the wrong size breaks every frame an agent computes.
+        // Destroyed (and its name possibly reused) while it settled: report that, not another screen.
+        guard isRegistered(screen) else { return .failure(Self.goneWhileCreating(name)) }
+        // Resized by another request meanwhile: that request owns the size now; do not claim this one.
+        guard display.mode == mode, display.hiDPI == hiDPI else { return .failure(Self.resizedWhileCreating(name, display)) }
         guard display.isSettled else {
             let actual = CGDisplayCopyDisplayMode(display.displayID)
                 .map { "\($0.width)×\($0.height)\($0.pixelWidth > $0.width ? " HiDPI" : "")" } ?? "no mode"
-            remove(named: name)
-            return .failure("macOS ran the screen at \(actual) instead of \(mode)\(hiDPI ? " HiDPI" : "")")
+            let pending = DisplayConfigurator.shared.pending.map {
+                "; a display configuration (\($0.label)) has been waiting on WindowServer for"
+                    + " \(Int(-$0.since.timeIntervalSinceNow)) s and cannot be cancelled"
+            } ?? ""
+            remove(screen)
+            return .failure("macOS ran the screen at \(actual) instead of \(mode)\(hiDPI ? " HiDPI" : "")\(pending)")
         }
         await keepArrangement(arrangement, adding: display.displayID, windows: windowsBefore)
+        guard isRegistered(screen) else { return .failure(Self.goneWhileCreating(name)) }
+        guard display.mode == mode, display.hiDPI == hiDPI else { return .failure(Self.resizedWhileCreating(name, display)) }
         var response = ControlResponse()
         response.screen = info(screen)
         return response
+    }
+
+    static func goneWhileCreating(_ name: String) -> String {
+        "the screen \"\(name)\" was destroyed while it was being created"
+    }
+
+    static func resizedWhileCreating(_ name: String, _ display: VirtualDisplay) -> String {
+        "the screen \"\(name)\" was created but another request resized it to \(display.mode)\(display.hiDPI ? " HiDPI" : "")"
+            + " before creation finished; it still exists"
+    }
+
+    /// Whether `screen` itself is still one of this app's screens; a newer screen of the same name is not.
+    private func isRegistered(_ screen: Screen) -> Bool {
+        screens.contains { $0 === screen }
+    }
+
+    /// Set once the screen exists, for the display's termination handler made before it.
+    private final class ScreenRef {
+        weak var screen: Screen?
     }
 
     func destroy(name: String) -> ControlResponse {
@@ -385,9 +429,16 @@ final class AgentScreens {
     // MARK: Helpers
 
     private func remove(named name: String) {
-        guard screen(named: name) != nil else { return }
+        guard let screen = screen(named: name) else { return }
+        remove(screen)
+    }
+
+    /// Remove exactly `screen`; nothing if it is already gone, even if another screen now has its name.
+    private func remove(_ screen: Screen) {
+        guard isRegistered(screen) else { return }
+        let name = screen.name
         let arrangement = userArrangement()
-        screens.removeAll { $0.name == name }
+        screens.removeAll { $0 === screen }
         bindings = bindings.filter { $0.value.screen != name }
         onChange?()
         // The display goes once nothing holds it; macOS may then close the
@@ -500,12 +551,25 @@ final class AgentScreens {
             return .failure("this screen can be resized between 320x240 and \(largest.width)x\(largest.height)"
                 + " points; create a new one for a larger size")
         }
-        guard await apply(VirtualDisplay.Mode(width: width, height: height), to: screen) else {
-            return .failure("macOS did not switch the screen to \(width)×\(height)")
+        return await displayWork.run("2ndscreen: resizing agent screen \(name)", refused: { .failure($0.message()) }) {
+            // The guard may have waited: act only on this very screen, not one recreated under its name.
+            guard isRegistered(screen) else { return .failure(Self.goneWhileResizing(name)) }
+            let wanted = VirtualDisplay.Mode(width: width, height: height)
+            guard await apply(wanted, to: screen) else {
+                if !isRegistered(screen) { return .failure(Self.goneWhileResizing(name)) }
+                if screen.display.mode != wanted {
+                    return .failure("another request resized the screen to \(screen.display.mode) before this resize finished")
+                }
+                return .failure("macOS did not switch the screen to \(width)×\(height)")
+            }
+            var response = ControlResponse()
+            response.screen = info(screen)
+            return response
         }
-        var response = ControlResponse()
-        response.screen = info(screen)
-        return response
+    }
+
+    static func goneWhileResizing(_ name: String) -> String {
+        "the screen \"\(name)\" was destroyed or replaced before the resize finished"
     }
 
     /// The smallest screen that holds a window of `size` below a menu bar of
@@ -553,12 +617,16 @@ final class AgentScreens {
         }
         screen.resizing = true
         Task { @MainActor in
-            _ = await self.apply(wanted, to: screen)
+            _ = await self.displayWork.run("2ndscreen: fitting agent screen \(screen.name)", refused: { _ in false }) {
+                self.isRegistered(screen) ? await self.apply(wanted, to: screen) : false
+            }
+            screen.resizing = false
+            // Destroyed meanwhile: its windows are no longer this screen's to place.
+            guard self.isRegistered(screen) else { return }
             let visible = WindowMover.visibleFrame(of: screen.display.displayID)
             if let current = WindowMover.windows(ofPID: pid).first(where: { $0.windowID == window.windowID }) {
                 WindowMover.restore(current, to: Self.topCentered(current.frame.size, in: visible))
             }
-            screen.resizing = false
         }
     }
 
@@ -568,14 +636,18 @@ final class AgentScreens {
     }
 
     /// Switch the display's mode and wait for macOS to settle on it.
+    /// Callers hold `displayWork` around it.
     private func apply(_ mode: VirtualDisplay.Mode, to screen: Screen) async -> Bool {
         let hiDPI = screen.prefersHiDPI && VirtualDisplay.supportsHiDPI(mode)
         guard screen.display.apply(mode, hiDPI: hiDPI) else { return false }
         for _ in 0..<40 where !screen.display.isSettled {
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
+        // Removed while settling: no preview update for it, and no success.
+        guard isRegistered(screen) else { return false }
         onResize?(screen.name)
-        return screen.display.isSettled
+        // isSettled reads the latest request; a newer resize meanwhile means this one did not win.
+        return screen.display.mode == mode && screen.display.hiDPI == hiDPI && screen.display.isSettled
     }
 
     // MARK: Following new windows
@@ -661,6 +733,9 @@ final class AgentScreens {
         UserDefaults.standard.set(Int(following(serial)), forKey: key)
         return serial
     }
+
+    /// Preconditions and the display-sleep hold for creating and resizing screens.
+    private let displayWork = DisplayWork()
 
     /// The window list lags a move by a few frames. Wait until one of the
     /// app's windows shows up on `target` (at most a second), then report.
