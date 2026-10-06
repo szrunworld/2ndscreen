@@ -327,15 +327,19 @@ type Snapshot = Pick<Observation, 'snapshotId' | 'pageClass'>;
 /**
  * Children through node:child_process, each leading its own process group,
  * so a signal reaches anything it started. stderr is drained and dropped.
+ * Children inherit the runtime's environment unless `inheritEnv` is false;
+ * then they get exactly the variables passed.
  * `exited()` resolves only once the child has exited and its whole group is
  * confirmed gone: descendants left holding stdout are killed, and stdout is
  * closed. Once the child has exited, `kill` sends nothing: the cleanup owns
  * the group, and a pid that is gone may be reused.
  */
-export function createLineProcessSpawner(): LineProcessSpawner {
+export function createLineProcessSpawner(options: { inheritEnv?: boolean } = {}): LineProcessSpawner {
+  // Agents get only the environment their host builds: no inherited keys.
+  const inherit = options.inheritEnv ?? true;
   return (file, args, env) => {
     const child = spawnChild(file, [...args], {
-      env: env ? { ...process.env, ...env } : process.env,
+      env: inherit ? (env ? { ...process.env, ...env } : process.env) : { ...env },
       stdio: ['pipe', 'pipe', 'pipe'],
       detached: true,
     });

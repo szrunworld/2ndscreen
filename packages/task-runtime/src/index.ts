@@ -7,6 +7,7 @@
 
 export * from './contracts.ts';
 export * from './agent-contracts.ts';
+export * from './agent-host.ts';
 export {
   loadSkills,
   openControlClient,

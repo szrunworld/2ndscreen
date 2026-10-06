@@ -424,6 +424,7 @@ export type ActionRefusalReason =
   | 'target_unknown_result'
   | 'lease_held'
   | 'checker_denied'
+  | 'approval_required'
   | 'approval_denied';
 
 export const ACTION_REFUSAL_REASONS: readonly ActionRefusalReason[] = [
@@ -438,6 +439,7 @@ export const ACTION_REFUSAL_REASONS: readonly ActionRefusalReason[] = [
   'target_unknown_result',
   'lease_held',
   'checker_denied',
+  'approval_required',
   'approval_denied',
 ];
 
@@ -498,7 +500,15 @@ export type RuntimeMessage = MessageBase &
         resume?: { tasks: Array<{ taskId: string; taskType: string; checkpoint?: unknown }> };
       }
     | { type: 'task_start'; taskId: string; taskType: string; input: unknown; budget: Budget; session: { screenId: string; apps: SessionApp[] } }
-    | { type: 'observation'; taskId?: string; requestId: string; app: string; observation: Observation }
+    | {
+        type: 'observation';
+        taskId?: string;
+        requestId: string;
+        app: string;
+        observation: Observation;
+        /** Present when this answers a `wait`: whether the condition held before the timeout. */
+        check?: { ok: boolean; elapsedMs?: number; evidence: string[] };
+      }
     | { type: 'action_result'; taskId: string; requestId: string; result: ActionResult }
     | { type: 'action_result'; taskId: string; requestId: string; refusal: ActionRefusal }
     | { type: 'provider_result'; taskId?: string; requestId: string; ok: true; output: unknown; usage?: { inputTokens: number | 'unknown'; outputTokens: number | 'unknown' } }
@@ -522,10 +532,26 @@ export type HeartbeatState = 'idle' | 'working' | 'waiting' | 'paused';
 export type AgentMessage = MessageBase &
   (
     | { type: 'observe'; taskId: string; requestId: string; app: string; elements?: boolean; screenshot?: boolean | { region: Rect }; text?: boolean }
-    | { type: 'act'; taskId: string; requestId: string; app: string; action: Action; snapshotId?: string }
+    | {
+        type: 'act';
+        taskId: string;
+        requestId: string;
+        app: string;
+        action: Action;
+        snapshotId?: string;
+        /**
+         * The agent's stable key for the business target, e.g. a salted
+         * candidate hash. An external-submit with an unknown result blocks
+         * further external-submits on the same target; without a target it
+         * blocks every external-submit of the task.
+         */
+        target?: string;
+        /** The granted `ask_approval` this act carries out; used once. */
+        approvalId?: string;
+      }
     | { type: 'wait'; taskId: string; requestId: string; app: string; wait: WaitSpec }
     | { type: 'provider'; taskId?: string; requestId: string; providerId: string; purpose: ProviderPurpose; input: unknown; screenshotRef?: string }
-    | { type: 'ask_approval'; taskId: string; approvalId: string; effect: EffectClass; summary: string; action?: Action; target?: string }
+    | { type: 'ask_approval'; taskId: string; approvalId: string; effect: EffectClass; summary: string; app?: string; action?: Action; target?: string }
     | { type: 'ask_user'; taskId: string; reason: WaitReason; message: string }
     | { type: 'create_task'; requestId: string; taskType: string; input: unknown }
     | { type: 'item'; taskId: string; itemId: string; status: WorkItemStatus; data?: Record<string, unknown> }
@@ -648,6 +674,8 @@ export function parseAgentMessage(line: string, expected?: ExpectedMessage): Val
       needApp();
       errors.push(...validateAction(raw.action, { submitAllowed: true }));
       if (raw.snapshotId !== undefined && !isNonEmpty(raw.snapshotId)) errors.push('snapshotId must be a non-empty string when present');
+      if (raw.target !== undefined && !isNonEmpty(raw.target)) errors.push('target must be a non-empty string when present');
+      if (raw.approvalId !== undefined && !isNonEmpty(raw.approvalId)) errors.push('approvalId must be a non-empty string when present');
       break;
     case 'wait':
       needRequest();
@@ -667,6 +695,7 @@ export function parseAgentMessage(line: string, expected?: ExpectedMessage): Val
       if (!isNonEmpty(raw.summary)) errors.push('summary is required');
       if (raw.action !== undefined) errors.push(...validateAction(raw.action, { submitAllowed: true }));
       if (raw.target !== undefined && !isNonEmpty(raw.target)) errors.push('target must be a non-empty string when present');
+      if (raw.app !== undefined && (!isNonEmpty(raw.app) || raw.app.includes(':'))) errors.push('app must be a bundle id when present');
       break;
     case 'ask_user':
       if (!oneOf(raw.reason, WAIT_REASONS)) errors.push('reason is not a wait reason');
@@ -832,6 +861,7 @@ export function parseRuntimeMessage(line: string, expected?: ExpectedMessage): V
       needRequest();
       if (!isNonEmpty(raw.app)) errors.push('app is required');
       if (!isObject(raw.observation) || !isNonEmpty(raw.observation.snapshotId) || !isObject(raw.observation.window)) errors.push('observation must carry snapshotId and window');
+      if (raw.check !== undefined && (!isObject(raw.check) || typeof raw.check.ok !== 'boolean' || !Array.isArray(raw.check.evidence))) errors.push('check must carry ok and evidence');
       break;
     case 'action_result': {
       needTask();
