@@ -44,7 +44,7 @@ import {
   type Session,
   type StagedArtifact,
   type StagingArea,
-} from '../../../../packages/task-runtime/src/contracts.ts';
+} from '../contracts.ts';
 import { centerOf, clickElement, clickPoint, delivered, look, pollFor, scrollOver, sleep, type Env, type Trace } from './actions.ts';
 import { normalize } from './candidates.ts';
 import { ACTIVITY_NOTE, attachmentPreview, openChat, requestDialog, resumeOverlay, text, type ResumeOverlay } from './pages.ts';

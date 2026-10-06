@@ -14,7 +14,7 @@ import {
   type Observation,
   type Rect,
   type UIElement,
-} from '../../../../packages/task-runtime/src/contracts.ts';
+} from '../contracts.ts';
 import { ALL_JOBS, MARKERS, jobFilter, listRows, openChat, text } from './pages.ts';
 
 const sha = (s: string) => createHash('sha256').update(s).digest('hex');

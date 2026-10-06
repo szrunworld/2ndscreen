@@ -10,7 +10,7 @@ import type {
   CheckResult,
   Observation,
   UnitContext,
-} from '../../../../packages/task-runtime/src/contracts.ts';
+} from '../contracts.ts';
 import { identify, listCandidates, listEnded, normalize } from './candidates.ts';
 import { look, type Env } from './actions.ts';
 import { DEFAULT_CAPTURE_LIMITS, readResumeHeader, type CaptureLimits, type HeaderReading } from './capture.ts';

@@ -12,9 +12,9 @@ import {
   type Observation,
   type Rect,
   type UIElement,
-} from '../../../../packages/task-runtime/src/contracts.ts';
-import { chat } from '../chat.ts';
-import { conversations, type Element, type Frame } from '../parse.ts';
+} from '../contracts.ts';
+import { chat } from './chat.ts';
+import { conversations, type Element, type Frame } from './parse.ts';
 
 export const text = (e: Pick<UIElement, 'label' | 'value'>): string => (e.value ?? e.label ?? '').trim();
 

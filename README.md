@@ -408,8 +408,9 @@ To install it elsewhere:
 export SECONDSCREEN_TASK_RUNTIME=/some/dir
 ```
 
-The old reply assistant (`agents/boss`) and task runs share one lease on
-BOSS直聘 in the task ledger, so they never act on it at the same time.
+Task runs take a lease on BOSS直聘 in the task ledger (`leaseScopeKey` in
+`packages/task-runtime/src/contracts.ts`), so two of them, or another
+agent that takes the same lease, never act on it at the same time.
 
 ## iPhone
 

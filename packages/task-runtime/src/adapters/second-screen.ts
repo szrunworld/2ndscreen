@@ -5,7 +5,7 @@
 // drives one window. It never resolves semantic locators (the Session does)
 // and never retries an action.
 //
-// Ownership follows agents/boss/src/setup.ts: an app already running off the
+// Ownership: an app already running off the
 // screen is only moved there when the caller passes takeOver; the screen is
 // created with the worker as its owner process and an idle timeout, so a
 // crashed worker does not leave a screen behind forever.

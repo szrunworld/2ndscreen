@@ -20,7 +20,7 @@ import {
   type Session,
   type TelemetryRecorder,
   type UIElement,
-} from '../../../../packages/task-runtime/src/contracts.ts';
+} from '../contracts.ts';
 import { assertSafeLabel, classifyPage, text } from './pages.ts';
 
 export interface Env {
