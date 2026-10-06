@@ -147,6 +147,14 @@ public final class InputEngine {
                                                          holdModifiers: action.holdModifiers ?? false)
             }
 
+        case .hover:
+            guard let point = action.point ?? element?.info.center else {
+                throw AccessibilityError(element == nil ? "give --index N, --text TEXT, or --x X --y Y"
+                    : "the element has no frame to hover over")
+            }
+            cursor(.move, point)
+            response.route = try BackgroundInput.hover(at: point, in: window)
+
         case .scroll:
             let directions = ["up", "down", "left", "right"]
             guard let direction = action.direction?.lowercased(), directions.contains(direction) else {

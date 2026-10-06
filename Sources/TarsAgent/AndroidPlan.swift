@@ -29,6 +29,10 @@ public enum AndroidPlan {
             let tap = ["tap"] + point(p)
             return action.count == 2 ? [tap, tap] : [tap]
 
+        case .hover:
+            // A touch screen has no pointer to rest anywhere.
+            return []
+
         case .drag:
             guard let from = action.point, let toX = action.toX, let toY = action.toY else {
                 throw AndroidPlan.Failure("drag without both points")

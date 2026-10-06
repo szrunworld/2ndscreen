@@ -232,8 +232,12 @@ public enum Planner {
             return [.stop(.user, action.type)]
 
         case "hover", "mouse_move":
-            // Nothing to do: agents act without moving a pointer.
-            return []
+            // Rest on the point, for menus and panels a page opens on hover.
+            guard let start else { return [] }
+            var hover = InputAction(.hover)
+            hover.x = start.x
+            hover.y = start.y
+            return [.act(hover)]
 
         default:
             return [.stop(.user, "unsupported action \(action.type)")]

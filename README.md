@@ -141,8 +141,8 @@ Things to know:
 - The menu lists agent screens, each with its own preview, its windows,
   and **Destroy**.
 
-Agents then look and act with `state`, `click`, `type`, `key` and
-`scroll`, which work in the background and show the agent cursor:
+Agents then look and act with `state`, `click`, `type`, `key`, `scroll`
+and `hover`, which work in the background and show the agent cursor:
 
 ```bash
 $CLI state --screen test-a --pid 1234 [--screenshot before.png]   # elements + accessibility tree
@@ -181,6 +181,16 @@ background page never sees them. Typing into a web field by `--index` or
 reaches a list nested inside a larger window; with neither, over the
 middle of the window. A right click reaches the app by two routes, so
 some apps see it twice; check a context menu before acting on it.
+
+`hover` rests the pointer on an element or point without clicking, for
+menus, panels and tooltips a page opens on hover; the page keeps the hover
+until the next mouse event, so its options can then be clicked as usual.
+Chromium ignores mouse moves posted to a background window but takes
+hover from a button event, so this is a middle-button press and release at
+the point: the page sees `auxclick` and no `click`. Not for links, which
+Chromium opens on a middle click. Many panels that look hover-only open on
+a click too: BOSS直聘's 筛选 panel opens with `click --x --y`, and its
+options take clicks, in the background.
 
 While an action runs, and for a second after, a guard puts the user's app
 back if the target or anything else takes the foreground. An activation
@@ -293,8 +303,8 @@ agent, or install it as a Claude Code skill.
 
 `2ndscreen mcp` serves the commands above, except `agent`, as MCP tools over stdio:
 `screen_create`, `screen_list`, `screen_destroy`, `app_launch`,
-`window_move`, `screenshot`, `state`, `click`, `type`, `key`, `scroll` and
-`drag`. Each tool
+`window_move`, `screenshot`, `state`, `click`, `type`, `key`, `scroll`,
+`drag` and `hover`. Each tool
 runs the matching CLI command, so the guards and output are identical.
 `screenshot`, and `state` with `screenshot: true`, also return the image,
 downscaled to 1280 px as JPEG.
