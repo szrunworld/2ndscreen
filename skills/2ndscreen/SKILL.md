@@ -104,6 +104,25 @@ CLI=2ndscreen   # or <repo>/.build/release/2ndscreen
    what you wanted: success means the UI changed. Run `state` again, or
    take a screenshot, and check for what you expected.
 
+   The `route` in each result tells you how much to check:
+
+   | `route` | Meaning | What to do |
+   | --- | --- | --- |
+   | `ax.press`, `ax.press.explicit`, `ax.insert`, `ax.value` | Done through accessibility; the control took it, or the field shows the text | Check the outcome as usual |
+   | `ax.insert.unconfirmed`, `ax.value.unconfirmed` | The text went in, but the field had not shown it yet | `state` and read the field; do not type it again blindly, or it goes in twice |
+   | `event.click`, `event.double`, `event.right`, `event.hover`, `event.wheel` (also with `.overlay`) | Mouse events posted; nothing confirms the app acted | Always check with `state` or a screenshot |
+   | `event.unicode`, `event.key`, `event.key.menu`, `event.key.held`, `event.click+...` | Keys posted; nothing confirms the app acted | Read the field or the window again |
+   | `hid.drag` | A foreground drag with the real pointer | Check; drags are often lost |
+
+   `.overlay` means the point lay in a popup or menu of the app, and the
+   events went there. A plain `click` on a native control answers
+   `ax.press` when the control can be pressed and falls back to
+   `event.click` when it cannot. If an `event.click` changed nothing,
+   the control may ignore posted clicks: try
+   `$CLI ax-press --screen login-test --pid PID --index N`, which presses
+   through accessibility only and fails rather than falling back. Not in
+   web content, where a press reports success that the page never sees.
+
    `agent` runs a whole task with a vision model, if the user has set one
    up. It acts on the controls accessibility lists, and by sight on what
    it does not list, so it also works in apps that draw their own
@@ -164,8 +183,9 @@ anything they did not ask for.
 ## Rules
 
 - Act only on windows of apps you launched. `state`, `click`, `type`,
-  `key`, `scroll`, `drag` and `hover` refuse windows that are not on the named screen; do not move the
-  user's windows onto your screen to get around that.
+  `key`, `scroll`, `drag`, `hover` and `ax-press` refuse windows that are
+  not on the named screen; do not move the user's windows onto your
+  screen to get around that.
 - Indexes come from the window's latest `state`. Run `state` again after
   the UI changes before reusing an index.
 - A window must lie wholly on its screen, or screenshots of it are clipped
