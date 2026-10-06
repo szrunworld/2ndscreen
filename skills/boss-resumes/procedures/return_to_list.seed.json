@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 2,
+  "id": "seed.boss.collect-resumes.return_to_list.1",
+  "key": {
+    "skill": "boss.collect-resumes",
+    "skillVersion": "1.0.0",
+    "unit": "return_to_list",
+    "platform": "macos",
+    "appVersion": "1.7.4",
+    "profile": "boss-macos-1440x900"
+  },
+  "version": 1,
+  "status": "seeded",
+  "source": "seed",
+  "parameters": [],
+  "preconditions": [],
+  "postconditions": [
+    { "kind": "text", "pattern": "举报", "present": false },
+    { "kind": "text", "pattern": "确定向牛人请求简历", "present": false }
+  ],
+  "steps": [
+    {
+      "id": "escape-overlay",
+      "action": { "kind": "key", "key": "escape", "effect": "navigation" },
+      "expect": {
+        "condition": { "kind": "text", "pattern": "举报", "present": false },
+        "timeoutMs": 5000,
+        "pollMs": 250
+      }
+    }
+  ],
+  "counters": { "successes": 0, "failures": 0, "successItemIds": [], "consecutiveFailures": 0 },
+  "createdAt": "2026-10-04T00:00:00.000Z",
+  "updatedAt": "2026-10-04T00:00:00.000Z"
+}

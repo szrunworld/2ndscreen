@@ -12,8 +12,9 @@ import { createInterface } from 'node:readline/promises';
 import { parseArgs } from 'node:util';
 import { Boss, sleep } from './boss.ts';
 import { draftReply } from './draft.ts';
+import { AppLease, LeaseBusyError } from './lease.ts';
 import type { Conversation } from './parse.ts';
-import { defaults, Setup } from './setup.ts';
+import { BOSS_BUNDLE, defaults, Setup } from './setup.ts';
 import { Store } from './store.ts';
 
 const usage = `usage: boss --auto [--take-over] [--brief TEXT] [--interval SECONDS] [--max N]
@@ -43,6 +44,12 @@ Without a terminal to ask, drafts stay in the box unsent.
                    once, and exit
   --state FILE     what has been handled, kept across restarts
                    (default ~/.config/2ndscreen/boss-state.json)
+
+BOSS直聘 is shared with 2ndscreen task runs (2ndscreen task run
+boss.collect-resumes): each check first takes the BOSS直聘 lease in the task
+ledger and gives it back when the check ends. While a task holds it the
+check is skipped; if the lease is lost midway the check stops before its
+next action.
 
 Environment: ARK_API_KEY, and optionally ARK_TEXT_MODEL (default
 doubao-seed-2-1-lite-260915), ARK_BASE_URL, SECONDSCREEN_CLI, and for
@@ -77,15 +84,21 @@ if (!process.env.ARK_API_KEY) {
 
 const log = (line: string) => console.error(`${new Date().toLocaleTimeString()} ${line}`);
 const store = new Store(values.state);
+/** The BOSS直聘 lease for the check under way; every command checks it first. */
+let lease: AppLease | undefined;
+const fence = () => {
+  if (!lease) throw new Error('acting on BOSS直聘 without its lease');
+  lease.check();
+};
 const setup = values.auto
-  ? new Setup({ ...defaults(values.screen ?? 'boss'), takeOver: values['take-over'], log }, store)
+  ? new Setup({ ...defaults(values.screen ?? 'boss'), takeOver: values['take-over'], log, fence }, store)
   : undefined;
 if (setup) {
   // The Boss commands go to the side instance too.
   process.env.SECONDSCREEN_SOCKET = setup.options.socket;
   process.env.SECONDSCREEN_CLI = setup.options.cli;
 }
-let boss = setup ? undefined : new Boss(values.screen!, Number(values.pid), values['window-id'] ? Number(values['window-id']) : undefined);
+let boss = setup ? undefined : new Boss(values.screen!, Number(values.pid), values['window-id'] ? Number(values['window-id']) : undefined, undefined, fence);
 const ask = process.stdin.isTTY ? createInterface({ input: process.stdin, output: process.stderr }) : undefined;
 const key = (c: Conversation) => `${c.name}|${c.time}|${c.preview}`;
 let quitting = false;
@@ -126,15 +139,33 @@ async function handle(boss: Boss, conversation: Conversation): Promise<void> {
   }
 }
 
+const releaseLease = async () => {
+  const held = lease;
+  lease = undefined;
+  await held?.release();
+};
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  process.once(signal, () => void releaseLease().finally(() => process.exit(130)));
+}
+
 for (;;) {
   try {
-    if (setup) {
-      // Rebuild whatever went missing since the last check.
-      const where = await setup.ensure();
-      boss = where ? new Boss(setup.options.screen, where.pid, where.windowId, setup.options.cli) : undefined;
+    try {
+      lease = await AppLease.acquire({ bundleId: BOSS_BUNDLE });
+    } catch (error) {
+      if (!(error instanceof LeaseBusyError)) throw error;
+      log(`BOSS直聘 is in use by a task, skipping this check: ${error.message}`);
     }
-    if (!boss) {
-      // Setup said why; try again next time.
+    if (lease) {
+      if (setup) {
+        // Rebuild whatever went missing since the last check.
+        const where = await setup.ensure();
+        boss = where ? new Boss(setup.options.screen, where.pid, where.windowId, setup.options.cli, fence) : undefined;
+      }
+    }
+    if (!boss || !lease) {
+      // Setup or the lease said why; try again next time, leaving BOSS直聘 free meanwhile.
+      await releaseLease();
       if (values.once || values.name) break;
       await sleep(Number(values.interval) * 1000);
       continue;
@@ -158,6 +189,9 @@ for (;;) {
     }
   } catch (error) {
     log(`error: ${(error as Error).message}`);
+  } finally {
+    // Between checks BOSS直聘 is free for tasks.
+    await releaseLease();
   }
   if (values.once || values.name || quitting) break;
   await sleep(Number(values.interval) * 1000);
