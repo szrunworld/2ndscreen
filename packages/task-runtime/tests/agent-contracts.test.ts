@@ -198,10 +198,10 @@ test('every agent message type parses when well-formed', () => {
   const click = { kind: 'click', target: { kind: 'element', role: 'AXButton', label: '求简历' }, effect: 'external-submit' };
   const messages: Array<Record<string, unknown>> = [
     { seq: 1, type: 'observe', taskId: 't1', requestId: 'r1', app: 'com.zhipin.www', elements: true, screenshot: { region: { x: 0, y: 0, width: 10, height: 10 } } },
-    { seq: 2, type: 'act', taskId: 't1', requestId: 'r2', app: 'com.zhipin.www', action: click, snapshotId: 's1' },
+    { seq: 2, type: 'act', taskId: 't1', requestId: 'r2', app: 'com.zhipin.www', action: click, snapshotId: 's1', target: 'cand:abc', approvalId: 'a1' },
     { seq: 3, type: 'wait', taskId: 't1', requestId: 'r3', app: 'com.zhipin.www', wait: { condition: { kind: 'text', pattern: '已发送', present: true }, timeoutMs: 5000 } },
     { seq: 4, type: 'provider', taskId: 't1', requestId: 'r4', providerId: 'ark-text', purpose: 'draft', input: { prompt: '…' } },
-    { seq: 5, type: 'ask_approval', taskId: 't1', approvalId: 'a1', effect: 'external-submit', summary: '向 1 位候选人求简历', action: click, target: 'cand:abc' },
+    { seq: 5, type: 'ask_approval', taskId: 't1', approvalId: 'a1', effect: 'external-submit', summary: '向 1 位候选人求简历', app: 'com.zhipin.www', action: click, target: 'cand:abc' },
     { seq: 6, type: 'ask_user', taskId: 't1', reason: 'login_required', message: '请登录' },
     { seq: 7, type: 'create_task', requestId: 'r5', taskType: 'request-resumes', input: { candidateKey: 'k' } },
     { seq: 8, type: 'item', taskId: 't1', itemId: 'i1', status: 'committed', data: { count: 1 } },
@@ -248,6 +248,9 @@ test('malformed agent message bodies are named', () => {
   refuse({ seq: 1, type: 'provider', requestId: 'r', providerId: 'p', purpose: 'fly', input: 1 }, 'purpose must be one of');
   refuse({ seq: 1, type: 'provider', requestId: 'r', providerId: 'p', purpose: 'draft' }, 'input is required');
   refuse({ seq: 1, type: 'ask_approval', taskId: 't', approvalId: 'a', effect: 'read' }, 'summary is required');
+  refuse({ seq: 1, type: 'ask_approval', taskId: 't', approvalId: 'a', effect: 'read', summary: 's', app: 'a:b' }, 'app must be a bundle id when present');
+  refuse({ seq: 1, type: 'act', taskId: 't', requestId: 'r', app: 'com.x', action: { kind: 'key', key: 'a', effect: 'read' }, target: '' }, 'target must be a non-empty string');
+  refuse({ seq: 1, type: 'act', taskId: 't', requestId: 'r', app: 'com.x', action: { kind: 'key', key: 'a', effect: 'read' }, approvalId: '' }, 'approvalId must be a non-empty string');
   refuse({ seq: 1, type: 'create_task', requestId: 'r', taskType: 'Bad', input: {} }, 'taskType must be a task type name');
   refuse({ seq: 1, type: 'item', taskId: 't', itemId: 'i', status: 'done' }, 'status is not a work item status');
   refuse({ seq: 1, type: 'artifact', taskId: 't', path: 'a', kind: 'original', completeness: 'complete', sha256: 'xyz' }, 'sha256 must be 64 hex digits');
@@ -305,7 +308,7 @@ test('every runtime message type parses when well-formed', () => {
       resume: { tasks: [{ taskId: 't0', taskType: 'request-resumes', checkpoint: { cursor: 3 } }] },
     },
     { seq: 2, type: 'task_start', taskId: 't1', taskType: 'request-resumes', input: {}, budget: {}, session: { screenId: 'boss', apps: [{ bundleId: 'com.zhipin.www', pid: 4242, windowId: 77 }] } },
-    { seq: 3, type: 'observation', taskId: 't1', requestId: 'r1', app: 'com.zhipin.www', observation: { snapshotId: 's1', sessionId: 'ses', takenAt: base.at, window: { frame: {}, contentFrame: {}, scale: 2 } } },
+    { seq: 3, type: 'observation', taskId: 't1', requestId: 'r1', app: 'com.zhipin.www', observation: { snapshotId: 's1', sessionId: 'ses', takenAt: base.at, window: { frame: {}, contentFrame: {}, scale: 2 } }, check: { ok: true, evidence: [] } },
     { seq: 4, type: 'action_result', taskId: 't1', requestId: 'r2', result: { actionId: 'r2', status: 'ok', startedAt: base.at, finishedAt: base.at } },
     { seq: 5, type: 'action_result', taskId: 't1', requestId: 'r3', refusal: { reason: 'too_fast', message: 'wait', nextSteps: [{ kind: 'wait', ms: 30_000 }, { kind: 'use_read_only' }] } },
     { seq: 6, type: 'provider_result', requestId: 'r4', ok: true, output: { text: '您好' }, usage: { inputTokens: 100, outputTokens: 'unknown' } },
@@ -336,6 +339,7 @@ test('runtime messages are checked for the same base and shape rules', () => {
   refuseRuntime({ seq: 1, type: 'action_result', taskId: 't', requestId: 'r', refusal: { reason: 'because', message: '', nextSteps: [] } }, 'refusal must carry reason and message');
   refuseRuntime({ seq: 1, type: 'action_result', taskId: 't', requestId: 'r', refusal: { reason: 'too_fast', message: '', nextSteps: [{ kind: 'wait', ms: 0 }] } }, 'refusal.nextSteps[0].ms');
   refuseRuntime({ seq: 1, type: 'provider_result', requestId: 'r', ok: 'yes' }, 'ok must be boolean');
+  refuseRuntime({ seq: 1, type: 'observation', requestId: 'r', app: 'a', observation: { snapshotId: 's', window: {} }, check: { ok: 'yes' } }, 'check must carry ok and evidence');
   refuseRuntime({ seq: 1, type: 'deny', taskId: 't', approvalId: 'a', guidance: { hints: ['because'] } }, 'guidance.hints must be approval hints');
   refuseRuntime({ seq: 1, type: 'stop', agentRunId: 'other' }, 'another agent run');
   refuseRuntime({ seq: 1, type: 'teleport' }, 'type is not a runtime message type');
