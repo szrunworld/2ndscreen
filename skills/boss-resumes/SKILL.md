@@ -83,6 +83,7 @@ MCP 客户端可用同名工具 `task_run`（参数 `account`）、`task_status`
 `task_approve`、`task_deny`、`task_answer` 处理，对应 `2ndscreen task inbox|approve|deny|answer`。
 常驻 agent 由 agent 宿主维持，`task_host`（`2ndscreen task host start|stop|status`）查看与启停；
 `task_grants`、`task_grant`、`task_revoke`（`2ndscreen task grants|grant|revoke`）管理 agent 的授权。
+`task_submit`、`task_outcome`（`2ndscreen task submit|outcome`）给宿主里的 agent 派任务并查看结果。
 成功的调用还会附上任务资源链接：`2ndscreen://tasks/TASK_ID`（当前状态）和
 `2ndscreen://tasks/TASK_ID/artifacts`（产物索引），用 `resources/read` 读取，内容与 `task_status`、
 `task_artifacts` 的结果相同；只能读这两种地址，不能读任意文件。

@@ -26,11 +26,11 @@ import {
 } from './contracts.ts';
 
 /** The contract's commands, bind-account for the explicit BOSS account, and the agent views. */
-export type TaskCliCommand = CliCommand | 'bind-account' | 'agents' | 'usage' | 'inbox' | 'approve' | 'deny' | 'answer' | 'host' | 'grants' | 'grant' | 'revoke';
+export type TaskCliCommand = CliCommand | 'bind-account' | 'agents' | 'usage' | 'inbox' | 'approve' | 'deny' | 'answer' | 'host' | 'grants' | 'grant' | 'revoke' | 'submit' | 'outcome';
 
 export const CLI_COMMANDS: readonly TaskCliCommand[] = [
   'run', 'status', 'pause', 'resume', 'cancel', 'artifacts', 'inspect-procedure', 'bind-account',
-  'agents', 'usage', 'inbox', 'approve', 'deny', 'answer', 'host', 'grants', 'grant', 'revoke',
+  'agents', 'usage', 'inbox', 'approve', 'deny', 'answer', 'host', 'grants', 'grant', 'revoke', 'submit', 'outcome',
 ];
 
 
@@ -52,6 +52,9 @@ export interface AgentViewControl {
   grants(agentId?: string): Promise<unknown>;
   grant(request: { agentId: string; application: string; effect: string; mode: string; expiresAt?: string; durable?: boolean }): Promise<unknown>;
   revoke(request: { agentId: string; application: string; effect?: string }): Promise<unknown>;
+  /** Queue a task for an agent the host runs; returns its id at once. */
+  submitTask(request: { agentId: string; taskType: string; input: unknown; timeoutMs?: number }): Promise<unknown>;
+  outcome(taskId: string): Promise<unknown>;
 }
 
 /**
@@ -87,6 +90,8 @@ export const CLI_USAGE = [
   '  2ndscreen task grants [AGENT_ID]',
   '  2ndscreen task grant AGENT_ID APPLICATION [--effect EFFECT] [--mode MODE] [--for 30m|12h|7d | --until ISO_TIME | --durable]',
   '  2ndscreen task revoke AGENT_ID APPLICATION [--effect EFFECT]',
+  '  2ndscreen task submit AGENT_ID TASK_TYPE [--input JSON] [--timeout 30m|2h]',
+  '  2ndscreen task outcome TASK_ID',
   '',
   '--limit is how many resumes must be committed; --output is an absolute directory, the',
   'task writes under DIR/TASK_ID. --source defaults to conversations, --mode to available.',
@@ -108,6 +113,8 @@ export const CLI_USAGE = [
   'config names, with an approval mode (default human_in_the_loop: each use is approved in the inbox;',
   'trusted_within_ceiling; locked_down). A grant ends after 7 days unless --for, --until or --durable says',
   'otherwise. The running host applies grant and revoke within seconds.',
+  'submit hands a task to an agent the host runs, by its agent id and a task type its manifest lists;',
+  'it returns the task id at once. outcome says how it stands: queued, running, or how it ended.',
   'Every command prints one JSON line: {"ok":true,"command":…,"result":…} or {"ok":false,…,"error":{code,message}}.',
 ].join('\n');
 
@@ -175,6 +182,8 @@ async function dispatch(command: TaskCliCommand, words: readonly string[], contr
     return agentViewControl(control).grants(words[0]);
   }
   if (command === 'grant' || command === 'revoke') return grantFromWords(command, words, agentViewControl(control), new Date());
+  if (command === 'outcome') return agentViewControl(control).outcome(single(command, words));
+  if (command === 'submit') return agentViewControl(control).submitTask(parseSubmit(words));
   if (command === 'host') {
     if (words.some((w) => w === '--help' || w === '-h')) throw HELP_REQUESTED;
     const action = words[0];
@@ -218,7 +227,7 @@ async function dispatch(command: TaskCliCommand, words: readonly string[], contr
 
 function agentViewControl(control: TaskControl): AgentViewControl {
   const candidate = control as TaskControl & Partial<AgentViewControl>;
-  if (typeof candidate.agents !== 'function' || typeof candidate.usage !== 'function' || typeof candidate.inbox !== 'function' || typeof candidate.host !== 'function' || typeof candidate.grant !== 'function')
+  if (typeof candidate.agents !== 'function' || typeof candidate.usage !== 'function' || typeof candidate.inbox !== 'function' || typeof candidate.host !== 'function' || typeof candidate.grant !== 'function' || typeof candidate.submitTask !== 'function')
     throw new RuntimeError('capability_missing', 'this task runtime has no agent views');
   return candidate as AgentViewControl;
 }
@@ -302,6 +311,41 @@ function grantFromWords(command: 'grant' | 'revoke', words: readonly string[], c
     mode: mode ?? 'human_in_the_loop',
     ...(end ?? { expiresAt: new Date(now.getTime() + DEFAULT_GRANT_MS).toISOString() }),
   });
+}
+
+const TASK_TYPE = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const MAX_INPUT = 64 * 1024;
+
+/** Words after `submit`. */
+export function parseSubmit(words: readonly string[]): { agentId: string; taskType: string; input: unknown; timeoutMs?: number } {
+  if (words.some((w) => w === '--help' || w === '-h')) throw HELP_REQUESTED;
+  const [agentId, taskType, ...rest] = words;
+  const errors: string[] = [];
+  if (agentId === undefined || !ID.test(agentId)) errors.push('submit takes an AGENT_ID first');
+  if (taskType === undefined || !TASK_TYPE.test(taskType)) errors.push('submit takes a TASK_TYPE after the AGENT_ID (lowercase letters, digits, "-")');
+  let input: unknown = {};
+  let timeoutMs: number | undefined;
+  for (let i = 0; i < rest.length; i++) {
+    const word = rest[i]!;
+    const value = rest[i + 1];
+    if (word === '--input' && value !== undefined) {
+      if (value.length > MAX_INPUT) errors.push('--input is larger than 64 KB');
+      else
+        try {
+          input = JSON.parse(value);
+        } catch {
+          errors.push('--input must be JSON');
+        }
+      i++;
+    } else if (word === '--timeout' && value !== undefined) {
+      const m = DURATION.exec(value);
+      if (!m) errors.push('--timeout takes a duration such as 30m or 2h');
+      else timeoutMs = Number(m[1]) * DURATION_MS[m[2]!]!;
+      i++;
+    } else errors.push(`unknown word ${quote(word)}`);
+  }
+  if (errors.length > 0) throw new RuntimeError('invalid_input', `submit: ${errors.join('; ')}`, { errors });
+  return { agentId: agentId!, taskType: taskType!, input, ...(timeoutMs !== undefined && { timeoutMs }) };
 }
 
 /** Words after `usage`. */

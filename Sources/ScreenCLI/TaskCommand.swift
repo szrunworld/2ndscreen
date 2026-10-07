@@ -22,7 +22,7 @@ import Foundation
 enum TaskCommand {
     static let commands = ["run", "status", "pause", "resume", "cancel", "artifacts", "inspect-procedure", "bind-account", "agents", "usage",
                            "inbox", "approve", "deny", "answer", "host",
-                           "grants", "grant", "revoke"]
+                           "grants", "grant", "revoke", "submit", "outcome"]
 
     static let usage = """
     usage:
@@ -44,6 +44,8 @@ enum TaskCommand {
       2ndscreen task grant AGENT_ID APPLICATION [--effect EFFECT] [--mode MODE]
                      [--for 30m|12h|7d | --until ISO_TIME | --durable]
       2ndscreen task revoke AGENT_ID APPLICATION [--effect EFFECT]
+      2ndscreen task submit AGENT_ID TASK_TYPE [--input JSON] [--timeout 30m|2h]
+      2ndscreen task outcome TASK_ID
 
     Runs skill tasks such as boss.collect-resumes in the background through the
     task runtime bundled with 2ndscreen.app. Every command prints one JSON line
@@ -53,7 +55,8 @@ enum TaskCommand {
     inbox lists approvals and questions agents wait on; approve, deny and
     answer decide them. host runs the agent host that keeps resident agents
     going through their work hours. grant and revoke change what an agent may
-    send; a grant ends after 7 days unless told otherwise.
+    send; a grant ends after 7 days unless told otherwise. submit hands a
+    task to an agent the host runs; outcome says how it stands.
     """
 
     static func run(_ words: [String]) -> Never {

@@ -428,5 +428,7 @@ Swift 侧：`Sources/SecondScreenCore/LocalVision.swift`（实现与协议）、
 | 热加载 | 每 `configPollMs`（默认 5 秒）按修改时间与大小检查配置。授权、上限、工作时段、provider 原地替换，运行中的 agent 下一次检查即生效，不重启；包、账号、`takeOver` 改变的 agent 重启，停用或删除的停止，新增的启动；不通过校验的配置不生效，记日志 |
 | 授权命令 | `2ndscreen task grants [AGENT_ID]`、`grant AGENT_ID APPLICATION [--effect] [--mode] [--for 30m/12h/7d | --until ISO | --durable]`、`revoke AGENT_ID APPLICATION [--effect]`；MCP `task_grants`、`task_grant`、`task_revoke`。默认效果 external-submit、模式 human_in_the_loop、期限 7 天（RFC 0001 §7）。同一应用与效果的旧授权被替换；写入前整份配置重新校验，原子替换，0600 |
 | 宿主生命周期 | 宿主一直运行到被要求停止；没有 agent 时等待配置加入 |
-| 尚未覆盖 | 任务型 agent 由宿主按请求运行 |
+| 按请求运行 | `2ndscreen task submit AGENT_ID TASK_TYPE [--input JSON] [--timeout 30m]` 把请求原子写进 `agents/requests/`，立即返回任务编号；宿主不在时请求排队等待。宿主每 `requestPollMs`（默认 1 秒）领取：常驻 agent 交给它的 `submit`；任务型 agent 为每个任务打开会话、跑 `runAgentTask`、关闭会话，同一 agent 一次一个；不认识的 agent、清单没有的任务类型立即失败并写明原因。宿主停止时正在跑的被取消，排队的记为 `cancelled` |
+| 任务结果 | `agents/outcomes/<taskId>.json`：状态（queued / running / succeeded / partial / failed）、来源（runtime / agent）、提交、开始、结束时间、失败原因与说明、条目、产物、动作数与其中被拒和结果不明的数。agent 自建的任务也记。`2ndscreen task outcome TASK_ID`、MCP `task_submit`、`task_outcome` |
+| 启动收尾 | `app launch` 返回失败或超时（启动单独放宽到 45 秒）时，若应用在启动前没运行、启动后在运行，且启动时间不早于这次启动前 2 秒，视为这次启动的，核对身份后结束；早已在运行的不碰 |
 

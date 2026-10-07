@@ -15,6 +15,8 @@ import { spawnDetachedWorker } from './daemon.ts';
 import { agentDataPaths, createFileUsageLedger, formatUsage, readPriceTable, summarizeUsage } from './agent-ledgers.ts';
 import { formatAgentList, readStatusFile } from './agent-status.ts';
 import { decide, formatInbox, inboxPaths, listInbox } from './agent-inbox.ts';
+import { readOutcome, requestPaths, submitTaskRequest } from './agent-requests.ts';
+import { randomUUID } from 'node:crypto';
 import type { ApprovalHint } from './agent-contracts.ts';
 
 const entryDir = dirname(fileURLToPath(import.meta.url));
@@ -124,6 +126,18 @@ const control = {
       await new Promise((r) => setTimeout(r, 100));
     }
     throw new RuntimeError('timeout', 'the agent host did not take over within 10 s', { pid: child, log: tail() });
+  },
+  async submitTask(request) {
+    const paths = agentDataPaths(runtimePaths().tasksDir);
+    const taskId = randomUUID();
+    submitTaskRequest(requestPaths(paths.dir), { taskId, ...request, submittedAt: new Date().toISOString() });
+    const host = runningHostPid(paths);
+    return { taskId, state: 'queued', ...(host === undefined && { note: 'the agent host is not running; the task waits until `task host start`' }) };
+  },
+  async outcome(taskId) {
+    const record = readOutcome(requestPaths(agentDataPaths(runtimePaths().tasksDir).dir), taskId);
+    if (!record) throw new RuntimeError('not_found', `no agent task ${taskId}`);
+    return record;
   },
   async grants(agentId) {
     const views = listGrants(agentDataPaths(runtimePaths().tasksDir).config, agentId);

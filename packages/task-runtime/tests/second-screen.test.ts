@@ -194,6 +194,43 @@ test('bindApp launches a missing app and waits past its loading window to a sett
   assert.ok(reads >= 4, 'the main window is read twice before it counts as settled');
 });
 
+test('a launch that started the app and then failed ends that app, never one that was already running', async () => {
+  // ps -o lstart= prints e.g. "Wed Oct  7 09:40:01 2026".
+  const lstart = (d: Date) => {
+    const p = Object.fromEntries(new Intl.DateTimeFormat('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', year: 'numeric', hourCycle: 'h23' }).formatToParts(d).map((x) => [x.type, x.value]));
+    return `${p.weekday} ${p.month} ${String(p.day).padStart(2, ' ')} ${p.hour}:${p.minute}:${p.second} ${p.year}\n`;
+  };
+  const attempt = async (startedAt: Date, mode: 'fails' | 'throws' = 'fails') => {
+    const sent: Array<[number, string]> = [];
+    let launchedYet = false;
+    let gone = false;
+    const { run } = fakeRunner({
+      cli: (args) => {
+        switch (verb(args)) {
+          case 'screen list':
+            return { ok: true, screens: [SCREEN] };
+          case 'app launch':
+            launchedYet = true;
+            if (mode === 'throws') throw new RuntimeError('timeout', '2ndscreen took longer than 45000 ms');
+            return { ok: false, error: 'the app refused to move its window' };
+        }
+        return { ok: false, error: 'unexpected' };
+      },
+      tools: {
+        lsappinfo: (args) =>
+          args.includes('bundleID') ? { stdout: `"CFBundleIdentifier"="${BUNDLE}"\n` } : launchedYet && !gone ? { stdout: '"pid"=5151\n' } : { stdout: '' },
+        ps: () => (gone ? { stdout: '' } : { stdout: lstart(startedAt) }),
+      },
+    });
+    const adapter = createSecondScreenAdapter({ signalProcess: (pid, sig) => void (sent.push([pid, sig]), (gone = true)), cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' });
+    await assert.rejects(adapter.bindApp(profile.id, profile, { takeOver: false }), mode === 'throws' ? /longer than 45000/ : /refused to move its window/);
+    return sent;
+  };
+  assert.deepEqual(await attempt(new Date()), [[5151, 'SIGTERM']], 'started by this launch: ended');
+  assert.deepEqual(await attempt(new Date(Date.now() - 3_600_000)), [], 'running since before the launch: left alone');
+  assert.deepEqual(await attempt(new Date(), 'throws'), [[5151, 'SIGTERM']], 'a launch that timed out is cleaned up the same way');
+});
+
 test('a profile can say how narrow its main window may be, for a small fixed window such as Calculator', async () => {
   const small = { x: 3100, y: 100, width: 198, height: 350 };
   const runner = () =>
