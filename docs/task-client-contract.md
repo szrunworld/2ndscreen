@@ -6,16 +6,23 @@
 
 ## 1 身份与作用域
 
+两套协议、一个宿主。原生控制协议（`host.info`，C02）回答"谁在这个 endpoint 上"；任务协议（本契约）回答"任务服务能做什么"。二者由同一个宿主进程提供，`host.pid` 与 `task` 的来源进程一致；客户端先核对 `host`，再核对 `task.protocolVersion`。
+
 ```ts
 /** 回答这次请求的服务是谁。每个响应都带，客户端据此核对自己连的是哪一个实例。 */
 interface ServiceIdentity {
-  product: string;          // "Agent Desktop" | "2ndscreen" | 独立业务 App 名
-  bundleId: string;         // 宿主进程的 bundle id
-  pid: number;
-  protocolVersion: string;  // 本契约版本，如 "0"
-  runtimeVersion: string;   // task-runtime 版本
-  engineRevision: string;   // 2ndscreen 提交
-  capabilities: string[];   // 服务级能力：如 "task.view" "task.control" "task.artifacts" "agent.host"
+  host: {
+    product: string;                 // "Agent Desktop" | "2ndscreen" | 独立业务 App 名
+    bundleId: string;                // 宿主进程的 bundle id
+    pid: number;
+    controlProtocolVersion: string;  // 原生控制协议版本（ControlProtocol.version，当前 "1"）
+    engineRevision: string;          // 2ndscreen 提交
+  };
+  task: {
+    protocolVersion: string;         // 本契约版本，当前 "0"
+    runtimeVersion: string;          // task-runtime 版本
+    capabilities: string[];          // "task.view" "task.control" "task.artifacts" "agent.host" …
+  };
 }
 
 /** 请求方的作用域：只看见、只控制属于自己的任务。 */
@@ -75,7 +82,7 @@ interface TaskView {
     verification: { platform: 'passed' | 'failed' | 'none'; business: 'passed' | 'failed' | 'none'; notes?: string[] };
   };
   artifacts: Array<{ id: string; path: string; kind: string; sha256?: string; verified: boolean }>;
-  usage?: { modelCalls: number | 'unknown'; inputTokens: number | 'unknown'; outputTokens: number | 'unknown'; cost?: number | 'unknown' };
+  usage?: { modelCalls: number | 'unknown'; inputTokens: number | 'unknown'; outputTokens: number | 'unknown'; cost?: number | 'unknown' };  // cost 为小数（货币单位见 prices.json）
   submittedAt?: string;
   startedAt?: string;
   endedAt?: string;
@@ -106,8 +113,33 @@ interface TaskView {
 interface ControlRequest {
   taskId: string;
   operation: Operation;
-  payload?: Record<string, unknown>;   // answer 的内容、approve 的审批 id 等
-  requestId: string;                   // 客户端生成，幂等
+  payload?: OperationPayload[Operation];   // 任意 JSON，按操作固定（见下）
+  requestId: string;                       // 客户端生成，幂等
+}
+
+/** 每个操作的输入。没有列出的操作不带 payload。 */
+interface OperationPayload {
+  pause: undefined;
+  resume: undefined;
+  cancel: undefined;
+  approve: { inboxId: string; decision: 'grant' };
+  deny: { inboxId: string; reason?: string };
+  answer: { inboxId: string; answer: string };
+  bind_account: { platform: string; accountKey: string };
+  open_output: undefined;                        // 客户端本地动作，不发给服务
+  resubmit: { input: Record<string, unknown> };  // 与原任务同类型的新输入
+}
+
+/** 待处理项，供 approve/deny/answer 渲染并核对；由 `task inbox` 给出，字段与 agent-inbox.ts 对齐。 */
+interface PendingItem {
+  id: string;                  // inboxId
+  kind: 'approval' | 'question' | 'login' | 'review';
+  taskId: string;
+  agentId: string;
+  createdAt: string;
+  expiresAt?: string;
+  action?: { effect: string; app: string; target?: string; label: string };  // 审批绑定的具体动作
+  question?: string;
 }
 
 interface ControlReceipt {
@@ -125,7 +157,8 @@ interface ControlReceipt {
 语义：
 
 - `accepted` 只表示请求已记录到账本并将由执行者或守护进程处理。它不等于执行者已停。
-- 用户点取消后：收到 `accepted: true, executorStopped: false` → 显示"停止中"；之后轮询或订阅 `TaskView`，`state` 变为 `cancelled` 且 `executor.stopped === true` 才显示"已停止"。暂停同理（`pausing` → `paused`）。
+- 用户点取消后：收到 `accepted: true, executorStopped: false` → 显示"停止中"；之后轮询或订阅 `TaskView`，`state` 变为 `cancelled` 且 `executor.stopped === true` 才显示"已停止"。暂停同理（`pausing` → `paused`）。`executor` 缺失时没有停止证据，界面继续显示"停止中/暂停中"并说明缺少执行端证据。
+- 回执文案按操作区分：`pause`/`cancel` 等待执行端停止；`resume`/`answer`/`approve`/`deny`/`bind_account` 按各自的 `settlesTo` 显示进度（例如 resume → `queued`/`running`，answer → 离开 `waiting`），不套用"停止中"。
 - 服务绝不会用"停止整个 host"来兑现"取消一个任务"。按任务取消要有自己的回执与停止证据。
 - 同一 `requestId` 重复提交返回同一回执。
 - 对 `unknown` 状态的任务，`resume` 与 `resubmit` 不在 `allowed` 里，直到人工核对（`answer` 或 `approve` 一个核对项）之后。
@@ -159,7 +192,11 @@ interface ControlReceipt {
 
 现有 `status`/`outcome`/`pause`/`resume`/`cancel`/`artifacts` 保留，语义不变；新命令是它们之上的统一读写层。后续换成 socket 或事件订阅时保留本契约的字段。
 
-## 6 验收（C03 实现时）
+## 6 共享样本
+
+`docs/task-client-contract.sample.json` 是一份按本契约构造的响应样本（`views` 的输出），Runtime 侧的序列化测试与产品侧的 Swift 解码测试都以它为准；改契约先改样本。
+
+## 7 验收（C03 实现时）
 
 - `view` 对 skill 任务与 agent 任务返回同一结构；每一行映射表有一个用例。
 - 取消一个排队、运行、等待审批中的任务：回执 `accepted` 后，任务最终 `cancelled` 且 `executor.stopped`；另一个任务不受影响；host 仍在运行。

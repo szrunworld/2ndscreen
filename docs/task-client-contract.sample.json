@@ -1,0 +1,163 @@
+{
+  "ok": true,
+  "service": {
+    "host": {
+      "product": "Agent Desktop",
+      "bundleId": "com.agentdesktop.app",
+      "pid": 4242,
+      "controlProtocolVersion": "1",
+      "engineRevision": "da5677c"
+    },
+    "task": {
+      "protocolVersion": "0",
+      "runtimeVersion": "0.2.0",
+      "capabilities": [
+        "task.view",
+        "task.control",
+        "task.artifacts",
+        "agent.host"
+      ]
+    }
+  },
+  "tasks": [
+    {
+      "id": "b7914834-78bc-4b7c-85a2-564e406d8a3b",
+      "kind": "agent",
+      "agentId": "neutral.echo",
+      "taskType": "press",
+      "scope": {
+        "clientId": "com.agentdesktop.app",
+        "agentId": "neutral.echo"
+      },
+      "state": "running",
+      "raw": {
+        "status": "running"
+      },
+      "updatedAt": "2026-10-07T14:24:18.000Z",
+      "heartbeat": {
+        "at": "2026-10-07T14:24:18.000Z",
+        "stale": false
+      },
+      "progress": {
+        "current": "observe Calculator",
+        "counts": {
+          "items": 0
+        }
+      },
+      "allowed": [
+        "pause",
+        "cancel"
+      ],
+      "executor": {
+        "ownerPid": 51962,
+        "epoch": "e1",
+        "stopped": false
+      },
+      "artifacts": [],
+      "usage": {
+        "modelCalls": 0,
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "cost": 0.0
+      },
+      "submittedAt": "2026-10-07T14:24:16.161Z",
+      "startedAt": "2026-10-07T14:24:17.111Z"
+    },
+    {
+      "id": "2e2a8de8-ad91-4f25-8eeb-0d10b4a5f694",
+      "kind": "agent",
+      "agentId": "neutral.echo",
+      "taskType": "press",
+      "scope": {
+        "agentId": "neutral.echo"
+      },
+      "state": "stopping",
+      "raw": {
+        "status": "cancelling"
+      },
+      "updatedAt": "2026-10-07T14:22:19.000Z",
+      "allowed": [],
+      "artifacts": [],
+      "submittedAt": "2026-10-07T14:21:55.653Z",
+      "startedAt": "2026-10-07T14:21:56.518Z"
+    },
+    {
+      "id": "74524df5-27ff-41f6-a3a4-2140d16d8f9c",
+      "kind": "skill",
+      "agentId": "builtin:boss.collect-resumes",
+      "taskType": "boss.collect-resumes",
+      "scope": {
+        "agentId": "builtin:boss.collect-resumes"
+      },
+      "state": "waiting",
+      "raw": {
+        "status": "queued"
+      },
+      "waiting": {
+        "reason": "skill_missing",
+        "since": "2026-10-07T14:21:26.000Z",
+        "resolvedBy": "operator"
+      },
+      "updatedAt": "2026-10-07T14:21:26.591Z",
+      "allowed": [
+        "cancel"
+      ],
+      "artifacts": [],
+      "usage": {
+        "modelCalls": "unknown",
+        "inputTokens": "unknown",
+        "outputTokens": "unknown",
+        "cost": "unknown"
+      },
+      "submittedAt": "2026-10-07T14:21:25.658Z"
+    },
+    {
+      "id": "bc61ab5c-c3f1-49a1-b1bc-3d59b735db1d",
+      "kind": "agent",
+      "agentId": "neutral.echo",
+      "taskType": "press",
+      "scope": {
+        "agentId": "neutral.echo"
+      },
+      "state": "succeeded",
+      "raw": {
+        "status": "succeeded"
+      },
+      "updatedAt": "2026-10-07T14:24:19.864Z",
+      "allowed": [
+        "open_output",
+        "resubmit"
+      ],
+      "executor": {
+        "ownerPid": 51962,
+        "epoch": "e1",
+        "stopped": true
+      },
+      "result": {
+        "summary": "1 item committed",
+        "verification": {
+          "platform": "passed",
+          "business": "none"
+        }
+      },
+      "artifacts": [
+        {
+          "id": "a1",
+          "path": "/Users/me/out/echo.json",
+          "kind": "json",
+          "sha256": "0123abcd",
+          "verified": true
+        }
+      ],
+      "usage": {
+        "modelCalls": 0,
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "cost": 0.0
+      },
+      "submittedAt": "2026-10-07T14:24:16.161Z",
+      "startedAt": "2026-10-07T14:24:17.111Z",
+      "endedAt": "2026-10-07T14:24:19.864Z"
+    }
+  ]
+}
