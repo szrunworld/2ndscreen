@@ -569,6 +569,13 @@ export interface WindowProfile {
   /** Recorded at bind time from the real window, never assumed. */
   appVersion?: string;
   locale?: string;
+  /**
+   * The narrowest window that counts as the app's main window. Narrower ones
+   * are taken for splash or loading windows. Default half of logicalWidth,
+   * which suits apps that open a small loading window first (BOSS直聘);
+   * an app whose main window is small and fixed (Calculator) sets its own.
+   */
+  mainWindowMinWidth?: number;
 }
 
 export interface AdapterCapabilities {

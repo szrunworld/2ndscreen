@@ -1,11 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createLineProcessSpawner } from '../src/adapters/agent-bridge.ts';
-import { grantsOf, loadAgentPackage, localTime, validateHostConfig, workHoursFunction, type HostConfig } from '../src/agent-config.ts';
+import { grantInConfig, grantsOf, listGrants, loadAgentPackage, localTime, revokeInConfig, validateHostConfig, workHoursFunction, type HostConfig } from '../src/agent-config.ts';
 import { claimHost, runningHostPid, startAgentHostDaemon, type AgentSessionRequest } from '../src/agent-daemon.ts';
 import { decide, inboxPaths, listInbox } from '../src/agent-inbox.ts';
 import { agentDataPaths } from '../src/agent-ledgers.ts';
@@ -164,6 +164,13 @@ test('a package loads only when its manifest, contract, profiles and program che
     const wrongProfile = await makePackage(join(root, 'wrong'), '');
     await writeFile(join(wrongProfile, 'profiles', 'macos', 'calc-800x600.json'), JSON.stringify({ ...PROFILE, bundleId: 'com.other' }));
     assert.throws(() => loadAgentPackage(wrongProfile), /must have id/);
+    const tooWide = await makePackage(join(root, 'wide'), '');
+    await writeFile(join(tooWide, 'profiles', 'macos', 'calc-800x600.json'), JSON.stringify({ ...PROFILE, mainWindowMinWidth: 900 }));
+    assert.throws(() => loadAgentPackage(tooWide), /mainWindowMinWidth/);
+    await writeFile(join(tooWide, 'profiles', 'macos', 'calc-800x600.json'), JSON.stringify({ ...PROFILE, mainWindowMinWidth: 180 }));
+    assert.equal(loadAgentPackage(tooWide).profiles.get('com.apple.calculator')!.mainWindowMinWidth, 180);
+    await writeFile(join(tooWide, 'profiles', 'macos', 'calc-800x600.json'), JSON.stringify({ ...PROFILE, logicalWidth: 300, logicalHeight: 400 }));
+    assert.throws(() => loadAgentPackage(tooWide), /between 320x240 and 6016x3384/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -369,6 +376,141 @@ test('a host without a valid config does not start', async () => {
       startAgentHostDaemon({ tasksDir, openSession: async () => { throw new Error('unused'); }, spawn: createLineProcessSpawner({ inheritEnv: false }) }),
       (e) => isRuntimeError(e, 'invalid_input'),
     );
+  } finally {
+    await rm(tasksDir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Grants and reload
+
+const RETRYING_AGENT = String.raw`
+import { createInterface } from 'node:readline';
+const rl = createInterface({ input: process.stdin });
+let seq = 0, runId, n = 0; const pending = new Map();
+const send = (m) => process.stdout.write(JSON.stringify({ v: 1, agentRunId: runId, seq: ++seq, at: new Date().toISOString(), ...m }) + '\n');
+const ask = (m, k) => new Promise((r) => { pending.set(k, r); send(m); });
+rl.on('line', (line) => {
+  const m = JSON.parse(line);
+  if (m.type === 'agent_start') { runId = m.agentRunId; void go(); return; }
+  if (m.type === 'stop') { send({ type: 'agent_stopped', reason: 'stop' }); process.exit(0); }
+  const k = m.requestId ?? m.approvalId; const r = pending.get(k); if (r) { pending.delete(k); r(m); }
+});
+setInterval(() => runId && send({ type: 'heartbeat', state: 'idle' }), 100);
+async function go() {
+  const c = await ask({ type: 'create_task', requestId: 'c', taskType: 'press', input: {} }, 'c');
+  for (;;) {
+    const id = 'r' + ++n;
+    const a = await ask({ type: 'act', taskId: c.taskId, requestId: id, app: 'com.apple.calculator',
+      action: { kind: 'click', target: { kind: 'element', label: 'Equals' }, effect: 'external-submit' } }, id);
+    if (a.result) {
+      send({ type: 'item', taskId: c.taskId, itemId: 'done', status: 'committed', data: { tries: n } });
+      send({ type: 'task_finished', taskId: c.taskId, status: 'succeeded' });
+      return;
+    }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+}
+`;
+
+test('grants are edited in the config with an end, replaced per application and effect, and listed with whether they hold', async () => {
+  const tasksDir = await tmp('agent-grants-');
+  try {
+    const pkg = await makePackage(join(tasksDir, 'pkg'), RETRYING_AGENT);
+    const paths = agentDataPaths(tasksDir);
+    await mkdir(paths.dir, { recursive: true });
+    await writeFile(paths.config, JSON.stringify({ agents: [{ package: pkg, enabled: true, account: { platform: 'macos', accountKey: 'local' } }], providers: {} }));
+    const now = new Date('2026-10-07T08:00:00Z');
+    assert.throws(() => grantInConfig(paths.config, { agentId: 'test.hosted', application: 'com.apple.calculator', effect: 'external-submit', mode: 'human_in_the_loop' }, now), /one of the two/);
+    assert.throws(() => grantInConfig(paths.config, { agentId: 'test.hosted', application: 'x', effect: 'external-submit', mode: 'human_in_the_loop', expiresAt: '2026-10-01T00:00:00Z' }, now), /already have ended/);
+    assert.throws(() => grantInConfig(paths.config, { agentId: 'nobody', application: 'x', effect: 'external-submit', mode: 'human_in_the_loop', durable: true }, now), (e) => isRuntimeError(e, 'not_found'));
+    assert.throws(() => grantInConfig(paths.config, { agentId: 'test.hosted', application: 'x', effect: 'external-submit', mode: 'whenever' as never, durable: true }, now), (e) => isRuntimeError(e, 'invalid_input'));
+    grantInConfig(paths.config, { agentId: 'test.hosted', application: 'com.apple.calculator', effect: 'external-submit', mode: 'human_in_the_loop', expiresAt: '2026-10-08T08:00:00Z' }, now);
+    const replaced = grantInConfig(paths.config, { agentId: 'test.hosted', application: 'com.apple.calculator', effect: 'external-submit', mode: 'trusted_within_ceiling', durable: true }, now);
+    assert.deepEqual(replaced.map((g) => [g.application, g.effect, g.mode, g.durable, g.active]), [['com.apple.calculator', 'external-submit', 'trusted_within_ceiling', true, true]]);
+    grantInConfig(paths.config, { agentId: 'test.hosted', application: 'com.apple.mail', effect: 'external-submit', mode: 'human_in_the_loop', expiresAt: '2026-10-07T09:00:00Z' }, now);
+    const later = listGrants(paths.config, undefined, new Date('2026-10-07T10:00:00Z'));
+    assert.deepEqual(later.map((g) => [g.application, g.active]), [['com.apple.calculator', true], ['com.apple.mail', false]]);
+    const left = revokeInConfig(paths.config, { agentId: 'test.hosted', application: 'com.apple.mail' }, now);
+    assert.equal(left.length, 1);
+    assert.throws(() => revokeInConfig(paths.config, { agentId: 'test.hosted', application: 'com.apple.mail' }, now), (e) => isRuntimeError(e, 'not_found'));
+    assert.equal((await stat(paths.config)).mode & 0o777, 0o600);
+  } finally {
+    await rm(tasksDir, { recursive: true, force: true });
+  }
+});
+
+test('a grant given while the agent runs takes effect at once, without restarting it; other changes restart or stop only what they touch', async () => {
+  const tasksDir = await tmp('agent-reload-');
+  const paths = agentDataPaths(tasksDir);
+  try {
+    const pkg = await makePackage(join(tasksDir, 'pkg'), RETRYING_AGENT, { approval: { 'external-submit': 'trusted_within_ceiling' } });
+    await mkdir(paths.dir, { recursive: true });
+    const entry = { package: pkg, enabled: true, account: { platform: 'macos', accountKey: 'local' } };
+    await writeFile(paths.config, JSON.stringify({ agents: [entry], providers: {} }));
+    const lines: string[] = [];
+    const opened: boolean[] = [];
+    const acts: ActionRequest[] = [];
+    let snaps = 0;
+    const host = await startAgentHostDaemon({
+      tasksDir,
+      openSession: async (r) => {
+        opened.push(r.takeOver);
+        return {
+          binding: () => ({ screenId: r.profile.id, socket: '/tmp/x', window: WINDOW, launchedByRuntime: false }),
+          observe: async () => ({ snapshotId: `s${++snaps}`, sessionId: 's', takenAt: new Date().toISOString(), window: WINDOW }),
+          act: async (req: ActionRequest) => (acts.push(req), { actionId: req.actionId, status: 'ok', startedAt: new Date().toISOString(), finishedAt: new Date().toISOString() }),
+          waitFor: async () => ({ ok: true, evidence: [] }),
+          close: async () => {},
+        } as unknown as Session;
+      },
+      spawn: createLineProcessSpawner({ inheritEnv: false }),
+      interpreters: { node: process.execPath },
+      configPollMs: 60_000, // reloads are driven by the test
+      log: (l) => lines.push(l),
+      resident: { killGraceMs: 300, heartbeatTimeoutMs: 3000, workHoursPollMs: 50, restartDelaysMs: [50] },
+    });
+    const until = async (what: string, ok: () => boolean) => {
+      const deadline = Date.now() + 8000;
+      while (!ok()) {
+        if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}\n${lines.join('\n')}`);
+        await new Promise((r) => setTimeout(r, 20));
+      }
+    };
+    const audits = async () => (await readFile(paths.audit, 'utf8').catch(() => '')).trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    let refused = 0;
+    await until('refusals without a grant', () => {
+      void audits().then((a) => (refused = a.filter((x) => x.reason === 'not_granted').length));
+      return refused >= 2;
+    });
+    assert.equal(acts.length, 0);
+    const runId = host.agents[0]!.agent.currentRunId();
+
+    grantInConfig(paths.config, { agentId: 'test.hosted', application: 'com.apple.calculator', effect: 'external-submit', mode: 'trusted_within_ceiling', durable: true });
+    await host.reload();
+    await until('the task to succeed once granted', () => lines.some((l) => /task .* succeeded/.test(l)));
+    assert.equal(acts.length, 1);
+    assert.equal(host.agents[0]!.agent.currentRunId(), runId, 'the same process: the grant applied in place');
+
+    // An invalid config changes nothing.
+    await writeFile(paths.config, JSON.stringify({ agents: [{ ...entry, enabled: 'yes' }], providers: {} }));
+    await host.reload();
+    assert.ok(lines.some((l) => /config not reloaded/.test(l)));
+    assert.equal(host.agents.length, 1);
+
+    // takeOver changes the binding: that agent is restarted with it.
+    await writeFile(paths.config, JSON.stringify({ agents: [{ ...entry, takeOver: true }], providers: {} }));
+    await host.reload();
+    assert.ok(lines.some((l) => /restarting it/.test(l)));
+    await until('a session opened with takeOver', () => opened.includes(true));
+    assert.notEqual(host.agents[0]!.agent.currentRunId(), runId);
+
+    // Disabled: stopped.
+    await writeFile(paths.config, JSON.stringify({ agents: [{ ...entry, enabled: false }], providers: {} }));
+    await host.reload();
+    assert.equal(host.agents.length, 0);
+    assert.ok(lines.some((l) => /no longer enabled/.test(l)));
+    await host.stop();
   } finally {
     await rm(tasksDir, { recursive: true, force: true });
   }

@@ -424,6 +424,9 @@ Swift 侧：`Sources/SecondScreenCore/LocalVision.swift`（实现与协议）、
 | 收尾 | runtime 自己启动的应用在宿主最终停止时由 `quitApp` 结束（核对 bundle 与启动时间）；不结束的话，私有屏回收时窗口会被挪到用户屏。适配器 `bindApp` 在启动应用后失败，同样立即结束该应用 |
 | 服务 | 收件箱审批与提问、限额账本、provider（key 来自宿主环境，只发往配置的地址，拒绝重定向）、用量账本、状态看板、审计日志 `agents/audit.jsonl`（每个外发的放行与拒绝） |
 | 日志 | `agents/host.log`；每次运行结束写明原因（`detail`）：协议违规时解析器的报错，观察失败时窗口的错误。观察失败记为 `error`，不再记为协议违规 |
-| 已知限制 | 适配器把宽度不足窗口配置一半的窗口视为加载窗口（按 BOSS 直聘的启动画面定）。固定尺寸的小窗口应用（如计算器 198×350）需要把窗口配置写到实际尺寸附近，否则会话一直打不开 |
-| 尚未覆盖 | 任务型 agent 由宿主按请求运行、配置热加载、`grant`/`revoke` 命令 |
+| 主窗口 | 适配器把比 `mainWindowMinWidth` 窄的窗口视为加载窗口；不写时为窗口配置宽度的一半（按 BOSS 直聘的启动画面定）。固定尺寸的小窗口应用（如计算器 198×350）在窗口配置里写 `mainWindowMinWidth`。窗口配置的尺寸必须在私有屏的范围内（`SCREEN_LIMITS`：320×240 到 6016×3384），加载包时即校验 |
+| 热加载 | 每 `configPollMs`（默认 5 秒）按修改时间与大小检查配置。授权、上限、工作时段、provider 原地替换，运行中的 agent 下一次检查即生效，不重启；包、账号、`takeOver` 改变的 agent 重启，停用或删除的停止，新增的启动；不通过校验的配置不生效，记日志 |
+| 授权命令 | `2ndscreen task grants [AGENT_ID]`、`grant AGENT_ID APPLICATION [--effect] [--mode] [--for 30m/12h/7d | --until ISO | --durable]`、`revoke AGENT_ID APPLICATION [--effect]`；MCP `task_grants`、`task_grant`、`task_revoke`。默认效果 external-submit、模式 human_in_the_loop、期限 7 天（RFC 0001 §7）。同一应用与效果的旧授权被替换；写入前整份配置重新校验，原子替换，0600 |
+| 宿主生命周期 | 宿主一直运行到被要求停止；没有 agent 时等待配置加入 |
+| 尚未覆盖 | 任务型 agent 由宿主按请求运行 |
 

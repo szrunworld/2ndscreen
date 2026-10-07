@@ -139,7 +139,7 @@ test('the inbox commands check their words before anything is decided', async ()
     approve: async (id: string) => (calls.push(['approve', id]), {}),
     deny: async (id: string, g: unknown) => (calls.push(['deny', id, g]), {}),
     answer: async (id: string, text: string) => (calls.push(['answer', id, text]), {}),
-    host: unused,
+    host: unused, grants: unused, grant: unused, revoke: unused,
   } as unknown as TaskControl & AgentViewControl;
   const cli = async (words: string[]) => {
     const out: string[] = [];
@@ -162,4 +162,49 @@ test('the inbox commands check their words before anything is decided', async ()
     assert.equal(json.error.code, 'invalid_input');
   }
   assert.equal(calls.length, 4, 'nothing reached the inbox for bad words');
+});
+
+test('grant and revoke words: default effect, mode and a 7-day end; one end at most; bad words reach nothing', async () => {
+  const calls: unknown[] = [];
+  const unused = async () => {
+    throw new Error('not used');
+  };
+  const control = {
+    submit: unused, status: unused, pause: unused, resume: unused, cancel: unused, artifacts: unused, inspectProcedure: unused,
+    agents: unused, usage: unused, inbox: unused, approve: unused, deny: unused, answer: unused, host: unused,
+    grants: async (id?: string) => (calls.push(['grants', id]), {}),
+    grant: async (r: unknown) => (calls.push(['grant', r]), {}),
+    revoke: async (r: unknown) => (calls.push(['revoke', r]), {}),
+  } as unknown as TaskControl & AgentViewControl;
+  const cli = async (words: string[]) => {
+    const out: string[] = [];
+    const code = await runCli(words, { stdout: (l) => out.push(l), stderr: () => {} }, control);
+    return { code, json: JSON.parse(out[0]!) };
+  };
+  const before = Date.now();
+  assert.equal((await cli(['grant', 'remotedesk.boss-recruiter', 'com.zhipin.www'])).code, 0);
+  const first = (calls[0] as [string, { expiresAt: string }])[1];
+  assert.deepEqual({ ...first, expiresAt: undefined }, { agentId: 'remotedesk.boss-recruiter', application: 'com.zhipin.www', effect: 'external-submit', mode: 'human_in_the_loop', expiresAt: undefined });
+  const days = (Date.parse(first.expiresAt) - before) / 86_400_000;
+  assert.ok(days > 6.99 && days < 7.01, `a default grant ends after 7 days, got ${days}`);
+  assert.equal((await cli(['grant', 'a.b', 'com.x', '--mode', 'trusted_within_ceiling', '--durable'])).code, 0);
+  assert.deepEqual(calls[1], ['grant', { agentId: 'a.b', application: 'com.x', effect: 'external-submit', mode: 'trusted_within_ceiling', durable: true }]);
+  assert.equal((await cli(['grant', 'a.b', 'com.x', '--until', '2026-10-14T18:00:00+08:00'])).code, 0);
+  assert.equal((calls[2] as [string, { expiresAt: string }])[1].expiresAt, '2026-10-14T10:00:00.000Z');
+  assert.equal((await cli(['revoke', 'a.b', 'com.x', '--effect', 'external-submit'])).code, 0);
+  assert.deepEqual(calls[3], ['revoke', { agentId: 'a.b', application: 'com.x', effect: 'external-submit' }]);
+  assert.equal((await cli(['grants'])).code, 0);
+  for (const words of [
+    ['grant', 'a.b'],
+    ['grant', 'a.b', 'com.x', '--for', '7 days'],
+    ['grant', 'a.b', 'com.x', '--for', '7d', '--durable'],
+    ['grant', 'a.b', 'com.x', '--until', 'tomorrow'],
+    ['revoke', 'a.b', 'com.x', '--durable'],
+    ['grants', 'a', 'b'],
+  ]) {
+    const { code, json } = await cli(words);
+    assert.equal(code, 2, words.join(' '));
+    assert.equal(json.error.code, 'invalid_input');
+  }
+  assert.equal(calls.length, 5, 'nothing reached the config for bad words');
 });

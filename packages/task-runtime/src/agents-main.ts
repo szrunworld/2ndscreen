@@ -1,8 +1,9 @@
 // Entry of the agent host (agents.mjs once built): `2ndscreen task host
 // start` runs it detached. It claims <tasksDir>/agents/host.pid, starts
 // every enabled resident agent in <tasksDir>/agents/config.json on
-// 2ndscreen agent screens, and runs until SIGTERM, SIGINT or SIGHUP, when
-// it stops the agents politely and gives their sessions back.
+// 2ndscreen agent screens, follows changes to that file, and runs until
+// SIGTERM, SIGINT or SIGHUP, when it stops the agents politely, gives their
+// sessions back and ends the apps it launched.
 
 import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -82,7 +83,6 @@ process.on('uncaughtException', (error) => {
   log(`uncaught: ${error.stack ?? error.message}`);
   void leave('uncaught error', 1);
 });
-// Nothing to keep running: say so and leave, so `task host status` does not report an idle host.
-if (host.agents.length === 0) void leave('no resident agent is enabled in the config');
-// The agents keep the event loop alive; when every one has stopped for good, so does the host.
-void Promise.all(host.agents.map((a) => a.agent.done)).then(() => void leave('every agent has stopped'));
+// The host stays until it is told to stop: agents come and go with the config, which it watches.
+if (host.agents.length === 0) log('no resident agent is enabled yet; waiting for the config to name one');
+setInterval(() => {}, 1 << 30);

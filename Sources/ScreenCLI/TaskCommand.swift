@@ -21,7 +21,8 @@ import Foundation
 /// Without a runtime, every task command fails with capability_missing.
 enum TaskCommand {
     static let commands = ["run", "status", "pause", "resume", "cancel", "artifacts", "inspect-procedure", "bind-account", "agents", "usage",
-                           "inbox", "approve", "deny", "answer", "host"]
+                           "inbox", "approve", "deny", "answer", "host",
+                           "grants", "grant", "revoke"]
 
     static let usage = """
     usage:
@@ -39,6 +40,10 @@ enum TaskCommand {
       2ndscreen task deny INBOX_ID [--hint HINT]... [--text TEXT]
       2ndscreen task answer INBOX_ID TEXT
       2ndscreen task host start|stop|status
+      2ndscreen task grants [AGENT_ID]
+      2ndscreen task grant AGENT_ID APPLICATION [--effect EFFECT] [--mode MODE]
+                     [--for 30m|12h|7d | --until ISO_TIME | --durable]
+      2ndscreen task revoke AGENT_ID APPLICATION [--effect EFFECT]
 
     Runs skill tasks such as boss.collect-resumes in the background through the
     task runtime bundled with 2ndscreen.app. Every command prints one JSON line
@@ -47,7 +52,8 @@ enum TaskCommand {
     sums provider calls, tokens and cost per agent, provider, model or task.
     inbox lists approvals and questions agents wait on; approve, deny and
     answer decide them. host runs the agent host that keeps resident agents
-    going through their work hours.
+    going through their work hours. grant and revoke change what an agent may
+    send; a grant ends after 7 days unless told otherwise.
     """
 
     static func run(_ words: [String]) -> Never {
