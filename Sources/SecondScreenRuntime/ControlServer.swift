@@ -4,6 +4,12 @@ import SecondScreenCore
 /// Serves `ControlProtocol` requests on a Unix socket in the user's
 /// Application Support folder, readable only by the user.
 ///
+/// The socket is created only by the process that owns the endpoint
+/// (`EndpointOwnership`): starting takes the lock beside it, so two hosts
+/// started at once cannot both listen, and a host that finds the endpoint
+/// held fails with who holds it and removes nothing. Stopping removes the
+/// socket and the lock only while this server still owns them.
+///
 /// Each client connection is read on a background queue; the handler runs
 /// on the main actor, where all display and window state lives.
 public final class ControlServer {
@@ -11,24 +17,34 @@ public final class ControlServer {
 
     private let path: String
     private let handler: Handler
+    /// Who this server says it is: written into the lock file, answered to `host.info`.
+    public let identity: HostIdentity
     private var listener: Int32 = -1
     private var source: DispatchSourceRead?
+    private var ownership: EndpointOwnership?
     private let clients = DispatchQueue(label: "2ndscreen.control.clients", attributes: .concurrent)
 
-    public init(path: String = ControlProtocol.socketURL.path, handler: @escaping Handler) {
+    public init(path: String = ControlProtocol.socketURL.path, identity: HostIdentity = .current(), handler: @escaping Handler) {
         self.path = path
+        self.identity = identity
         self.handler = handler
     }
 
+    /// Whether this server owns the endpoint right now.
+    public var isOwner: Bool { ownership?.isHeld == true }
+
     public func start() throws {
-        let directory = (path as NSString).deletingLastPathComponent
-        try FileManager.default.createDirectory(
-            atPath: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        // A previous instance that crashed leaves its socket file behind.
-        unlink(path)
+        // Taking the endpoint also clears a socket a dead owner left; a living owner makes this throw.
+        let ownership = try EndpointOwnership.acquire(socketPath: path, identity: identity)
+        self.ownership = ownership
 
         listener = socket(AF_UNIX, SOCK_STREAM, 0)
-        guard listener >= 0 else { throw ControlClientError.io("socket: \(String(cString: strerror(errno)))") }
+        guard listener >= 0 else {
+            let message = String(cString: strerror(errno))
+            ownership.release(removingSocket: false)
+            self.ownership = nil
+            throw ControlClientError.io("socket: \(message)")
+        }
         var address = try unixAddress(path)
         let bound = withUnsafePointer(to: &address) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
@@ -38,8 +54,13 @@ public final class ControlServer {
         guard bound == 0, chmod(path, 0o600) == 0, listen(listener, 16) == 0 else {
             let message = String(cString: strerror(errno))
             close(listener)
+            listener = -1
+            // Whatever is at the path now is this owner's own, half-made; nobody else's.
+            ownership.release(removingSocket: true)
+            self.ownership = nil
             throw ControlClientError.io("could not listen on \(path): \(message)")
         }
+        try ownership.markListening()
 
         let source = DispatchSource.makeReadSource(fileDescriptor: listener, queue: clients)
         source.setEventHandler { [weak self] in self?.acceptClient() }
@@ -54,7 +75,9 @@ public final class ControlServer {
             close(listener)
             listener = -1
         }
-        unlink(path)
+        // A server that never owned the endpoint, or lost it, leaves the owner's files alone.
+        ownership?.release(removingSocket: true)
+        ownership = nil
     }
 
     private func acceptClient() {

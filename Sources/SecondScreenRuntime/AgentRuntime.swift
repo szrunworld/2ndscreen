@@ -29,6 +29,8 @@ public final class AgentRuntime {
     public var onScreensChanged: (() -> Void)?
     /// When an agent last sent a request.
     public private(set) var lastRequest = Date()
+    /// Who this host is, as `host.info` and the endpoint's lock file report it. Set before `start`.
+    public var identity: HostIdentity = .current()
 
     private var server: ControlServer?
     /// One agent cursor overlay per agent screen, keyed by display ID.
@@ -43,7 +45,7 @@ public final class AgentRuntime {
     /// Listen for agents on `socketPath`; the `2ndscreen` command finds it
     /// through `$SECONDSCREEN_SOCKET` when it is not the usual one.
     public func start(socketPath: String = ControlProtocol.socketURL.path) throws {
-        let server = ControlServer(path: socketPath) { [weak self] request in
+        let server = ControlServer(path: socketPath, identity: identity) { [weak self] request in
             await self?.handle(request) ?? .failure("the agent runtime is shutting down")
         }
         try server.start()
@@ -89,6 +91,10 @@ public final class AgentRuntime {
         }
 
         switch request.command {
+        case .hostInfo:
+            var response = ControlResponse()
+            response.host = identity
+            return response
         case .screenCreate:
             // By default, match the main display's full-screen area, so a
             // full-screen preview of the new screen is pixel for pixel.

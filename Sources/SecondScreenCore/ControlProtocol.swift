@@ -6,6 +6,11 @@ import Foundation
 /// Each connection carries one JSON request line and one JSON response line
 /// over a Unix socket that only the current user can open.
 public enum ControlProtocol {
+    /// The request/response protocol's version; a client checks it against `host.info`.
+    public static let version = "1"
+    /// The engine release this library was built from (the package tag).
+    public static let engineVersion = "0.2.0"
+
     /// `~/Library/Application Support/2ndscreen/control.sock`, or
     /// `$SECONDSCREEN_SOCKET`, which lets a second build of the app run beside
     /// the usual one, as when testing a change.
@@ -61,6 +66,8 @@ public struct ControlRequest: Codable {
         case windowState = "window.state"
         /// Click, type, press keys, scroll or drag in a window, in the background.
         case input
+        /// Who answers on this endpoint: product, bundle id, pid, protocol and engine versions, capabilities.
+        case hostInfo = "host.info"
         case androidList = "android.list"
         case androidShow = "android.show"
         case androidHide = "android.hide"
@@ -296,6 +303,8 @@ public struct ControlResponse: Codable {
     public var route: String?
     public var element: AXElementInfo?
     public var android: [AndroidDeviceInfo]?
+    /// `host.info`: the host that answered.
+    public var host: HostIdentity?
 
     public init(ok: Bool = true) {
         self.ok = ok

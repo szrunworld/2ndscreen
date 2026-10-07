@@ -17,6 +17,7 @@ usage:
   2ndscreen window move --screen NAME --pid PID [--window-id ID] [--fill | --fit-screen]
   2ndscreen window release --screen NAME --pid PID [--window-id ID]
   2ndscreen screenshot --screen NAME --output FILE.png [--windows]
+  2ndscreen host info       who answers on the control socket: product, bundle id, pid, protocol version
 
   2ndscreen state --screen NAME --pid PID [--window-id ID] [--query TEXT] [--screenshot FILE.png]
   2ndscreen click --screen NAME --pid PID (--index N | --text TEXT | --x X --y Y) [--right | --double]
@@ -197,6 +198,9 @@ if args.positional.first == "iphone" {
 }
 if args.positional.prefix(2).joined(separator: " ") == "app quit" {
     AppQuitCommand.run(args)
+}
+if args.positional.first == "host" {
+    HostCommand.run(args)
 }
 let verb = args.positional.prefix(2).joined(separator: " ")
 

@@ -637,6 +637,18 @@ task runtime work unchanged. macOS asks the host app for Screen Recording
 and Accessibility. The serial base keeps the host's displays apart from
 2ndscreen.app's on the same Mac: macOS remembers each serial's arrangement.
 
+A control endpoint has one owner. Starting the runtime takes a lock beside
+the socket (`control.sock` → `control.lock`, held with `flock`), so two
+hosts started at once end with one owner: the other gets an `EndpointError`
+naming who holds it, and removes nothing. Only the owner creates the socket
+and, on stop, removes socket and lock; a socket a crashed owner left behind
+(its lock gone with it) is replaced by the next owner. Set
+`runtime.identity` before `start`: it goes into the lock file and is what
+`2ndscreen host info` answers, with the protocol and engine versions and
+the host's capabilities, so a client can check which instance it reached.
+`host info` on an endpoint nobody answers says whether it is free, stale,
+or held by a host that is still starting.
+
 ## Command-line display
 
 `vdisplay` creates a display without the app, for scripting:

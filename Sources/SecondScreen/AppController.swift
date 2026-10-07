@@ -113,16 +113,6 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             preferences.hiDPI = main.hiDPI
         }
 
-        if preferences.enabled, !ControlProtocol.isSideInstance {
-            enableDisplay()
-        }
-
-        let known = preferences.androidAddresses
-        DispatchQueue.global().async {
-            ADB.restartStaleServer()
-            Self.reconnect(known, keeping: [])
-        }
-
         runtime.hostScreens = { [weak self] in self?.primaryScreenInfo().map { [$0] } ?? [] }
         runtime.excludedFromDefaultSize = { [weak self] in self?.display?.displayID }
         runtime.fallback = { [weak self] request in
@@ -133,10 +123,26 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let preview = self?.agentPreviews[name] else { return }
             Task { @MainActor in try? await preview.restartStream() }
         }
+        runtime.identity = HostIdentity.current(capabilities: HostIdentity.defaultCapabilities + ["android"])
+        // The endpoint is taken before any display is made: a second copy
+        // started at the same time finds it held and leaves without a trace.
         do {
             try runtime.start()
+        } catch let error as EndpointError {
+            FileHandle.standardError.write("2ndscreen: not starting: \(error.localizedDescription)\n".data(using: .utf8)!)
+            exit(0)
         } catch {
             presentError("Agents cannot reach 2ndscreen: \(error.localizedDescription)")
+        }
+
+        if preferences.enabled, !ControlProtocol.isSideInstance {
+            enableDisplay()
+        }
+
+        let known = preferences.androidAddresses
+        DispatchQueue.global().async {
+            ADB.restartStaleServer()
+            Self.reconnect(known, keeping: [])
         }
     }
 
