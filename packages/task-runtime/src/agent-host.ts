@@ -1221,6 +1221,12 @@ export interface ResidentAgentOptions extends Omit<AgentHostOptions, 'sessions'>
   maxRestarts?: number;
   /** Waits before each restart; the last repeats. Default 2 s, 10 s, 30 s. */
   restartDelaysMs?: readonly number[];
+  /**
+   * How often to try again when the app is in someone else's hands (a
+   * session conflict or a held lease): the user is using it, or it was not
+   * handed over. Such tries never count toward maxRestarts. Default 60 s.
+   */
+  sessionWaitMs?: number;
   /** The timezone the agent is told its work hours are in. Default: this machine's. */
   timezone?: string;
   /** The budget of a task the agent creates itself. Default DEFAULT_BUDGET. */
@@ -1281,6 +1287,7 @@ export function startResidentAgent(options: ResidentAgentOptions): ResidentAgent
   const heartbeatTimeoutMs = options.heartbeatTimeoutMs ?? spec.schedule.idlePollSeconds * 2000;
   const workHoursPollMs = options.workHoursPollMs ?? 60_000;
   const maxRestarts = options.maxRestarts ?? 3;
+  const sessionWaitMs = options.sessionWaitMs ?? 60_000;
   const delays = options.restartDelaysMs && options.restartDelaysMs.length > 0 ? options.restartDelaysMs : DEFAULT_RESTART_DELAYS_MS;
   const sleep = options.sleep ?? sleepFor;
   const schedule: ScheduleInfo = {
@@ -1352,13 +1359,15 @@ export function startResidentAgent(options: ResidentAgentOptions): ResidentAgent
             } catch {
               // The caller's.
             }
-            strikes += 1;
+            // An app the user is using, or one not handed over, is no crash: wait for it, without end.
+            const occupied = isRuntimeError(error, 'conflict') || isRuntimeError(error, 'lease_held');
+            if (!occupied) strikes += 1;
             if (strikes > maxRestarts) {
               gaveUp = true;
               break;
             }
             try {
-              await sleep(delays[Math.min(strikes - 1, delays.length - 1)]!, stopper.signal);
+              await sleep(occupied ? sessionWaitMs : delays[Math.min(strikes - 1, delays.length - 1)]!, stopper.signal);
             } catch {
               break;
             }
