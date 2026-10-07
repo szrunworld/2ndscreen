@@ -699,3 +699,24 @@ test('run_unit goes to the unit service with the app\'s window profile; a sendin
     ['open_chat', 'finished', true],
   ]);
 });
+
+test('every action is on the click record: what was sent with its result, and what the check chain refused', async () => {
+  const { outcome, events } = await runEcho({
+    steps: [
+      { type: 'observe', app: BOSS, elements: true },
+      navigate(BOSS),
+      { type: 'act', app: BOSS, target: 'cand-1', action: { kind: 'click', target: { kind: 'element', role: 'AXButton', label: '求简历' }, effect: 'external-submit' } },
+    ],
+  });
+  assert.equal(outcome.status, 'succeeded');
+  const records = events.flatMap((e) => (e.type === 'action' ? [e.record] : []));
+  assert.deepEqual(
+    records.map((r) => [r.app, r.action.kind, r.decision, r.status ?? r.reason, r.target ?? null]),
+    [
+      [BOSS, 'click', 'sent', 'ok', null],
+      [BOSS, 'click', 'refused', 'not_granted', 'cand-1'],
+    ],
+  );
+  assert.equal(records[0]!.agentId, 'test.echo');
+  assert.equal(typeof records[0]!.ms, 'number');
+});

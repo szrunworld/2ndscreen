@@ -34,6 +34,8 @@ export interface AgentDataPaths {
   hostPid: string;
   /** The agent host's own log. */
   hostLog: string;
+  /** Every desktop action of every agent, one JSON line each (ActionRecord). */
+  actions: string;
   /** Every external-submit the host allowed or refused, as JSON lines. */
   audit: string;
 }
@@ -49,6 +51,7 @@ export function agentDataPaths(tasksDir: string): AgentDataPaths {
     config: join(dir, 'config.json'),
     hostPid: join(dir, 'host.pid'),
     hostLog: join(dir, 'host.log'),
+    actions: join(dir, 'actions.jsonl'),
     audit: join(dir, 'audit.jsonl'),
   };
 }

@@ -187,7 +187,28 @@ export type HostEvent =
   | { type: 'unit'; unit: string; unitAttemptId: string; phase: 'started' | 'finished'; ok?: boolean }
   | { type: 'heartbeat'; state: string; summary?: string }
   | { type: 'audit'; record: AuditRecord }
+  /** Every desktop action an agent asked for, sent or refused: the click record. */
+  | { type: 'action'; record: ActionRecord }
   | { type: 'approval'; request: ApprovalRequest; decision: ApprovalDecision };
+
+export interface ActionRecord {
+  at: string;
+  agentId: string;
+  taskId: string;
+  requestId: string;
+  app: string;
+  action: Action;
+  target?: string;
+  /** refused: the check chain stopped it, nothing reached the app. */
+  decision: 'sent' | 'refused';
+  reason?: ActionRefusal['reason'];
+  status?: ActionStatus;
+  route?: string;
+  /** Where the input landed, in global points, when the adapter says. */
+  point?: { x: number; y: number };
+  error?: string;
+  ms?: number;
+}
 
 export interface Ceilings {
   org?: Partial<Record<EffectClass, EffectLimit>>;
@@ -912,8 +933,26 @@ class HostRun {
     };
     const entry: HostedAction = { requestId: m.requestId, app: m.app, action: m.action, ...(m.target !== undefined && { target: m.target }) };
     task.actions.push(entry);
+    const logAction = (extra: Partial<ActionRecord> & Pick<ActionRecord, 'decision'>) =>
+      this.emit(
+        {
+          type: 'action',
+          record: {
+            at: now.toISOString(),
+            agentId: o.spec.id,
+            taskId: task.taskId,
+            requestId: m.requestId,
+            app: m.app,
+            action: m.action,
+            ...(m.target !== undefined && { target: m.target }),
+            ...extra,
+          },
+        },
+        task.taskId,
+      );
     if (refusal) {
       entry.refusal = refusal;
+      logAction({ decision: 'refused', reason: refusal.reason });
       audit('refused', { reason: refusal.reason });
       this.send({ type: 'action_result', taskId: task.taskId, requestId: m.requestId, refusal });
       return;
@@ -935,6 +974,17 @@ class HostRun {
       result = { actionId: m.requestId, status, startedAt: now.toISOString(), finishedAt: at, error: { code, message: error instanceof Error ? error.message : String(error) } };
     }
     entry.result = result;
+    {
+      const r = result as ActionResult & { point?: { x: number; y: number } };
+      logAction({
+        decision: 'sent',
+        status: result.status,
+        ...(result.route !== undefined && { route: result.route }),
+        ...(r.point && { point: r.point }),
+        ...(result.error && { error: `${result.error.code}: ${result.error.message}`.slice(0, 300) }),
+        ms: this.clock.now().getTime() - now.getTime(),
+      });
+    }
     if (effect === 'external-submit' && result.status === 'unknown') unknownTargets.add(m.target ?? '*');
     if (limited.perDay !== undefined || limited.minIntervalMs !== undefined)
       await o.ledger.record({

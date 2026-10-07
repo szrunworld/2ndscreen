@@ -248,6 +248,13 @@ export async function startAgentHostDaemon(options: AgentHostDaemonOptions): Pro
           timeoutMs: request.timeoutMs ?? 30 * 60_000,
           signal: stopping_.signal,
           onEvent: (event) => {
+            if (event.type === 'action') {
+              try {
+                appendJsonLine(paths.actions, event.record);
+              } catch {
+                // The click record is for people to read; the action stands without it.
+              }
+            }
             if (event.type === 'audit') {
               try {
                 appendJsonLine(paths.audit, event.record);
@@ -397,6 +404,13 @@ export async function startAgentHostDaemon(options: AgentHostDaemonOptions): Pro
       clock,
       ...options.resident,
       onEvent: (event, context) => {
+        if (event.type === 'action') {
+          try {
+            appendJsonLine(paths.actions, event.record);
+          } catch {
+            // The click record is for people to read; the action stands without it.
+          }
+        }
         if (event.type === 'audit') {
           try {
             appendJsonLine(paths.audit, event.record);
