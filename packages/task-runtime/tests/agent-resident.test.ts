@@ -41,7 +41,7 @@ rl.on('line', (line) => {
 });
 function started() {
   if (scenario === 'crash') process.exit(1);
-  if (scenario === 'silent') return;
+  if (scenario === 'silent' || scenario === 'wait-on-host') return;
   hb = setInterval(() => send({ type: 'heartbeat', state: 'idle', summary: 'run ' + count }), 50);
   if (scenario === 'create' && count === 1) void (async () => {
     const r = await ask({ type: 'create_task', requestId: 'c1', taskType: 'request-resumes', input: { from: 'agent' } }, 'c1');
@@ -224,6 +224,22 @@ test('a silent agent is lost after the heartbeat timeout and is killed even thou
   assert.equal(outcome.stoppedBy, 'gave_up');
   assert.equal(outcome.runs[0]!.end, 'heartbeat_lost');
   assert.ok(Date.now() - started < 5000);
+});
+
+test('an agent waiting on the host (an undecided approval, a slow answer) is not lost for its silence', async () => {
+  const slow = session();
+  const observe = slow.observe.bind(slow);
+  // Answers after three heartbeat timeouts, as an approval a person decides late would.
+  slow.observe = async (...args: Parameters<Session['observe']>) => {
+    await new Promise((r) => setTimeout(r, 900));
+    return observe(...args);
+  };
+  const { agent, ended } = start('wait-on-host', { heartbeatTimeoutMs: 300, maxRestarts: 0, sessions: new Map([[BOSS, slow]]) });
+  const taskId = agent.submit({ taskType: 'request-resumes', input: { n: 1 } });
+  const outcome = await agent.done;
+  assert.equal(ended.get(taskId)?.status, 'succeeded', JSON.stringify(ended.get(taskId)));
+  // Silent after its task, with nothing asked of the host: that silence still counts.
+  assert.equal(outcome.runs[0]!.end, 'heartbeat_lost');
 });
 
 test('an external-submit with an unknown result is never repeated, even by the restarted process', async () => {
