@@ -442,7 +442,8 @@ export function createSecondScreenAdapter(options: SecondScreenAdapterOptions): 
   /**
    * Ends an app this adapter launched for a binding that then failed. Left
    * running, its window would be moved onto the user's displays when the
-   * agent screen goes away. Only the very process launched is signalled:
+   * agent screen goes away. It is asked to quit first (`app quit`); only one
+   * that stays is signalled. Only the very process launched is touched:
    * same bundle, same start time.
    */
   async function endLaunched(launchedApp: { pid?: number; who?: { bundleId?: string; startedAt?: string } }, bundleId: string): Promise<void> {
@@ -452,6 +453,10 @@ export function createSecondScreenAdapter(options: SecondScreenAdapterOptions): 
       const now = await identity(pid).catch(() => undefined);
       return now?.bundleId === bundleId && now.startedAt === who.startedAt;
     };
+    // Asked first, as ⌘Q would: some apps (BOSS直聘) take SIGTERM for a crash and relaunch themselves
+    // onto the user's display. Signals only for an app that will not quit.
+    if (!(await same())) return;
+    await cli(['app', 'quit', '--pid', String(pid), '--bundle', bundleId, '--wait', '10'], undefined, 20_000).catch(() => undefined);
     for (const name of ['SIGTERM', 'SIGKILL'] as const) {
       if (!(await same())) return;
       try {
