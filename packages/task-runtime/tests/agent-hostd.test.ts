@@ -785,3 +785,41 @@ test('the worker hosts agents only with a config, the host pid file and proof th
     await rm(tasksDir, { recursive: true, force: true });
   }
 });
+
+test('a builtin skill\'s entry is left to the worker\'s skill runner: the host neither starts nor skips it', async () => {
+  const tasksDir = await tmp('agent-builtin-');
+  const paths = agentDataPaths(tasksDir);
+  try {
+    const taskPkg = await makePackage(join(tasksDir, 'task-pkg'), TASK_AGENT, { id: 'test.task', mode: 'task', schedule: undefined, effects: ['read'], approval: {} });
+    await mkdir(paths.dir, { recursive: true });
+    await writeFile(
+      paths.config,
+      JSON.stringify({
+        agents: [
+          { package: 'builtin:boss.collect-resumes', enabled: true, account: { platform: 'boss', accountKey: 'boss-main' }, workHours: { timezone: 'Asia/Shanghai', days: [1, 2, 3, 4, 5], windows: ['09:00-18:00'] } },
+          { package: taskPkg, enabled: true, account: { platform: 'macos', accountKey: 'local' } },
+        ],
+        providers: {},
+      }),
+    );
+    const host = await startAgentHostDaemon({
+      tasksDir,
+      openSession: async () => {
+        throw new Error('unused');
+      },
+      spawn: createLineProcessSpawner({ inheritEnv: false }),
+      configPollMs: 60_000,
+    });
+    try {
+      assert.deepEqual([host.agents.length, host.skipped, host.taskAgents()], [0, [], ['test.task']]);
+      await host.reload();
+      assert.deepEqual([host.agents.length, host.skipped, host.taskAgents()], [0, [], ['test.task']]);
+      // Its grants are listed and edited by its skill id, like any agent's.
+      assert.deepEqual(listGrants(paths.config, 'boss.collect-resumes'), []);
+    } finally {
+      await host.stop();
+    }
+  } finally {
+    await rm(tasksDir, { recursive: true, force: true });
+  }
+});

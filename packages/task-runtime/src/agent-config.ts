@@ -57,6 +57,19 @@ export interface ProviderConfig {
   timeoutMs?: number;
 }
 
+/**
+ * `builtin:<skill id>` names a skill the runtime ships (skills/<name>/task.json)
+ * as an agent of the hub: its entry gives it an account, work hours and
+ * ceilings, which the worker's skill runner checks on every action. The agent
+ * host does not start it; the worker runs its tasks.
+ */
+export const BUILTIN_PACKAGE = /^builtin:[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)+$/;
+
+/** The skill id of a builtin entry, else undefined. */
+export function builtinSkillOf(entry: Pick<AgentEntryConfig, 'package'>): string | undefined {
+  return BUILTIN_PACKAGE.test(entry.package) ? entry.package.slice('builtin:'.length) : undefined;
+}
+
 export interface AgentEntryConfig {
   package: string;
   enabled: boolean;
@@ -114,7 +127,8 @@ export function validateHostConfig(raw: unknown): Validated<HostConfig> {
       if (!isObject(a)) return void errors.push(`${p} must be an object`);
       for (const k of Object.keys(a))
         if (!['package', 'enabled', 'account', 'takeOver', 'grants', 'ceilings', 'workHours'].includes(k)) errors.push(`${p}.${k} is not a field of an agent entry`);
-      if (!isNonEmpty(a.package) || !isAbsolute(a.package)) errors.push(`${p}.package must be an absolute directory`);
+      if (!isNonEmpty(a.package) || !(isAbsolute(a.package) || BUILTIN_PACKAGE.test(a.package)))
+        errors.push(`${p}.package must be an absolute directory, or builtin:<skill id> for a skill the runtime ships`);
       if (typeof a.enabled !== 'boolean') errors.push(`${p}.enabled must be boolean`);
       if (!isObject(a.account) || !isNonEmpty(a.account.platform) || typeof a.account.accountKey !== 'string' || !KEY.test(a.account.accountKey))
         errors.push(`${p}.account must name a platform and an accountKey of letters, digits, '.', '_' or '-'`);
@@ -344,6 +358,8 @@ function writeConfigAtomic(path: string, config: unknown): void {
 
 /** The agent id an entry's package declares, or undefined when it cannot be read. */
 function agentIdOf(entry: AgentEntryConfig): string | undefined {
+  const builtin = builtinSkillOf(entry);
+  if (builtin) return builtin;
   try {
     const raw = JSON.parse(readFileSync(join(entry.package, 'agent.json'), 'utf8')) as { id?: unknown };
     return typeof raw.id === 'string' ? raw.id : undefined;
