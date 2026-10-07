@@ -27,7 +27,13 @@ VARIANT=()
 DEST=""
 for arg in "$@"; do
     case "$arg" in
-        --generic|--legacy) VARIANT=("$arg") ;;
+        --generic|--legacy)
+            # One variant only; a second flag is refused here, before anything is fetched or built.
+            if [[ ${#VARIANT[@]} -gt 0 && "${VARIANT[0]}" != "$arg" ]]; then
+                echo "error: ${VARIANT[0]} and $arg exclude each other" >&2
+                exit 2
+            fi
+            VARIANT=("$arg") ;;
         --*) echo "error: unknown option $arg" >&2; exit 2 ;;
         *) DEST="$arg" ;;
     esac

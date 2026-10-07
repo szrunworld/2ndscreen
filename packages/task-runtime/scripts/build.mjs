@@ -42,7 +42,8 @@ mkdirSync(out, { recursive: true });
 
 /** Imports of business modules the generic build replaced, importer → module. */
 const excluded = [];
-const BUSINESS = /(^|\/)boss\/[^/]+\.ts$/;
+// Any module under a boss/ directory, however deep: './boss/workflow.ts', '../boss/x/y.ts'.
+const BUSINESS = /(^|\/)boss\/.+\.ts$/;
 const noBusinessPackage = {
   name: 'no-business-package',
   setup(b) {
@@ -55,6 +56,9 @@ const noBusinessPackage = {
 };
 
 const result = await build({
+  // Metafile paths are relative to the working directory: pin it, so the
+  // check below reads the same paths whatever directory the build runs from.
+  absWorkingDir: pkg,
   entryPoints: { main: join(pkg, 'src/main.ts'), worker: join(pkg, 'src/worker.ts') },
   outdir: out,
   outExtension: { '.js': '.mjs' },
@@ -74,10 +78,11 @@ const result = await build({
 });
 
 // What the bundles are made of, as evidence: a generic build reaches no business module.
+// Metafile keys are relative to absWorkingDir (pkg); stubbed imports carry their namespace.
 const inputs = Object.keys(result.metafile.inputs)
-  .map((p) => relative(pkg, resolve(pkg, p)))
+  .map((p) => (p.includes(':') ? p : relative(pkg, resolve(pkg, p))))
   .sort();
-const business = inputs.filter((p) => p.startsWith('src/boss/'));
+const business = inputs.filter((p) => !p.includes(':') && /(^|\/)src\/boss\//.test(p));
 if (variant === 'generic' && business.length) throw new Error(`the generic build still contains business modules: ${business.join(', ')}`);
 if (variant === 'generic' && excluded.length === 0) throw new Error('the generic build excluded nothing; the import of the business package moved');
 

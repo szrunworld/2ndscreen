@@ -422,9 +422,13 @@ export SECONDSCREEN_TASK_RUNTIME=/some/dir
 The install has two variants, named in its `build.json`. The default,
 `--legacy`, is what 2ndscreen.app ships: the BOSS workflow compiled in and
 the skills beside it. `--generic` builds the runtime a product ships
-without any business package: no module under `src/boss` reaches the
-bundles (the build fails if one does) and there is no skills directory,
-so it registers no workflow until a business package is installed.
+without any business package: no module under `src/boss` (the BOSS page
+workflow and its parsers) reaches the bundles, the build fails if one
+does, and there is no skills directory, so it registers no workflow until
+a business package is installed. The generic bundles still carry the
+legacy skill runner, its BOSS account check and the résumé manifest
+export (`runner.ts`, `artifacts.ts`): moving those out is the rest of
+roadmap C01, not done yet.
 
 ```bash
 ./scripts/install-task-runtime.sh /some/dir --generic

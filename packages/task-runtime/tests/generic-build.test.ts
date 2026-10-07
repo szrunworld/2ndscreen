@@ -5,12 +5,13 @@
 
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, test } from 'node:test';
 
 const PACKAGE = join(import.meta.dirname, '..');
+const REPO = join(PACKAGE, '../..');
 let runtime: string;
 const node = process.execPath;
 let build: { variant: string; inputs: string[]; excluded: { from: string; module: string }[]; files: { path: string }[] };
@@ -29,6 +30,66 @@ test('the generic bundles reach no business module and ship no skills', () => {
   assert.deepEqual(build.excluded.map((e) => e.module), ['./boss/workflow.ts']);
   assert.deepEqual(build.files.map((f) => f.path), ['main.mjs', 'worker.mjs']);
   assert.equal(existsSync(join(runtime, 'skills')), false);
+});
+
+test('the generic build reads the same dependency graph from any working directory', () => {
+  for (const cwd of [REPO, PACKAGE, tmpdir()]) {
+    const out = join(mkdtempSync(join(tmpdir(), 'generic-cwd-')), 'task-runtime');
+    const built = spawnSync(node, [join(PACKAGE, 'scripts/build.mjs'), out, '--generic'], { encoding: 'utf8', cwd });
+    assert.equal(built.status, 0, `${cwd}: ${built.stderr}`);
+    const b = JSON.parse(readFileSync(join(out, 'build.json'), 'utf8'));
+    assert.deepEqual(b.inputs.filter((p: string) => /src\/boss\//.test(p)), [], cwd);
+    assert.ok(b.inputs.includes('src/bootstrap.ts'), `${cwd}: paths are relative to the package: ${b.inputs.slice(0, 3)}`);
+  }
+});
+
+test('a nested business module imported by the entry fails the generic build, from any working directory', () => {
+  // An isolated copy of the package with one more business module, imported by the entry point.
+  const copy = join(mkdtempSync(join(tmpdir(), 'generic-nested-')), 'task-runtime');
+  mkdirSync(copy, { recursive: true });
+  for (const name of ['src', 'scripts', 'package.json', 'tsconfig.json']) cpSync(join(PACKAGE, name), join(copy, name), { recursive: true });
+  symlinkSync(join(PACKAGE, 'node_modules'), join(copy, 'node_modules'));
+  mkdirSync(join(copy, 'src/boss/nested'), { recursive: true });
+  writeFileSync(join(copy, 'src/boss/nested/deep.ts'), 'export const DEEP = 1;\n');
+  writeFileSync(join(copy, 'src/main.ts'), "import { DEEP } from './boss/nested/deep.ts';\nconsole.log(DEEP);\n" + readFileSync(join(copy, 'src/main.ts'), 'utf8'));
+  for (const cwd of [REPO, copy, tmpdir()]) {
+    const out = join(mkdtempSync(join(tmpdir(), 'generic-nested-out-')), 'task-runtime');
+    const built = spawnSync(node, [join(copy, 'scripts/build.mjs'), out, '--generic'], { encoding: 'utf8', cwd });
+    // The plugin replaces the module with an empty one, so a named import of it cannot resolve: the build
+    // fails and names the business module, from whichever directory it runs. Nothing is shipped silently.
+    assert.notEqual(built.status, 0, `${cwd}: a static import of a business module must fail the generic build`);
+    assert.match(built.stderr, /business-excluded:\.\/boss\/nested\/deep\.ts/, cwd);
+    assert.equal(existsSync(join(out, 'main.mjs')), false, `${cwd}: no bundle is left behind`);
+  }
+});
+
+test('the metafile check catches a business module the plugin did not replace', () => {
+  // Same copy, but the business module is reached through a path the plugin's pattern does not match.
+  const copy = join(mkdtempSync(join(tmpdir(), 'generic-slip-')), 'task-runtime');
+  mkdirSync(copy, { recursive: true });
+  for (const name of ['src', 'scripts', 'package.json', 'tsconfig.json']) cpSync(join(PACKAGE, name), join(copy, name), { recursive: true });
+  symlinkSync(join(PACKAGE, 'node_modules'), join(copy, 'node_modules'));
+  // A re-export outside boss/ that reaches into it by an absolute path the pattern still matches is stubbed; to slip
+  // past, the import must not end in .ts under boss/: a .js twin.
+  mkdirSync(join(copy, 'src/boss/nested'), { recursive: true });
+  writeFileSync(join(copy, 'src/boss/nested/deep.js'), 'export const DEEP = 1;\n');
+  writeFileSync(join(copy, 'src/main.ts'), "import { DEEP } from './boss/nested/deep.js';\nconsole.log(DEEP);\n" + readFileSync(join(copy, 'src/main.ts'), 'utf8'));
+  for (const cwd of [REPO, copy]) {
+    const out = join(mkdtempSync(join(tmpdir(), 'generic-slip-out-')), 'task-runtime');
+    const built = spawnSync(node, [join(copy, 'scripts/build.mjs'), out, '--generic'], { encoding: 'utf8', cwd });
+    assert.notEqual(built.status, 0, `${cwd}: a business module in the graph must fail the build`);
+    assert.match(built.stderr, /still contains business modules: src\/boss\/nested\/deep\.js/);
+  }
+});
+
+test('the installer refuses conflicting variant flags before fetching or building', () => {
+  for (const flags of [['--generic', '--legacy'], ['--legacy', '--generic']]) {
+    const out = join(mkdtempSync(join(tmpdir(), 'install-conflict-')), 'rt');
+    const run = spawnSync('/bin/bash', [join(REPO, 'scripts/install-task-runtime.sh'), out, ...flags], { encoding: 'utf8' });
+    assert.equal(run.status, 2, run.stderr);
+    assert.match(run.stderr, /exclude each other/);
+    assert.equal(existsSync(out), false);
+  }
 });
 
 test('the legacy build still carries the business package', () => {
