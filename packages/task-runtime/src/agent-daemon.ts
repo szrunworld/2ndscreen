@@ -19,7 +19,7 @@ import { createProviderService } from './agent-providers.ts';
 import { createFileStatusPersister, createStatusBoard, type StatusBoard } from './agent-status.ts';
 import { RuntimeError, systemClock, type Clock, type LineProcessSpawner, type Session, type WindowBinding, type WindowProfile } from './contracts.ts';
 
-export interface OpenSessionRequest {
+export interface AgentSessionRequest {
   agentId: string;
   profile: WindowProfile;
   takeOver: boolean;
@@ -30,7 +30,7 @@ export interface OpenSessionRequest {
 
 export interface AgentHostDaemonOptions {
   tasksDir: string;
-  openSession(request: OpenSessionRequest, signal: AbortSignal): Promise<Session>;
+  openSession(request: AgentSessionRequest, signal: AbortSignal): Promise<Session>;
   /**
    * Ends an app the runtime launched for an agent. Called once the host stops
    * for good, for every such app still running: left on its agent screen, it

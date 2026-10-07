@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createLineProcessSpawner } from '../src/adapters/agent-bridge.ts';
 import { grantsOf, loadAgentPackage, localTime, validateHostConfig, workHoursFunction, type HostConfig } from '../src/agent-config.ts';
-import { claimHost, runningHostPid, startAgentHostDaemon, type OpenSessionRequest } from '../src/agent-daemon.ts';
+import { claimHost, runningHostPid, startAgentHostDaemon, type AgentSessionRequest } from '../src/agent-daemon.ts';
 import { decide, inboxPaths, listInbox } from '../src/agent-inbox.ts';
 import { agentDataPaths } from '../src/agent-ledgers.ts';
 import { createProviderService } from '../src/agent-providers.ts';
@@ -260,7 +260,7 @@ test('the host runs an enabled resident agent with the inbox, provider, ledgers,
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify({ choices: [{ message: { content: 'pong' } }], usage: { prompt_tokens: 1, completion_tokens: 1 } }));
   });
-  const opened: OpenSessionRequest[] = [];
+  const opened: AgentSessionRequest[] = [];
   let closed = 0;
   const acts: ActionRequest[] = [];
   let snaps = 0;
