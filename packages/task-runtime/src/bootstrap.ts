@@ -488,7 +488,17 @@ export function createWorkerAgentHosting(
       manager(r.submitAllowed, r.foregroundAllowed).open({ taskId: `agent:${r.agentId}`, profile: r.profile, takeOver: r.takeOver, leaseTtlMs: 60_000 }, signal),
     quitApp: (binding) => worker.adapter.quitApp!(binding),
     // Agents get only the environment the host builds, and each is on this worker's actor record.
-    spawn: worker.registry.wrap(options.spawn ?? createLineProcessSpawner({ inheritEnv: false })),
+    spawn: worker.registry.wrap(
+      options.spawn ??
+        createLineProcessSpawner({
+          inheritEnv: false,
+          // Each agent's own log (its stderr), next to the other agent records.
+          stderrPath: (env) => {
+            const id = env?.AGENT_DESKTOP_AGENT_ID;
+            return id && /^[A-Za-z0-9._-]+$/.test(id) ? join(agentDataPaths(config.paths.tasksDir).dir, 'logs', `${id}.log`) : undefined;
+          },
+        }),
+    ),
     interpreters,
     log,
     async previousStopped() {
