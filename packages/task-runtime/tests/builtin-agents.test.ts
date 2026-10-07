@@ -10,8 +10,9 @@ import { outcomeOfSkillTask } from '../src/agent-requests.ts';
 import { builtinPolicySource, checkedSessionManager } from '../src/builtin-agents.ts';
 import { isRuntimeError, type Action, type ActionRequest, type Session, type SessionManager, type TaskRecord, type TaskSpec } from '../src/contracts.ts';
 import { loadSkills } from '../src/bootstrap.ts';
+import { legacyWorkflows } from '../src/workflows.ts';
 
-const skills = loadSkills(join(import.meta.dirname, '../../../skills'));
+const skills = loadSkills(join(import.meta.dirname, '../../../skills'), { workflows: await legacyWorkflows() });
 const boss = skills.get('boss.collect-resumes')!.spec as TaskSpec;
 const BOSS = boss.application;
 

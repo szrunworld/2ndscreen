@@ -186,10 +186,12 @@ interface ControlState {
   unprovenNoted: boolean;
   /** A missing publication is already on record. */
   publicationNoted: boolean;
+  /** That this runtime has no package for the task's skill is already on record. */
+  skillMissingNoted: boolean;
 }
 
 function foldControl(events: TaskEvent[]): ControlState {
-  const state: ControlState = { published: false, exited: false, pausePending: false, unprovenNoted: false, publicationNoted: false };
+  const state: ControlState = { published: false, exited: false, pausePending: false, unprovenNoted: false, publicationNoted: false, skillMissingNoted: false };
   for (const e of events) {
     const d = e.detail ?? {};
     switch (e.type) {
@@ -198,6 +200,9 @@ function foldControl(events: TaskEvent[]): ControlState {
         break;
       case 'publication_missing':
         state.publicationNoted = true;
+        break;
+      case 'skill_missing':
+        state.skillMissingNoted = true;
         break;
       case 'worker_started':
         state.worker = d as unknown as WorkerRecord;
@@ -469,6 +474,11 @@ export function createTaskDaemon(
             .transitionTask(task.id, 'paused', { error: { code: 'lease_held', message: 'the worker running this task stopped without finishing it; resume to continue' } }, 'running')
             .catch(ignoreConflict);
           if (paused) await control(task.id, 'orphan_recovered', { epoch: state.worker.epoch, by: daemonId });
+        } else if ((task.status === 'running' || (task.status === 'queued' && state.published)) && !specs(task.skillId)) {
+          // A task of a business package this runtime does not carry: kept as it is, never claimed
+          // or failed, and the reason is on record once. Another worker with the package may run it.
+          if (!state.skillMissingNoted)
+            await control(task.id, 'skill_missing', { skillId: task.skillId, reason: `no package for skill ${task.skillId} is installed in this runtime`, by: daemonId });
         } else if (task.status === 'running' || (task.status === 'queued' && state.published)) {
           startable.push(task);
         } else if (task.status === 'queued' && !state.publicationNoted) {

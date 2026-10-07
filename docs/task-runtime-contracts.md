@@ -263,6 +263,14 @@ export function runCli(argv: readonly string[], io: CliIO, control: TaskControl)
 
 `packages/task-runtime/src/index.ts`：重新导出 contracts.ts 并提供装配函数（签名由 A7 定，需经协调者审核）。
 
+**通用启动（C01a）。** 业务包（skills 目录下带 task.json 的包）是显式的业务注册，不是 runtime 启动的前提：
+
+- 默认 skills 目录不存在或没有任何包，runtime 以零业务启动：控制客户端、worker、agent 宿主都正常工作，只是没有可提交的 skill。
+- `SECONDSCREEN_SKILLS_DIR` 显式指定的目录不存在、不可读，或某个包的 task.json 损坏、profile 不符，都是 `invalid_input` 错误；包里的 workflow 没有在本构建注册则是 `capability_missing`，错误信息列出已注册的 workflow。
+- workflow 由 `workflows.ts` 的注册表提供，只为已安装并声明它的包构造；通用启动流程不会主动创建任何业务 workflow、runner 或业务会话。本包仍携带的 BOSS workflow 通过 `legacyWorkflows()` 显式选入（C01b 把它移出通用构建）。
+- 账本里属于本 runtime 未安装的包的任务保持原状：不认领、不失败，控制事件 `skill_missing` 记录一次原因；装有该包的 worker 可以继续运行它。
+- CLI 只在用户显式设置了 `SECONDSCREEN_SKILLS_DIR` 时才把它传给 worker；否则 worker 按自己的入口位置解析同一个默认目录。
+
 ### A8 本地视觉（协调者新增）
 
 `packages/task-runtime/src/adapters/local-vision.ts`
