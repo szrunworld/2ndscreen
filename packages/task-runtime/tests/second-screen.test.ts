@@ -194,6 +194,27 @@ test('bindApp launches a missing app and waits past its loading window to a sett
   assert.ok(reads >= 4, 'the main window is read twice before it counts as settled');
 });
 
+test('an app the runtime launched is asked to quit before any signal, and a signal follows only if it stays', async () => {
+  const sent: Array<[number, string]> = [];
+  let gone = false;
+  const quits: string[][] = [];
+  const { run } = fakeRunner({
+    cli: (args) => {
+      if (verb(args) === 'app quit') {
+        quits.push(args);
+        gone = true;
+        return { ok: true, pid: 4242, running: false };
+      }
+      return { ok: false, error: 'unexpected' };
+    },
+    tools: { ...identityTools, ps: () => (gone ? { stdout: '' } : { stdout: 'Thu Sep 17 21:55:13 2026\n' }) },
+  });
+  const adapter = createSecondScreenAdapter({ signalProcess: (pid, sig) => void sent.push([pid, sig]), cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' });
+  await adapter.quitApp!(binding);
+  assert.deepEqual(quits, [['app', 'quit', '--pid', '4242', '--bundle', BUNDLE, '--wait', '10']]);
+  assert.deepEqual(sent, [], 'quit by itself: no signal, so nothing takes it for a crash');
+});
+
 test('a launch that started the app and then failed ends that app, never one that was already running', async () => {
   // ps -o lstart= prints e.g. "Wed Oct  7 09:40:01 2026".
   const lstart = (d: Date) => {

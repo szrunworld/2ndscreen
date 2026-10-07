@@ -13,6 +13,7 @@ usage:
   2ndscreen screen destroy NAME
   2ndscreen screen resize NAME --size WxH
   2ndscreen app launch --screen NAME (--bundle ID | --path APP) [--new-instance] [--fill | --fit-screen]
+  2ndscreen app quit --pid PID --bundle ID [--wait SECONDS]   ask that one app to quit, as ⌘Q would
   2ndscreen window move --screen NAME --pid PID [--window-id ID] [--fill | --fit-screen]
   2ndscreen window release --screen NAME --pid PID [--window-id ID]
   2ndscreen screenshot --screen NAME --output FILE.png [--windows]
@@ -193,6 +194,9 @@ if args.positional.first == "agent-bridge" {
 }
 if args.positional.first == "iphone" {
     IPhoneCommands.run(args)
+}
+if args.positional.prefix(2).joined(separator: " ") == "app quit" {
+    AppQuitCommand.run(args)
 }
 let verb = args.positional.prefix(2).joined(separator: " ")
 

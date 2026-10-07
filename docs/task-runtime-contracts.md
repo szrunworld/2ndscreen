@@ -430,5 +430,6 @@ Swift 侧：`Sources/SecondScreenCore/LocalVision.swift`（实现与协议）、
 | 宿主生命周期 | 宿主一直运行到被要求停止；没有 agent 时等待配置加入 |
 | 按请求运行 | `2ndscreen task submit AGENT_ID TASK_TYPE [--input JSON] [--timeout 30m]` 把请求原子写进 `agents/requests/`，立即返回任务编号；宿主不在时请求排队等待。宿主每 `requestPollMs`（默认 1 秒）领取：常驻 agent 交给它的 `submit`；任务型 agent 为每个任务打开会话、跑 `runAgentTask`、关闭会话，同一 agent 一次一个；不认识的 agent、清单没有的任务类型立即失败并写明原因。宿主停止时正在跑的被取消，排队的记为 `cancelled` |
 | 任务结果 | `agents/outcomes/<taskId>.json`：状态（queued / running / succeeded / partial / failed）、来源（runtime / agent）、提交、开始、结束时间、失败原因与说明、条目、产物、动作数与其中被拒和结果不明的数。agent 自建的任务也记。`2ndscreen task outcome TASK_ID`、MCP `task_submit`、`task_outcome` |
+| 结束应用 | 结束 runtime 启动的应用时先 `2ndscreen app quit --pid --bundle`（等同 ⌘Q，最多等 10 秒），仍在运行才 SIGTERM、再 SIGKILL；每一步前核对 bundle 与启动时间。BOSS直聘把 SIGTERM 当崩溃并自动重启到用户屏，2026-10-07 实测 |
 | 启动收尾 | `app launch` 返回失败或超时（启动单独放宽到 45 秒）时，若应用在启动前没运行、启动后在运行，且启动时间不早于这次启动前 2 秒，视为这次启动的，核对身份后结束；早已在运行的不碰 |
 
