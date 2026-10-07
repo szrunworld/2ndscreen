@@ -1,0 +1,49 @@
+name: macOS
+
+on:
+  push:
+    branches: [vdisplay-prototype]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  swift:
+    name: Engine (Swift)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: swift --version
+      - name: Build every product
+        run: swift build -c release
+      - name: Tests (run with SIGPIPE at its default)
+        run: swift test
+
+  task-runtime:
+    name: Task runtime (TypeScript)
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: packages/task-runtime
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.2
+      - name: Dependencies from the lock file
+        run: npm ci --no-audit --no-fund
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Tests
+        run: node --import tsx --test tests/*.test.ts
+      - name: Generic and legacy builds
+        run: |
+          node scripts/build.mjs /tmp/rt-generic --generic
+          node scripts/build.mjs /tmp/rt-legacy
+          /usr/bin/python3 - <<'PY'
+          import json
+          g = json.load(open('/tmp/rt-generic/build.json')); l = json.load(open('/tmp/rt-legacy/build.json'))
+          assert g['variant'] == 'generic' and not [p for p in g['inputs'] if 'src/boss/' in p], g['inputs']
+          assert l['variant'] == 'legacy' and any('src/boss/' in p for p in l['inputs'])
+          print('generic inputs', len(g['inputs']), 'legacy inputs', len(l['inputs']))
+          PY
