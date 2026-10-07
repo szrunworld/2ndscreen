@@ -7,7 +7,7 @@ import { createLineProcessSpawner } from '../src/adapters/agent-bridge.ts';
 import { AGENT_PROTOCOL, validateAgentSpec, type AgentSpec } from '../src/agent-contracts.ts';
 import { createMemoryEffectLedger, startResidentAgent, type AgentTaskOutcome, type ResidentAgentOptions } from '../src/agent-host.ts';
 import { createStatusBoard } from '../src/agent-status.ts';
-import { isRuntimeError, type ActionRequest, type ActionStatus, type Clock, type Session, type WindowGeometry } from '../src/contracts.ts';
+import { RuntimeError, isRuntimeError, type ActionRequest, type ActionStatus, type Clock, type Session, type WindowGeometry } from '../src/contracts.ts';
 
 // A real child process plays a resident agent. Its first argument picks a
 // scenario, its second names a counter file in the package, so a scenario
@@ -302,4 +302,26 @@ test('sessions that cannot be opened count as failed runs, start no process, and
   assert.deepEqual(outcome.runs.map((r) => r.end), ['no_session', 'no_session']);
   assert.equal(opens, 2);
   assert.equal(spawned, 0);
+});
+
+test('an app the user holds is waited for without end: session conflicts never count as crashes', async () => {
+  let opens = 0;
+  const { agent } = start('worker', {
+    sessions: undefined,
+    sessionSource: {
+      open: async () => {
+        opens += 1;
+        if (opens <= 5) throw new RuntimeError('conflict', 'com.zhipin.www (pid 596) is running off screen and was not handed over');
+        throw new Error('BOSS直聘 is not installed');
+      },
+      close: async () => {},
+    },
+    maxRestarts: 1,
+    sessionWaitMs: 10,
+  });
+  const outcome = await agent.done;
+  // Five conflicts waited out, then two real failures give up as before.
+  assert.equal(outcome.stoppedBy, 'gave_up');
+  assert.equal(opens, 7);
+  assert.equal(outcome.runs.length, 7);
 });

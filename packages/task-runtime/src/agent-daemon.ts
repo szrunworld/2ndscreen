@@ -53,7 +53,7 @@ export interface AgentHostDaemonOptions {
   /** How often submitted tasks are looked for; default 1 s. */
   requestPollMs?: number;
   /** Timing knobs for every resident agent, for tests. */
-  resident?: Pick<ResidentAgentOptions, 'heartbeatTimeoutMs' | 'workHoursPollMs' | 'maxRestarts' | 'restartDelaysMs' | 'killGraceMs'>;
+  resident?: Pick<ResidentAgentOptions, 'heartbeatTimeoutMs' | 'workHoursPollMs' | 'maxRestarts' | 'restartDelaysMs' | 'killGraceMs' | 'sessionWaitMs'>;
   fetch?: typeof fetch;
   /** The run_unit service (agent-units.ts); without it agents' run_unit answers not_offered. */
   units?: UnitService;
@@ -132,6 +132,8 @@ export async function startAgentHostDaemon(options: AgentHostDaemonOptions): Pro
     hours: { inHours: (now: Date) => boolean };
   }
   const live = new Map<string, Live>();
+  /** The last session problem logged per agent. */
+  const lastNoSession = new Map<string, string | undefined>();
   /** Changing any of these needs a new agent; the rest applies in place. */
   const restartKey = (e: AgentEntryConfig) => JSON.stringify([e.package, e.account.platform, e.account.accountKey, e.takeOver ?? false]);
   const fill = (target: Live, entry: AgentEntryConfig, agentId: string, grantedAt: string) => {
@@ -368,7 +370,6 @@ export async function startAgentHostDaemon(options: AgentHostDaemonOptions): Pro
             return opened;
           } catch (error) {
             for (const s of opened.values()) await s.close({ keepWindow: true }).catch(() => undefined);
-            log(`${spec.id}: could not open its sessions: ${error instanceof Error ? error.message : String(error)}`);
             throw error;
           }
         },
@@ -417,8 +418,17 @@ export async function startAgentHostDaemon(options: AgentHostDaemonOptions): Pro
         types.delete(id);
         log(`${spec.id}: task ${id} ${o.status}${o.failure ? ` (${o.failure})` : ''}`);
       },
-      onRunEnded: (r) =>
-        log(`${spec.id}: run ${r.runId} ended: ${r.end}${r.detail ? ` (${r.detail})` : ''}${r.exitCode !== null ? `, exit ${r.exitCode}` : ''}${r.carried ? `, ${r.carried} task(s) carried` : ''}`),
+      onRunEnded: (r) => {
+        // The same session problem again and again is said once, until it changes.
+        if (r.end === 'no_session') {
+          if (lastNoSession.get(spec.id) === r.detail) return;
+          lastNoSession.set(spec.id, r.detail);
+          log(`${spec.id}: cannot open its sessions, trying again until it can: ${r.detail ?? ''}`);
+          return;
+        }
+        lastNoSession.delete(spec.id);
+        log(`${spec.id}: run ${r.runId} ended: ${r.end}${r.detail ? ` (${r.detail})` : ''}${r.exitCode !== null ? `, exit ${r.exitCode}` : ''}${r.carried ? `, ${r.carried} task(s) carried` : ''}`);
+      },
     });
     log(`${spec.id} ${spec.version}: hosted from ${pkg.dir}`);
     return { agentId: spec.id, package: pkg.dir, agent };
