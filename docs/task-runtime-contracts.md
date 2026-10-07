@@ -362,6 +362,7 @@ Swift 侧：`Sources/SecondScreenCore/LocalVision.swift`（实现与协议）、
 | 会话 | 调用方为清单里每个应用开好一个 `Session`；`observe` / `act` / `wait` 都经这些会话执行，agent 进程不碰桌面 |
 | 检查链 | `checkAction` 纯函数，固定顺序：应用与 effect 已声明 → 授权（external-submit；`findGrant` 按 agent、应用、账号、effect 匹配，过期即 `grant_expired`）→ 限额（`effectiveLimit` 取硬上限、组织、用户、清单中最紧的；「每天」是滚动 24 小时；按应用与账号跨 agent 计数）→ 工作时段 → 快照 → 结果不明的目标 → 审批（清单、授权、组织/用户下限三者取最严；`human_in_the_loop` 要求 act 带一个已批准、未用过、effect 与目标相符的 `approvalId`，用一次即作废） |
 | 硬上限 | `HARD_LIMITS`：external-submit 每 24 小时 20 次、间隔至少 45 秒 |
+| 确认动作 | act 可带 `confirms: <requestId>`，表示它是前一次外发打开的确认框里的“确定”。被确认的那次须在同一任务、同一应用、同一 target、已放行且结果 ok、60 秒内、尚未被确认过；满足时这次算同一次使用：不再要审批，不再计入上限与间隔，不再记入限额账本，审计里带 `confirms`。不满足时按普通外发检查 |
 | 结果不明 | external-submit 返回 `unknown`，或投递中被取消、超时，记该 `target`（没给 target 记整个任务）；之后同一目标的 external-submit 一律 `target_unknown_result` |
 | 审批 | `ask_approval` 交给注入的 `Approver`，附 Runtime 算出的 `consequences`（24 小时内已用、剩余、距上次、目标是否有过不明结果、是否在时段内）；没有 `Approver` 时一律拒绝 |
 | Provider | 只放行清单声明的 provider 与用途；没有注入 `ProviderService` 时回 `provider_unavailable` |

@@ -720,3 +720,46 @@ test('every action is on the click record: what was sent with its result, and wh
   assert.equal(records[0]!.agentId, 'test.echo');
   assert.equal(typeof records[0]!.ms, 'number');
 });
+
+test('a confirmation completes the external-submit it names: no second approval, no second count; only once, same target, within a minute', async () => {
+  let asked = 0;
+  const approver: Approver = { request: async () => ((asked += 1), { decision: 'grant' }) };
+  const confirm = (of: string, target = 'cand-1') => ({
+    type: 'act',
+    app: BOSS,
+    target,
+    confirms: of,
+    action: { kind: 'click', target: { kind: 'element', role: 'AXButton', label: '确定' }, effect: 'external-submit' },
+  });
+  const { outcome, report, sessions, ledger, events } = await runEcho(
+    {
+      steps: [
+        { type: 'ask_approval', effect: 'external-submit', summary: '向陈一求简历', app: BOSS, target: 'cand-1' }, // a1
+        submit('cand-1', { approvalId: '$approval' }), // r2
+        confirm('r2'), // r3: completes r2
+        confirm('r2'), // r4: r2 is confirmed already
+        confirm('r2', 'cand-2'), // r5: another target
+      ],
+    },
+    // A clock that barely moves, so the minute holds; 45 s between uses would refuse a second use as too fast.
+    { grants: [grantFor('human_in_the_loop')], approver, clock: steppingClock(Date.parse('2026-10-07T02:00:00Z'), 1000) },
+  );
+  assert.equal(outcome.status, 'succeeded', JSON.stringify(outcome));
+  assert.deepEqual(report!.responses, [
+    { type: 'grant', hints: null },
+    { type: 'action_result', status: 'ok' },
+    { type: 'action_result', status: 'ok' },
+    { type: 'action_result', refusal: 'too_fast', wait: report!.responses[3]!.wait },
+    { type: 'action_result', refusal: 'too_fast', wait: report!.responses[4]!.wait },
+  ]);
+  assert.equal(asked, 1);
+  assert.equal((sessions.get(BOSS) as FakeSession).acts.length, 2);
+  assert.equal((ledger as ReturnType<typeof createMemoryEffectLedger>).all.length, 1, 'the confirmation is the same use');
+  const audits = events.flatMap((e) => (e.type === 'audit' ? [e.record] : []));
+  assert.deepEqual(audits.map((a) => [a.decision, a.confirms ?? null]), [
+    ['allowed', null],
+    ['allowed', 'r2'],
+    ['refused', null],
+    ['refused', null],
+  ]);
+});

@@ -598,6 +598,15 @@ export type AgentMessage = MessageBase &
         target?: string;
         /** The granted `ask_approval` this act carries out; used once. */
         approvalId?: string;
+        /**
+         * The requestId of an external-submit this act completes, as the
+         * "确定" of a confirmation dialog the first act opened. When it was
+         * allowed and ok in this task, on the same target, less than a minute
+         * ago, and not confirmed before, this act counts as the same use: no
+         * second approval and no second count against the limits. Otherwise
+         * the act is checked like any other.
+         */
+        confirms?: string;
       }
     | { type: 'wait'; taskId: string; requestId: string; app: string; wait: WaitSpec }
     | { type: 'provider'; taskId?: string; requestId: string; providerId: string; purpose: ProviderPurpose; input: unknown; screenshotRef?: string }
@@ -740,6 +749,7 @@ export function parseAgentMessage(line: string, expected?: ExpectedMessage): Val
       if (raw.snapshotId !== undefined && !isNonEmpty(raw.snapshotId)) errors.push('snapshotId must be a non-empty string when present');
       if (raw.target !== undefined && !isNonEmpty(raw.target)) errors.push('target must be a non-empty string when present');
       if (raw.approvalId !== undefined && !isNonEmpty(raw.approvalId)) errors.push('approvalId must be a non-empty string when present');
+      if (raw.confirms !== undefined && !isNonEmpty(raw.confirms)) errors.push('confirms must be a non-empty string when present');
       break;
     case 'wait':
       needRequest();
