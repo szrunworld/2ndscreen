@@ -56,6 +56,8 @@ export interface SecondScreenAdapterOptions {
 /** How long a new side instance may take to answer, and the app its main window. */
 const INSTANCE_POLLS = 20;
 const INSTANCE_POLL_MS = 500;
+/** A narrow window unchanged this long is waiting for a person (login), not loading. */
+const NARROW_WINDOW_WAITS_MS = 20_000;
 const MAIN_WINDOW_TIMEOUT_MS = 30_000;
 /** One `app launch` may take this long before it counts as failed. */
 const APP_LAUNCH_TIMEOUT_MS = 45_000;
@@ -301,15 +303,22 @@ export function createSecondScreenAdapter(options: SecondScreenAdapterOptions): 
     const deadline = Date.now() + MAIN_WINDOW_TIMEOUT_MS;
     let last: { windowId: number; frame: Rect } | undefined;
     let lastError = 'no window yet';
+    /** A narrow window that has not changed: a login or setup window waiting for a person, not a loading one. */
+    let narrow: { windowId: number; frame: Rect; since: number } | undefined;
     while (Date.now() < deadline) {
       const reply = await cli(['state', '--screen', screenId, '--pid', String(pid)], signal);
       const window = reply.ok ? windowOf(reply) : undefined;
       if (window && window.frame.width >= (profile.mainWindowMinWidth ?? profile.logicalWidth * MAIN_WINDOW_MIN_SHARE)) {
         if (last && last.windowId === window.windowId && sameRect(last.frame, window.frame)) return { ...window, title: String(reply.json.app ?? '') };
         last = window;
+        narrow = undefined;
       } else {
         last = undefined;
         lastError = reply.ok ? 'only a loading window' : (reply.error ?? 'state failed');
+        if (window && narrow && narrow.windowId === window.windowId && sameRect(narrow.frame, window.frame)) {
+          if (Date.now() - narrow.since >= NARROW_WINDOW_WAITS_MS)
+            throw new RuntimeError('login_required', `${profile.bundleId} shows a small window that does not go away (a login window?) on ${screenId}; a person has to finish it there`, { pid, windowId: window.windowId });
+        } else narrow = window ? { ...window, since: Date.now() } : undefined;
       }
       await delay(MAIN_WINDOW_POLL_MS, signal);
     }
@@ -558,7 +567,8 @@ export function createSecondScreenAdapter(options: SecondScreenAdapterOptions): 
       try {
         return await bindAppOnce(screenId, profile, bindOptions, signal, launchedApp);
       } catch (error) {
-        await endLaunched(launchedApp, profile.bundleId).catch(() => undefined);
+        // An app waiting for a person to log in stays open on its screen for them; ending it would start the login over.
+        if (!isRuntimeError(error, 'login_required')) await endLaunched(launchedApp, profile.bundleId).catch(() => undefined);
         throw error;
       }
     },

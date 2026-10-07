@@ -1288,6 +1288,9 @@ export function startResidentAgent(options: ResidentAgentOptions): ResidentAgent
   const workHoursPollMs = options.workHoursPollMs ?? 60_000;
   const maxRestarts = options.maxRestarts ?? 3;
   const sessionWaitMs = options.sessionWaitMs ?? 60_000;
+  /** The status board entry that shows the agent waiting for its app, while it does. */
+  let waitingRun: string | undefined;
+  let waitingMessage: string | undefined;
   const delays = options.restartDelaysMs && options.restartDelaysMs.length > 0 ? options.restartDelaysMs : DEFAULT_RESTART_DELAYS_MS;
   const sleep = options.sleep ?? sleepFor;
   const schedule: ScheduleInfo = {
@@ -1360,8 +1363,21 @@ export function startResidentAgent(options: ResidentAgentOptions): ResidentAgent
               // The caller's.
             }
             // An app the user is using, or one not handed over, is no crash: wait for it, without end.
-            const occupied = isRuntimeError(error, 'conflict') || isRuntimeError(error, 'lease_held');
+            const occupied = isRuntimeError(error, 'conflict') || isRuntimeError(error, 'lease_held') || isRuntimeError(error, 'login_required');
             if (!occupied) strikes += 1;
+            else {
+              // Shown on the status board as what the agent waits for, until its sessions open.
+              const message = error instanceof Error ? error.message : String(error);
+              if (!waitingRun) {
+                waitingRun = runId;
+                options.status?.start({ runId, agentId: spec.id, mode: 'resident' });
+              }
+              if (waitingMessage !== message) {
+                if (waitingMessage !== undefined) options.status?.unblock(waitingRun, 'session');
+                options.status?.block(waitingRun, { kind: isRuntimeError(error, 'login_required') ? 'input' : 'agent', id: 'session', message });
+                waitingMessage = message;
+              }
+            }
             if (strikes > maxRestarts) {
               gaveUp = true;
               break;
@@ -1373,6 +1389,11 @@ export function startResidentAgent(options: ResidentAgentOptions): ResidentAgent
             }
             continue;
           }
+        }
+        if (waitingRun) {
+          options.status?.finish(waitingRun, { ok: true });
+          waitingRun = undefined;
+          waitingMessage = undefined;
         }
         const runOptions: AgentHostOptions = { ...options, sessions };
         const run = new HostRun(runOptions, clock, runId, 'resident', {
@@ -1461,6 +1482,7 @@ export function startResidentAgent(options: ResidentAgentOptions): ResidentAgent
       for (const t of carried) endTask(t.taskId, failed(t, gaveUp ? 'exited' : 'cancelled'));
       for (const t of queue.splice(0)) endTask(t.taskId, failed(t, 'cancelled'));
     }
+    if (waitingRun) options.status?.finish(waitingRun, { ok: !gaveUp, ...(gaveUp && { failure: 'gave_up' }) });
     return { stoppedBy: gaveUp ? 'gave_up' : 'signal', runs };
   })();
 

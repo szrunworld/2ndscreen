@@ -1088,3 +1088,27 @@ test('a side instance already started for the socket is waited for, never double
   await assert.rejects(adapter.ensureScreen(profile), (e) => isRuntimeError(e, 'timeout') && /pid 202/.test(e.message) && /no second one/.test(e.message));
   assert.equal(calls.filter((c) => c.file === 'open').length, 0);
 });
+
+test('a small window that never changes is a login waiting for a person: bindApp says so and leaves the app open', { timeout: 60_000 }, async () => {
+  const { run, calls } = fakeRunner({
+    cli: (args) => {
+      switch (verb(args)) {
+        case 'screen list':
+          return { ok: true, screens: [SCREEN] };
+        case 'app launch':
+          return { ok: true, pid: 4242 };
+        case 'state':
+          return { ok: true, pid: 4242, windowID: 70, app: 'Synthetic', windowFrame: { x: 3000, y: 25, width: 340, height: 500 } };
+        case 'app quit':
+          return { ok: true, pid: 4242, running: false };
+      }
+      return { ok: false, error: 'unexpected' };
+    },
+    tools: identityTools,
+  });
+  const sent: Array<[number, string]> = [];
+  const adapter = createSecondScreenAdapter({ signalProcess: (pid, sig) => void sent.push([pid, sig]), cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' });
+  await assert.rejects(adapter.bindApp(profile.id, profile, { takeOver: false }), (e) => isRuntimeError(e, 'login_required'));
+  assert.equal(calls.filter((c) => verb(c.args) === 'app quit').length, 0, 'the login window stays for the person');
+  assert.deepEqual(sent, []);
+});
