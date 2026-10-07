@@ -21,7 +21,7 @@ set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 APP="$ROOT/build/2ndscreen.app"
 BUNDLE_ID="io.github.szrunworld.2ndscreen"
-VERSION="0.1.0"
+VERSION="0.2.0"
 
 cd "$ROOT"
 # Build every product so the 2ndscreen CLI always matches the app.
