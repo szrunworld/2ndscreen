@@ -384,3 +384,18 @@ Swift 侧：`Sources/SecondScreenCore/LocalVision.swift`（实现与协议）、
 | 路径 | `agentDataPaths(tasksDir)`：`<tasksDir>/agents/` 下 `status.json`、`effects.jsonl`、`provider-usage.jsonl`、`prices.json`；`prepareAgentDataDir` 建目录并收紧为 0700 |
 | 命令行 | `2ndscreen task agents [--all]`、`2ndscreen task usage [--by …] [--since …]`，MCP `task_agents`、`task_usage`。只读文件，不需要 worker |
 
+### 常驻 agent（`startResidentAgent`）
+
+`startResidentAgent(options)` 立即返回句柄 `{ submit, stop, currentRunId, done }`，在后台按工作时段维持一个 `mode: resident` 的 process agent。只在无法启动时同步抛 `invalid_input` / `capability_missing`。
+
+| 规则 | 说明 |
+| --- | --- |
+| 工作时段 | `workHours` 为假时不启动进程，每 `workHoursPollMs`（默认 60 秒）看一次；进程运行中时段结束，先发 `stop`，`killGraceMs` 后 SIGTERM，再一个 `killGraceMs` 后 SIGKILL，本次运行记为 `work_hours`，不算故障 |
+| 心跳 | 超过 `heartbeatTimeoutMs`（默认清单 `idlePollSeconds` 的两倍）没有任何一行，判为失联，不再礼貌询问，直接 SIGTERM 与 SIGKILL |
+| 重启 | 崩溃、失联、协议违规、自行退出都算一次故障；按 `restartDelaysMs`（默认 2、10、30 秒，末项重复）等待后重启；同一段工作时段内故障超过 `maxRestarts`（默认 3）即放弃，`done` 以 `gave_up` 结束 |
+| 任务 | agent 用 `create_task` 自己建任务（`createTask` 回调决定编号，默认新编号）；Runtime 用 `submit` 派任务，进程在时立即发 `task_start`，不在时排队到下次启动。每个任务恰好一次 `onTaskEnded`：agent 报告的结果，或 agent 被停止、被放弃时以 `cancelled` / `exited` 失败 |
+| 续做 | 进程结束时未完成的任务带到下一个进程：`agent_start.resume.tasks` 列出它们，并重新发送带原输入的 `task_start`；已有的动作、条目、产物记录保留 |
+| 结果不明 | 结果不明的外发目标在整个常驻生命周期内共享，重启后的进程同样不能再次外发 |
+| 状态面板 | 每个进程一次运行一条；正常停止（时段结束、被要求停止）记为 done，其余记为 failed 并写明原因 |
+| 停止 | `stop()` 或 `signal` 停止后不再接受 `submit`；放弃之后同样不再接受 |
+

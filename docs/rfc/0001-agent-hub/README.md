@@ -204,7 +204,7 @@ agent → Runtime：
 | 服务 | 现状 | Hub 下 |
 | --- | --- | --- |
 | 互斥与租约 | `leaseScopeKey`，同 bundleId 一律冲突 | 不变；按 `applications` 逐个取得；process agent 自动纳入 |
-| 生命周期与排程 | 无 | 常驻 agent 的启停、工作时段、心跳、崩溃重启与重启上限；`mode: task` 的 agent 不受影响 |
+| 生命周期与排程 | 无 | 常驻 agent 的启停、工作时段、心跳、崩溃重启与重启上限；`mode: task` 的 agent 不受影响。已实现：`startResidentAgent`（未完成任务带到重启后的进程，结果不明的外发目标跨重启保持封锁） |
 | 账本与检查点 | `node:sqlite`，每候选人一个检查点 | `item` 消息直接落账本；`create_task` 建任务；重启时 `agent_start` 带检查点 |
 | 崩溃恢复 | 单元级重试、actor 退出核实 | agent 进程异常退出按「动作结果不明」处理，重启前核实窗口状态 |
 | 限额与风控 | 无 | 每个 effect 类别的全局硬上限与最小间隔，按账号与应用计数，持久化，重启后仍生效；触发平台风控（如 BOSS 安全验证页面）时全局暂停该应用的所有 agent |
