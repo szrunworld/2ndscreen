@@ -325,3 +325,30 @@ test('an app the user holds is waited for without end: session conflicts never c
   assert.equal(opens, 7);
   assert.equal(outcome.runs.length, 7);
 });
+
+test('an app waiting for a person to log in is shown on the board and waited for; the entry ends when sessions open', async () => {
+  const board = createStatusBoard();
+  let opens = 0;
+  const { agent } = start('worker', {
+    sessions: undefined,
+    status: board,
+    sessionSource: {
+      open: async () => {
+        opens += 1;
+        if (opens <= 3) throw new RuntimeError('login_required', 'com.zhipin.www shows a small window that does not go away (a login window?)');
+        return new Map([[BOSS, session()]]);
+      },
+      close: async () => {},
+    },
+    maxRestarts: 0,
+    sessionWaitMs: 10,
+  });
+  for (let i = 0; i < 200 && opens < 2; i++) await new Promise((r) => setTimeout(r, 5));
+  const waiting = board.list().find((r) => r.state === 'blocked');
+  assert.equal(waiting?.blockedOn?.kind, 'input');
+  assert.match(waiting!.blockedOn!.message, /login window/);
+  for (let i = 0; i < 400 && opens < 4; i++) await new Promise((r) => setTimeout(r, 5));
+  assert.equal(board.get(waiting!.runId)?.state, 'done', 'the waiting entry ends once the app is usable');
+  agent.stop();
+  await agent.done;
+});
