@@ -60,11 +60,19 @@ public final class ControlServer {
     private func acceptClient() {
         let client = accept(listener, nil, nil)
         guard client >= 0 else { return }
+        // A client may leave before the reply (a listener check connects and
+        // closes at once; a command can be interrupted). Writing to it then
+        // fails with EPIPE for this connection alone instead of raising
+        // SIGPIPE, which would end the whole host.
+        var noSignal: Int32 = 1
+        setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, socklen_t(MemoryLayout<Int32>.size))
         clients.async { [handler] in
             defer { close(client) }
+            // No request (the client closed, or the read failed): nothing to
+            // answer and no handler to run.
+            guard let line = try? readLine(client) else { return }
             let response: ControlResponse
             do {
-                let line = try readLine(client)
                 let request = try JSONDecoder().decode(ControlRequest.self, from: line)
                 response = Self.runOnMain { await handler(request) }
             } catch {
@@ -72,6 +80,7 @@ public final class ControlServer {
             }
             guard var data = try? JSONEncoder().encode(response) else { return }
             data.append(0x0A)
+            // The client may be gone by now; the failure is this connection's alone.
             try? writeAll(client, data)
         }
     }
