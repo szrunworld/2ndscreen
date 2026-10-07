@@ -139,7 +139,7 @@ test('the inbox commands check their words before anything is decided', async ()
     approve: async (id: string) => (calls.push(['approve', id]), {}),
     deny: async (id: string, g: unknown) => (calls.push(['deny', id, g]), {}),
     answer: async (id: string, text: string) => (calls.push(['answer', id, text]), {}),
-    host: unused, grants: unused, grant: unused, revoke: unused,
+    host: unused, grants: unused, grant: unused, revoke: unused, submitTask: unused, outcome: unused,
   } as unknown as TaskControl & AgentViewControl;
   const cli = async (words: string[]) => {
     const out: string[] = [];
@@ -175,6 +175,7 @@ test('grant and revoke words: default effect, mode and a 7-day end; one end at m
     grants: async (id?: string) => (calls.push(['grants', id]), {}),
     grant: async (r: unknown) => (calls.push(['grant', r]), {}),
     revoke: async (r: unknown) => (calls.push(['revoke', r]), {}),
+    submitTask: unused, outcome: unused,
   } as unknown as TaskControl & AgentViewControl;
   const cli = async (words: string[]) => {
     const out: string[] = [];

@@ -434,10 +434,14 @@ someone decides them:
 2ndscreen task host start|stop|status
 2ndscreen task inbox
 2ndscreen task approve|deny|answer INBOX_ID ...
+2ndscreen task grants|grant|revoke ...
+2ndscreen task submit AGENT_ID TASK_TYPE [--input JSON]
+2ndscreen task outcome TASK_ID
 ```
 
-MCP has them as `task_host`, `task_inbox`, `task_approve`, `task_deny` and
-`task_answer`.
+MCP has them as `task_host`, `task_inbox`, `task_approve`, `task_deny`,
+`task_answer`, `task_grants`, `task_grant`, `task_revoke`, `task_submit` and
+`task_outcome`.
 
 Task runs take a lease on BOSS直聘 in the task ledger (`leaseScopeKey` in
 `packages/task-runtime/src/contracts.ts`), so two of them, or another

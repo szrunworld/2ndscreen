@@ -443,7 +443,7 @@ enum MCPServer {
 /// that nothing is guessed: an unknown argument, a string for a number, a
 /// fraction or a 1 for true is refused before anything runs.
 extension MCPServer {
-    enum ArgumentKind { case string, integer, boolean, budget }
+    enum ArgumentKind { case string, integer, boolean, budget, object }
 
     static let taskTools: [Tool] = {
         let id: [String: Any] = described(string, "Task ID returned by task_run")
@@ -597,6 +597,27 @@ extension MCPServer {
                               return w
                           },
                           check: checker(["agent_id": .string, "application": .string, "effect": .string])))
+        tools.append(Tool(name: "task_submit",
+                          description: "Hand a task to an agent the agent host runs: its agent id, a task type its manifest lists, and a JSON object as input. Returns the task id at once; follow it with task_outcome. What the agent may send is still governed by its grants and the inbox.",
+                          properties: ["agent_id": agentID,
+                                       "task_type": described(string, "A task type from the agent's manifest"),
+                                       "input": ["type": "object", "description": "The task's input"],
+                                       "timeout": described(string, "For a task agent's run, e.g. 30m or 2h; default 30m")],
+                          required: ["agent_id", "task_type"],
+                          words: { a in
+                              var w = ["task", "submit"] + [a["agent_id"], a["task_type"]].compactMap { $0 as? String }
+                              if let input = a["input"], let data = try? JSONSerialization.data(withJSONObject: input), let text = String(data: data, encoding: .utf8) {
+                                  w += ["--input", text]
+                              }
+                              if let v = a["timeout"] as? String { w += ["--timeout", v] }
+                              return w
+                          },
+                          check: checker(["agent_id": .string, "task_type": .string, "input": .object, "timeout": .string])))
+        tools.append(Tool(name: "task_outcome",
+                          description: "How an agent task stands: queued, running, or how it ended, with its items, artifacts and how many of its actions were refused.",
+                          properties: ["task_id": described(string, "Task id from task_submit")], required: ["task_id"],
+                          words: { a in ["task", "outcome"] + ((a["task_id"] as? String).map { [$0] } ?? []) },
+                          check: checker(["task_id": .string])))
         return tools
     }()
 
@@ -615,6 +636,8 @@ extension MCPServer {
                 case .budget:
                     guard let fields = value as? [String: Any], fields.values.allSatisfy({ exactInteger($0) != nil })
                     else { return "\(name) must map budget fields to whole numbers" }
+                case .object:
+                    guard value is [String: Any] else { return "\(name) must be a JSON object" }
                 }
             }
             return nil

@@ -2,6 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { readdirSync } from 'node:fs';
+import { readOutcome, requestPaths, submitTaskRequest } from '../src/agent-requests.ts';
+import { parseSubmit } from '../src/cli.ts';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createLineProcessSpawner } from '../src/adapters/agent-bridge.ts';
@@ -393,6 +396,11 @@ const ask = (m, k) => new Promise((r) => { pending.set(k, r); send(m); });
 rl.on('line', (line) => {
   const m = JSON.parse(line);
   if (m.type === 'agent_start') { runId = m.agentRunId; void go(); return; }
+  if (m.type === 'task_start') {
+    send({ type: 'item', taskId: m.taskId, itemId: 'given', status: 'committed', data: { input: m.input } });
+    send({ type: 'task_finished', taskId: m.taskId, status: 'succeeded' });
+    return;
+  }
   if (m.type === 'stop') { send({ type: 'agent_stopped', reason: 'stop' }); process.exit(0); }
   const k = m.requestId ?? m.approvalId; const r = pending.get(k); if (r) { pending.delete(k); r(m); }
 });
@@ -514,4 +522,119 @@ test('a grant given while the agent runs takes effect at once, without restartin
   } finally {
     await rm(tasksDir, { recursive: true, force: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Tasks on request
+
+const TASK_AGENT = String.raw`
+import { createInterface } from 'node:readline';
+const rl = createInterface({ input: process.stdin });
+let seq = 0, runId; const pending = new Map();
+const send = (m) => process.stdout.write(JSON.stringify({ v: 1, agentRunId: runId, seq: ++seq, at: new Date().toISOString(), ...m }) + '\n');
+const ask = (m, k) => new Promise((r) => { pending.set(k, r); send(m); });
+rl.on('line', (line) => {
+  const m = JSON.parse(line);
+  if (m.type === 'agent_start') { runId = m.agentRunId; return; }
+  if (m.type === 'task_start') { void go(m); return; }
+  const k = m.requestId; const r = pending.get(k); if (r) { pending.delete(k); r(m); }
+});
+async function go(t) {
+  await ask({ type: 'observe', taskId: t.taskId, requestId: 'o', app: 'com.apple.calculator' }, 'o');
+  await new Promise((r) => setTimeout(r, Number(t.input.waitMs ?? 0)));
+  send({ type: 'item', taskId: t.taskId, itemId: 'echo', status: 'committed', data: { input: t.input } });
+  send({ type: 'task_finished', taskId: t.taskId, status: 'succeeded' });
+  rl.close();
+}
+`;
+
+test('submitted tasks run on task agents one at a time, reach resident agents, and every task leaves an outcome', async () => {
+  const tasksDir = await tmp('agent-requests-');
+  const paths = agentDataPaths(tasksDir);
+  const req = requestPaths(paths.dir);
+  let hostRef: { stop(): Promise<void> } | undefined;
+  try {
+    const taskPkg = await makePackage(join(tasksDir, 'task-pkg'), TASK_AGENT, { id: 'test.task', mode: 'task', schedule: undefined, effects: ['read'], approval: {} });
+    const residentPkg = await makePackage(join(tasksDir, 'res-pkg'), RETRYING_AGENT, { id: 'test.resident', approval: { 'external-submit': 'trusted_within_ceiling' } });
+    await mkdir(paths.dir, { recursive: true });
+    await writeFile(
+      paths.config,
+      JSON.stringify({
+        agents: [
+          { package: taskPkg, enabled: true, account: { platform: 'macos', accountKey: 'local' } },
+          {
+            package: residentPkg,
+            enabled: true,
+            account: { platform: 'macos', accountKey: 'local' },
+            grants: [{ application: 'com.apple.calculator', effect: 'external-submit', mode: 'trusted_within_ceiling', durable: true }],
+          },
+        ],
+        providers: {},
+      }),
+    );
+    let openNow = 0;
+    let maxOpen = 0;
+    const host = await startAgentHostDaemon({
+      tasksDir,
+      openSession: async (r) => {
+        openNow += 1;
+        maxOpen = Math.max(maxOpen, openNow);
+        return {
+          binding: () => ({ screenId: r.profile.id, socket: '/tmp/x', window: WINDOW, launchedByRuntime: false }),
+          observe: async () => ({ snapshotId: 's', sessionId: 's', takenAt: new Date().toISOString(), window: WINDOW }),
+          act: async (q: ActionRequest) => ({ actionId: q.actionId, status: 'ok', startedAt: new Date().toISOString(), finishedAt: new Date().toISOString() }),
+          waitFor: async () => ({ ok: true, evidence: [] }),
+          close: async () => void (openNow -= 1),
+        } as unknown as Session;
+      },
+      spawn: createLineProcessSpawner({ inheritEnv: false }),
+      interpreters: { node: process.execPath },
+      requestPollMs: 30,
+      configPollMs: 60_000,
+      resident: { killGraceMs: 300, heartbeatTimeoutMs: 3000, workHoursPollMs: 50, restartDelaysMs: [50] },
+    });
+    hostRef = host;
+    assert.deepEqual(host.taskAgents(), ['test.task']);
+    const at = () => new Date().toISOString();
+    submitTaskRequest(req, { taskId: 'job-1', agentId: 'test.task', taskType: 'press', input: { n: 1, waitMs: 150 }, submittedAt: at() });
+    submitTaskRequest(req, { taskId: 'job-2', agentId: 'test.task', taskType: 'press', input: { n: 2 }, submittedAt: at() });
+    submitTaskRequest(req, { taskId: 'job-3', agentId: 'nobody', taskType: 'press', input: {}, submittedAt: at() });
+    submitTaskRequest(req, { taskId: 'job-4', agentId: 'test.task', taskType: 'fly', input: {}, submittedAt: at() });
+    submitTaskRequest(req, { taskId: 'job-5', agentId: 'test.resident', taskType: 'press', input: {}, submittedAt: at() });
+    assert.throws(() => submitTaskRequest(req, { taskId: 'job-1', agentId: 'test.task', taskType: 'press', input: {}, submittedAt: at() }), (e) => isRuntimeError(e, 'conflict'));
+    assert.equal(readOutcome(req, 'job-2')!.state, 'queued');
+
+    const ended = (id: string) => ['succeeded', 'partial', 'failed'].includes(readOutcome(req, id)?.state ?? '');
+    const deadline = Date.now() + 10_000;
+    while (!['job-1', 'job-2', 'job-3', 'job-4', 'job-5'].every(ended) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 30));
+    const o = (id: string) => readOutcome(req, id)!;
+    assert.equal(o('job-1').state, 'succeeded', JSON.stringify(o('job-1')));
+    assert.deepEqual(o('job-1').items![0]!.data, { input: { n: 1, waitMs: 150 } });
+    assert.equal(o('job-2').state, 'succeeded');
+    assert.ok(o('job-2').startedAt! >= o('job-1').endedAt!, 'one task at a time per task agent');
+    assert.deepEqual([o('job-3').state, o('job-3').failure], ['failed', 'not_found']);
+    assert.deepEqual([o('job-4').state, o('job-4').failure], ['failed', 'invalid_input']);
+    assert.equal(o('job-5').state, 'succeeded', 'a resident agent takes a submitted task');
+    // The resident agent's own task has an outcome too.
+    const own = readdirSync(req.outcomes).map((f) => o(f.replace(/\.json$/, ''))).filter((r) => r.origin === 'agent');
+    assert.equal(own.length >= 1, true);
+    assert.equal(maxOpen <= 2, true, 'sessions are opened per task and closed after');
+
+    // Stopping the host: a queued task never starts and says so.
+    submitTaskRequest(req, { taskId: 'job-6', agentId: 'test.task', taskType: 'press', input: { waitMs: 2000 }, submittedAt: at() });
+    submitTaskRequest(req, { taskId: 'job-7', agentId: 'test.task', taskType: 'press', input: {}, submittedAt: at() });
+    host.takeRequests();
+    await host.stop();
+    assert.deepEqual([o('job-7').state, o('job-7').failure], ['failed', 'cancelled']);
+    assert.equal(o('job-6').state, 'failed');
+  } finally {
+    await hostRef?.stop();
+    await rm(tasksDir, { recursive: true, force: true });
+  }
+});
+
+test('submit words: an agent id, a task type, JSON input and an optional timeout', () => {
+  assert.deepEqual(parseSubmit(['a.b', 'press']), { agentId: 'a.b', taskType: 'press', input: {} });
+  assert.deepEqual(parseSubmit(['a.b', 'press', '--input', '{"k":[1,2]}', '--timeout', '2h']), { agentId: 'a.b', taskType: 'press', input: { k: [1, 2] }, timeoutMs: 7_200_000 });
+  assert.throws(() => parseSubmit(['a.b', 'Press', '--input', '{bad', '--timeout', 'soon', '--x']), (e) => isRuntimeError(e, 'invalid_input') && (e.details as { errors: string[] }).errors.length === 4);
 });

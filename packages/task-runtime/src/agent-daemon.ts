@@ -13,12 +13,13 @@
 import { closeSync, openSync, readFileSync, rmSync, statSync, writeSync } from 'node:fs';
 import { grantsOf, loadAgentPackage, readHostConfig, workHoursFunction, type AgentEntryConfig, type AgentPackage, type HostConfig } from './agent-config.ts';
 import type { Grant } from './agent-contracts.ts';
-import { startResidentAgent, type Ceilings, type ResidentAgent, type ResidentAgentOptions } from './agent-host.ts';
+import { runAgentTask, startResidentAgent, type AgentTaskOutcome, type Ceilings, type ResidentAgent, type ResidentAgentOptions } from './agent-host.ts';
+import { outcomeRecord, requestPaths, takeTaskRequests, writeOutcome, type TaskOutcomeRecord, type TaskRequest } from './agent-requests.ts';
 import { createInboxApprover, createInboxAsker, inboxPaths } from './agent-inbox.ts';
 import { agentDataPaths, appendJsonLine, createFileEffectLedger, createFileUsageLedger, prepareAgentDataDir, type AgentDataPaths } from './agent-ledgers.ts';
 import { createProviderService } from './agent-providers.ts';
 import { createFileStatusPersister, createStatusBoard, type StatusBoard } from './agent-status.ts';
-import { RuntimeError, systemClock, type Clock, type LineProcessSpawner, type Session, type WindowBinding, type WindowProfile } from './contracts.ts';
+import { DEFAULT_BUDGET, RuntimeError, systemClock, type Clock, type LineProcessSpawner, type Session, type WindowBinding, type WindowProfile } from './contracts.ts';
 
 export interface AgentSessionRequest {
   agentId: string;
@@ -47,6 +48,8 @@ export interface AgentHostDaemonOptions {
   inboxPollMs?: number;
   /** How often the config file is checked for changes; default 5 s. */
   configPollMs?: number;
+  /** How often submitted tasks are looked for; default 1 s. */
+  requestPollMs?: number;
   /** Timing knobs for every resident agent, for tests. */
   resident?: Pick<ResidentAgentOptions, 'heartbeatTimeoutMs' | 'workHoursPollMs' | 'maxRestarts' | 'restartDelaysMs' | 'killGraceMs'>;
   fetch?: typeof fetch;
@@ -66,6 +69,10 @@ export interface AgentHostDaemon {
   skipped: Array<{ package: string; reason: string }>;
   /** Read the config again now, as the watcher does when it changes. */
   reload(): Promise<void>;
+  /** Task agents the host runs on request, by agent id. */
+  taskAgents(): string[];
+  /** Take submitted tasks now, as the poller does every requestPollMs. */
+  takeRequests(): void;
   /** Stop every agent politely, then by force; resolves when all are gone. */
   stop(): Promise<void>;
 }
@@ -115,6 +122,162 @@ export async function startAgentHostDaemon(options: AgentHostDaemonOptions): Pro
     target.hours.inHours = entry.workHours ? workHoursFunction(entry.workHours) : () => true;
   };
 
+  const requests = requestPaths(paths.dir);
+  /** When each runtime task was submitted, for its outcome record. */
+  const submitted = new Map<string, string>();
+  const record = (r: TaskOutcomeRecord) => {
+    try {
+      writeOutcome(requests, r);
+    } catch (error) {
+      log(`could not write the outcome of ${r.taskId}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+  const ended = (agentId: string, taskId: string, taskType: string, origin: 'runtime' | 'agent', outcome: AgentTaskOutcome, startedAt?: string) =>
+    record(
+      outcomeRecord(
+        { taskId, agentId, taskType, origin, ...(submitted.has(taskId) && { submittedAt: submitted.get(taskId)! }), ...(startedAt && { startedAt }) },
+        outcome,
+        clock.now().toISOString(),
+      ),
+    );
+  const types = new Map<string, { taskType: string; origin: 'runtime' | 'agent'; startedAt: string }>();
+  /** Task agents: run one task at a time each, on request. */
+  interface TaskAgent {
+    pkg: AgentPackage;
+    state: Live;
+    queue: TaskRequest[];
+    running?: Promise<void>;
+  }
+  const taskAgents = new Map<string, TaskAgent>();
+  const stopping_ = new AbortController();
+
+  function registerTaskAgent(pkg: AgentPackage, entry: AgentEntryConfig, grantedAt: string): void {
+    const state: Live = { entry, grants: [], ceilings: {}, hours: { inHours: () => true } };
+    fill(state, entry, pkg.spec.id, grantedAt);
+    const existing = taskAgents.get(pkg.spec.id);
+    if (existing) {
+      existing.pkg = pkg;
+      existing.state = state;
+    } else taskAgents.set(pkg.spec.id, { pkg, state, queue: [] });
+    log(`${pkg.spec.id} ${pkg.spec.version}: runs tasks on request, from ${pkg.dir}`);
+  }
+
+  async function openFor(pkg: AgentPackage, entry: AgentEntryConfig, signal: AbortSignal): Promise<Map<string, Session>> {
+    const { spec } = pkg;
+    const opened = new Map<string, Session>();
+    try {
+      for (const app of spec.applications) {
+        const session = await options.openSession(
+          { agentId: spec.id, profile: pkg.profiles.get(app.bundleId)!, takeOver: entry.takeOver ?? false, submitAllowed: spec.effects.includes('external-submit'), foregroundAllowed: spec.foregroundAllowed },
+          signal,
+        );
+        opened.set(app.bundleId, session);
+        const binding = session.binding();
+        if (binding.launchedByRuntime) launched.set(`${binding.window.pid}@${binding.window.processStartedAt ?? '?'}`, binding);
+      }
+      return opened;
+    } catch (error) {
+      for (const s of opened.values()) await s.close({ keepWindow: true }).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  function pump(agentId: string): void {
+    const ta = taskAgents.get(agentId);
+    if (!ta || ta.running || ta.queue.length === 0 || stopping_.signal.aborted) return;
+    const request = ta.queue.shift()!;
+    ta.running = (async () => {
+      const { pkg, state } = ta;
+      const startedAt = clock.now().toISOString();
+      const base = { taskId: request.taskId, agentId, taskType: request.taskType, origin: 'runtime' as const, submittedAt: request.submittedAt, startedAt };
+      record({ ...base, state: 'running' });
+      log(`${agentId}: task ${request.taskId} (${request.taskType}) started on request`);
+      let sessions: Map<string, Session> | undefined;
+      try {
+        sessions = await openFor(pkg, state.entry, stopping_.signal);
+        const outcome = await runAgentTask({
+          packageDir: pkg.dir,
+          spec: pkg.spec,
+          task: { taskId: request.taskId, taskType: request.taskType, input: request.input, budget: DEFAULT_BUDGET },
+          account: state.entry.account,
+          sessions,
+          screenId: pkg.profiles.get(pkg.spec.applications[0]!.bundleId)!.id,
+          grants: state.grants,
+          ledger,
+          ceilings: state.ceilings,
+          approver,
+          asker,
+          providers,
+          usage,
+          status: board,
+          workHours: (now) => state.hours.inHours(now),
+          spawn: options.spawn,
+          ...(options.interpreters && { interpreters: options.interpreters }),
+          hostEnv,
+          clock,
+          ...(options.resident?.killGraceMs !== undefined && { killGraceMs: options.resident.killGraceMs }),
+          timeoutMs: request.timeoutMs ?? 30 * 60_000,
+          signal: stopping_.signal,
+          onEvent: (event) => {
+            if (event.type === 'audit') {
+              try {
+                appendJsonLine(paths.audit, event.record);
+              } catch {
+                log(`${agentId}: could not write the audit log`);
+              }
+            }
+          },
+        });
+        record(outcomeRecord(base, outcome, clock.now().toISOString()));
+        log(`${agentId}: task ${request.taskId} ${outcome.status}${outcome.failure ? ` (${outcome.failure}${outcome.message ? `: ${outcome.message}` : ''})` : ''}`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        record({ ...base, state: 'failed', failure: isRuntimeErrorLike(error) ?? 'error', message, endedAt: clock.now().toISOString() });
+        log(`${agentId}: task ${request.taskId} failed: ${message}`);
+      } finally {
+        if (sessions) for (const s of sessions.values()) await s.close({ keepWindow: true }).catch(() => undefined);
+        ta.running = undefined;
+        pump(agentId);
+      }
+    })();
+  }
+
+  function take(): void {
+    if (stopping_.signal.aborted) return;
+    const { requests: taken, problems } = takeTaskRequests(requests);
+    for (const p of problems) log(`request ${p.file} dropped: ${p.reason}`);
+    for (const request of taken) {
+      submitted.set(request.taskId, request.submittedAt);
+      const fail = (failure: string, message: string) => {
+        record({ taskId: request.taskId, agentId: request.agentId, taskType: request.taskType, origin: 'runtime', state: 'failed', submittedAt: request.submittedAt, endedAt: clock.now().toISOString(), failure, message });
+        log(`task ${request.taskId} for ${request.agentId} refused: ${message}`);
+      };
+      const resident = agents.find((a) => a.agentId === request.agentId);
+      if (resident) {
+        try {
+          // Queued first: a running agent starts the task inside submit, and its 'running' must not be overwritten.
+          record({ taskId: request.taskId, agentId: request.agentId, taskType: request.taskType, origin: 'runtime', state: 'queued', submittedAt: request.submittedAt });
+          resident.agent.submit({ taskId: request.taskId, taskType: request.taskType, input: request.input });
+        } catch (error) {
+          fail(isRuntimeErrorLike(error) ?? 'error', error instanceof Error ? error.message : String(error));
+        }
+        continue;
+      }
+      const ta = taskAgents.get(request.agentId);
+      if (!ta) {
+        fail('not_found', `no enabled agent ${request.agentId} in the host config`);
+        continue;
+      }
+      if (!(request.taskType in ta.pkg.spec.tasks)) {
+        fail('invalid_input', `${request.agentId} takes no task type ${request.taskType}`);
+        continue;
+      }
+      ta.queue.push(request);
+      record({ taskId: request.taskId, agentId: request.agentId, taskType: request.taskType, origin: 'runtime', state: 'queued', submittedAt: request.submittedAt });
+      pump(request.agentId);
+    }
+  }
+
   function startOne(entry: AgentEntryConfig, grantedAt: string, taken: Set<string>): HostedAgent | undefined {
     let pkg: AgentPackage;
     try {
@@ -128,11 +291,11 @@ export async function startAgentHostDaemon(options: AgentHostDaemonOptions): Pro
       skipped.push({ package: entry.package, reason: `${spec.id} is configured twice` });
       return undefined;
     }
+    taken.add(spec.id);
     if (spec.mode !== 'resident') {
-      skipped.push({ package: entry.package, reason: `${spec.id} is a task agent; the host keeps resident agents running` });
+      registerTaskAgent(pkg, entry, grantedAt);
       return undefined;
     }
-    taken.add(spec.id);
     for (const need of spec.providers)
       if (!liveProviders[need.id]) log(`${spec.id}: provider ${need.id} is not configured; its calls will answer provider_unavailable`);
     const state: Live = { entry, grants: [], ceilings: {}, hours: { inHours: () => true } };
@@ -196,8 +359,18 @@ export async function startAgentHostDaemon(options: AgentHostDaemonOptions): Pro
         }
         if (event.type === 'ask_user' && event.answer === undefined) log(`${spec.id}: ${context.taskId ?? '-'} asks: ${event.message}`);
       },
-      onTaskStarted: (t) => log(`${spec.id}: task ${t.taskId} (${t.taskType}) started by the ${t.origin}`),
-      onTaskEnded: (id, o) => log(`${spec.id}: task ${id} ${o.status}${o.failure ? ` (${o.failure})` : ''}`),
+      onTaskStarted: (t) => {
+        const startedAt = clock.now().toISOString();
+        types.set(t.taskId, { taskType: t.taskType, origin: t.origin, startedAt });
+        record({ taskId: t.taskId, agentId: spec.id, taskType: t.taskType, origin: t.origin, state: 'running', startedAt, ...(submitted.has(t.taskId) && { submittedAt: submitted.get(t.taskId)! }) });
+        log(`${spec.id}: task ${t.taskId} (${t.taskType}) started by the ${t.origin}`);
+      },
+      onTaskEnded: (id, o) => {
+        const t = types.get(id);
+        ended(spec.id, id, t?.taskType ?? '?', t?.origin ?? 'runtime', o, t?.startedAt);
+        types.delete(id);
+        log(`${spec.id}: task ${id} ${o.status}${o.failure ? ` (${o.failure})` : ''}`);
+      },
       onRunEnded: (r) =>
         log(`${spec.id}: run ${r.runId} ended: ${r.end}${r.detail ? ` (${r.detail})` : ''}${r.exitCode !== null ? `, exit ${r.exitCode}` : ''}${r.carried ? `, ${r.carried} task(s) carried` : ''}`),
     });
@@ -253,6 +426,23 @@ export async function startAgentHostDaemon(options: AgentHostDaemonOptions): Pro
         skipped.push({ package: entry.package, reason: error instanceof Error ? error.message : String(error) });
         continue;
       }
+      const asTaskAgent = [...taskAgents.values()].find((t) => t.pkg.dir === dir);
+      if (asTaskAgent) {
+        wanted.add(asTaskAgent.pkg.spec.id);
+        let pkg: AgentPackage;
+        try {
+          pkg = loadAgentPackage(entry.package);
+        } catch {
+          continue;
+        }
+        if (pkg.spec.mode !== 'resident') {
+          // The next task runs with the new grants, package and binding; one under way finishes as it began.
+          registerTaskAgent(pkg, entry, at);
+          continue;
+        }
+        taskAgents.delete(asTaskAgent.pkg.spec.id);
+        taken.delete(asTaskAgent.pkg.spec.id);
+      }
       const running = byPackage.get(dir);
       if (running) {
         wanted.add(running.agentId);
@@ -270,14 +460,23 @@ export async function startAgentHostDaemon(options: AgentHostDaemonOptions): Pro
         agents.push(hosted);
         wanted.add(hosted.agentId);
       }
+      // A task agent is registered, not started: keep it too.
+      for (const [id, ta] of taskAgents) if (ta.pkg.dir === dir) wanted.add(id);
     }
     for (const hosted of [...agents])
       if (!wanted.has(hosted.agentId)) {
         log(`${hosted.agentId}: no longer enabled; stopping it`);
         await stopAgent(hosted);
       }
+    for (const [id, ta] of [...taskAgents])
+      if (!wanted.has(id)) {
+        log(`${id}: no longer enabled; its queued tasks are dropped`);
+        for (const r of ta.queue.splice(0))
+          record({ taskId: r.taskId, agentId: id, taskType: r.taskType, origin: 'runtime', state: 'failed', submittedAt: r.submittedAt, endedAt: clock.now().toISOString(), failure: 'cancelled', message: 'the agent was disabled' });
+        taskAgents.delete(id);
+      }
     for (const s of skipped) log(`skipped ${s.package}: ${s.reason}`);
-    log(`config reloaded: ${agents.length} agent(s) hosted`);
+    log(`config reloaded: ${agents.length} agent(s) hosted, ${taskAgents.size} on request`);
   }
 
   // Watch the config by its modification time and size; reloads run one at a time.
@@ -300,8 +499,13 @@ export async function startAgentHostDaemon(options: AgentHostDaemonOptions): Pro
   }, options.configPollMs ?? 5000);
   watcher.unref();
 
+  const poller = setInterval(take, options.requestPollMs ?? 1000);
+  poller.unref();
+
   let stopping: Promise<void> | undefined;
   return {
+    taskAgents: () => [...taskAgents.keys()],
+    takeRequests: take,
     paths,
     board,
     agents,
@@ -310,7 +514,14 @@ export async function startAgentHostDaemon(options: AgentHostDaemonOptions): Pro
     stop() {
       stopping ??= (async () => {
         clearInterval(watcher);
+        clearInterval(poller);
         await reloading.catch(() => undefined);
+        // Task agents: the one under way is cancelled, queued ones never start.
+        stopping_.abort();
+        for (const [id, ta] of taskAgents)
+          for (const r of ta.queue.splice(0))
+            record({ taskId: r.taskId, agentId: id, taskType: r.taskType, origin: 'runtime', state: 'failed', submittedAt: r.submittedAt, endedAt: clock.now().toISOString(), failure: 'cancelled', message: 'the agent host stopped' });
+        await Promise.all([...taskAgents.values()].map((t) => t.running).filter(Boolean));
         for (const a of agents) a.agent.stop();
         await Promise.all(agents.map((a) => a.agent.done));
         for (const binding of launched.values()) {
@@ -377,4 +588,9 @@ export function claimHost(paths: AgentDataPaths, pid: number = process.pid): () 
     }
   }
   throw new RuntimeError('conflict', 'could not claim the agent host');
+}
+
+/** The code of a runtime error, whichever copy of contracts threw it. */
+function isRuntimeErrorLike(error: unknown): string | undefined {
+  return error instanceof RuntimeError ? error.code : undefined;
 }

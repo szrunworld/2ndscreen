@@ -57,6 +57,8 @@ export interface SecondScreenAdapterOptions {
 const INSTANCE_POLLS = 20;
 const INSTANCE_POLL_MS = 500;
 const MAIN_WINDOW_TIMEOUT_MS = 30_000;
+/** One `app launch` may take this long before it counts as failed. */
+const APP_LAUNCH_TIMEOUT_MS = 45_000;
 const MAIN_WINDOW_POLL_MS = 500;
 /** Screens outlive a quiet worker by this much; the owner pid ends them sooner on exit. */
 const SCREEN_IDLE_TIMEOUT = '30m';
@@ -187,9 +189,9 @@ export function createSecondScreenAdapter(options: SecondScreenAdapterOptions): 
   const env = { SECONDSCREEN_SOCKET: options.socket };
 
   /** One 2ndscreen command on this adapter's socket. Cancellation and timeouts reject. */
-  async function cli(words: string[], signal?: AbortSignal): Promise<CliReply> {
+  async function cli(words: string[], signal?: AbortSignal, limitMs: number = timeoutMs): Promise<CliReply> {
     throwIfAborted(signal);
-    const result = await options.run(options.cli, words, { env, timeoutMs, signal });
+    const result = await options.run(options.cli, words, { env, timeoutMs: limitMs, signal });
     let json: Record<string, any> | undefined;
     try {
       const parsed: unknown = JSON.parse(result.stdout);
@@ -370,9 +372,30 @@ export function createSecondScreenAdapter(options: SecondScreenAdapterOptions): 
     let pid: number;
     let launched = false;
     if (running === undefined) {
-      const reply = await cli(['app', 'launch', '--screen', screenId, '--bundle', profile.bundleId, '--fill'], signal);
-      if (!reply.ok) throw cliError(`cannot launch ${profile.bundleId}`, reply);
-      pid = Number(reply.json.pid);
+      const launchBegan = Date.now();
+      let reply: CliReply | undefined;
+      let launchError: unknown;
+      try {
+        // Launching is slow (a fresh side instance, an app's own loading): more room than other commands.
+        reply = await cli(['app', 'launch', '--screen', screenId, '--bundle', profile.bundleId, '--fill'], signal, Math.max(timeoutMs, APP_LAUNCH_TIMEOUT_MS));
+      } catch (error) {
+        launchError = error;
+      }
+      if (launchError !== undefined || !reply!.ok) {
+        // A launch can start the app and then fail to place its window. An app that was not running
+        // before and started since this launch began is this launch's, and is ended with the binding.
+        // Looked up without the signal: a cancelled launch must still be cleaned up.
+        const started = await runningPid(profile.bundleId).catch(() => undefined);
+        if (started !== undefined) {
+          const who = await identity(started).catch(() => undefined);
+          if (who?.startedAt !== undefined && Date.parse(who.startedAt) >= launchBegan - 2000) {
+            launchedApp.pid = started;
+            launchedApp.who = who;
+          }
+        }
+        throw launchError ?? cliError(`cannot launch ${profile.bundleId}`, reply!);
+      }
+      pid = Number(reply!.json.pid);
       if (!Number.isInteger(pid)) throw new RuntimeError('io', 'app launch reported no pid');
       launched = true;
       launchedApp.pid = pid;
