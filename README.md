@@ -419,6 +419,17 @@ To install it elsewhere:
 export SECONDSCREEN_TASK_RUNTIME=/some/dir
 ```
 
+The install has two variants, named in its `build.json`. The default,
+`--legacy`, is what 2ndscreen.app ships: the BOSS workflow compiled in and
+the skills beside it. `--generic` builds the runtime a product ships
+without any business package: no module under `src/boss` reaches the
+bundles (the build fails if one does) and there is no skills directory,
+so it registers no workflow until a business package is installed.
+
+```bash
+./scripts/install-task-runtime.sh /some/dir --generic
+```
+
 Agents hosted by the runtime (RFC 0001, `docs/rfc/0001-agent-hub`) are
 listed with the stuck ones first, each saying what it waits for: an
 approval, an answer from the user, or something the agent reported.

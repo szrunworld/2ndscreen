@@ -271,6 +271,8 @@ export function runCli(argv: readonly string[], io: CliIO, control: TaskControl)
 - 账本里属于本 runtime 未安装的包的任务保持原状：不认领、不失败，控制事件 `skill_missing` 记录一次原因；装有该包的 worker 可以继续运行它。
 - CLI 只在用户显式设置了 `SECONDSCREEN_SKILLS_DIR` 时才把它传给 worker；否则 worker 按自己的入口位置解析同一个默认目录。
 
+**通用构建（C01b）。** `scripts/build.mjs --generic`（`install-task-runtime.sh … --generic`）产出不含任何 `src/boss` 模块、不带 skills 目录的 runtime；构建用 esbuild metafile 核对依赖图，仍触及业务模块即失败，`build.json` 记录 `variant`、全部输入模块和被替换的业务 import。`--legacy`（默认）保持 2ndscreen.app 现在的打包方式。`tests/generic-build.test.ts` 用真实构建产物启动 worker、宿主空的 agent 配置、查询并停止。
+
 ### A8 本地视觉（协调者新增）
 
 `packages/task-runtime/src/adapters/local-vision.ts`

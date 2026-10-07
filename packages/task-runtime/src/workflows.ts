@@ -38,8 +38,14 @@ export function createWorkflowRegistry(factories: Readonly<Record<string, Workfl
 /** No business workflow at all: what a generic build registers. */
 export const NO_WORKFLOWS: WorkflowRegistry = createWorkflowRegistry();
 
-/** The BOSS résumé workflow this package still carries, for the entry points that opt in. */
+/**
+ * The BOSS résumé workflow this package still carries, for the entry points
+ * that opt in. A generic build (scripts/build.mjs --generic) replaces the
+ * business module with an empty one: then this registers nothing.
+ */
 export async function legacyWorkflows(): Promise<WorkflowRegistry> {
-  const { createBossResumesWorkflow } = await import('./boss/workflow.ts');
-  return createWorkflowRegistry({ 'boss-resumes-v1': (deps) => createBossResumesWorkflow(deps) });
+  const business: Partial<typeof import('./boss/workflow.ts')> = await import('./boss/workflow.ts');
+  const create = business.createBossResumesWorkflow;
+  if (typeof create !== 'function') return NO_WORKFLOWS;
+  return createWorkflowRegistry({ 'boss-resumes-v1': (deps) => create(deps) });
 }

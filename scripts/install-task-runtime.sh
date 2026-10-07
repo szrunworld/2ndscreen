@@ -4,10 +4,17 @@
 # 2ndscreen.app/Contents/Resources/task-runtime, where `2ndscreen task`
 # finds it; any other DEST is used through SECONDSCREEN_TASK_RUNTIME=DEST.
 #
+#   install-task-runtime.sh [DEST] [--generic]
+#
+# --generic installs the generic runtime (packages/task-runtime/scripts/build.mjs
+# --generic): no business module and no skills directory, for a product that
+# carries no business package. Without it the legacy runtime with the BOSS
+# workflow and the skills is installed, as 2ndscreen.app ships it.
+#
 #   DEST/bin/node      the pinned Node (scripts/fetch-node.sh), with its license
 #   DEST/main.mjs      `2ndscreen task …`
 #   DEST/worker.mjs    the background worker
-#   DEST/skills/       the skills (task.json, profiles, procedures, SKILL.md)
+#   DEST/skills/       the skills (task.json, profiles, procedures, SKILL.md); legacy only
 #   DEST/build.json    every built file with its sha256
 #
 # Dependencies come from packages/task-runtime/package-lock.json through
@@ -16,7 +23,16 @@
 set -euo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-DEST="${1:-$ROOT/build/task-runtime}"
+VARIANT=()
+DEST=""
+for arg in "$@"; do
+    case "$arg" in
+        --generic|--legacy) VARIANT=("$arg") ;;
+        --*) echo "error: unknown option $arg" >&2; exit 2 ;;
+        *) DEST="$arg" ;;
+    esac
+done
+DEST="${DEST:-$ROOT/build/task-runtime}"
 case "$DEST" in /*) ;; *) DEST="$PWD/$DEST" ;; esac
 PKG="$ROOT/packages/task-runtime"
 
@@ -30,7 +46,7 @@ export PATH="$NODE_DIR/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 STAGE="$(mktemp -d "$(dirname "$DEST")/.task-runtime.XXXXXX" 2>/dev/null || { mkdir -p "$(dirname "$DEST")"; mktemp -d "$(dirname "$DEST")/.task-runtime.XXXXXX"; })"
 trap 'rm -rf "$STAGE"' EXIT
-"$NODE" "$PKG/scripts/build.mjs" "$STAGE/task-runtime" >/dev/null
+"$NODE" "$PKG/scripts/build.mjs" "$STAGE/task-runtime" "${VARIANT[@]}" >/dev/null
 mkdir -p "$STAGE/task-runtime/bin"
 cp "$NODE" "$STAGE/task-runtime/bin/node"
 cp "$NODE_DIR/LICENSE" "$STAGE/task-runtime/bin/node.LICENSE"
@@ -42,4 +58,4 @@ HELP="$("$STAGE/task-runtime/bin/node" --disable-warning=ExperimentalWarning "$S
 rm -rf "$DEST"
 mkdir -p "$(dirname "$DEST")"
 mv "$STAGE/task-runtime" "$DEST"
-echo "installed the task runtime (node $("$DEST/bin/node" --version)) at $DEST"
+echo "installed the $(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["variant"])' "$DEST/build.json") task runtime (node $("$DEST/bin/node" --version)) at $DEST"
