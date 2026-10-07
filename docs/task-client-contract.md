@@ -194,7 +194,7 @@ interface ControlReceipt {
 
 ## 6 共享样本
 
-`docs/task-client-contract.sample.json` 是一份按本契约构造的响应样本（`views` 的输出），Runtime 侧的序列化测试与产品侧的 Swift 解码测试都以它为准；改契约先改样本。
+`docs/task-client-contract.sample.json` 是一份按本契约构造的复合样本：`service`、一个 `task`（TaskView）、`inbox`（PendingItem 列表）、`receipt`（ControlReceipt）。产品仓 `Tests/AgentDesktopTests/Fixtures/task-view-sample.json` 与它逐字节相同，Swift 解码与往返编码测试以它为准；Runtime 侧 C03 的序列化测试也用它。改契约先改样本，再同步两处。
 
 ## 7 验收（C03 实现时）
 
