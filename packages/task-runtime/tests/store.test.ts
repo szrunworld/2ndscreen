@@ -167,6 +167,7 @@ test('migrating an older schema backs the file up first and keeps its rows', asy
     const migrated = new DatabaseSync(path);
     assert.equal(Number((migrated.prepare('PRAGMA user_version').get() as { user_version: number }).user_version), TASK_STORE_SCHEMA_VERSION);
     assert.ok(migrated.prepare("SELECT name FROM sqlite_master WHERE name = 'events_task_item'").get());
+    assert.ok(migrated.prepare("SELECT name FROM sqlite_master WHERE name = 'agent_tasks'").get(), 'agent tasks share the ledger');
     migrated.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });

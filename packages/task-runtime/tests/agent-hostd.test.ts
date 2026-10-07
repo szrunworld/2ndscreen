@@ -10,6 +10,8 @@ import { join } from 'node:path';
 import { createLineProcessSpawner } from '../src/adapters/agent-bridge.ts';
 import { grantInConfig, grantsOf, listGrants, loadAgentPackage, localTime, revokeInConfig, validateHostConfig, workHoursFunction, type HostConfig } from '../src/agent-config.ts';
 import { claimHost, runningHostPid, startAgentHostDaemon, type AgentSessionRequest } from '../src/agent-daemon.ts';
+import { createAgentHosting, readHostingState } from '../src/agent-hosting.ts';
+import { openTaskStore } from '../src/store.ts';
 import { decide, inboxPaths, listInbox } from '../src/agent-inbox.ts';
 import { agentDataPaths } from '../src/agent-ledgers.ts';
 import { createProviderService } from '../src/agent-providers.ts';
@@ -637,4 +639,149 @@ test('submit words: an agent id, a task type, JSON input and an optional timeout
   assert.deepEqual(parseSubmit(['a.b', 'press']), { agentId: 'a.b', taskType: 'press', input: {} });
   assert.deepEqual(parseSubmit(['a.b', 'press', '--input', '{"k":[1,2]}', '--timeout', '2h']), { agentId: 'a.b', taskType: 'press', input: { k: [1, 2] }, timeoutMs: 7_200_000 });
   assert.throws(() => parseSubmit(['a.b', 'Press', '--input', '{bad', '--timeout', 'soon', '--x']), (e) => isRuntimeError(e, 'invalid_input') && (e.details as { errors: string[] }).errors.length === 4);
+});
+
+test('in the task database: submitted tasks run, outcomes are kept, a stop leaves the queue for the next host, which recovers it', async () => {
+  const tasksDir = await tmp('agent-ledger-');
+  const paths = agentDataPaths(tasksDir);
+  const store = await openTaskStore({ path: join(tasksDir, 'tasks.db') });
+  const ledger = store.agentTasks;
+  const hosts: Array<{ stop(): Promise<void> }> = [];
+  try {
+    const taskPkg = await makePackage(join(tasksDir, 'task-pkg'), TASK_AGENT, { id: 'test.task', mode: 'task', schedule: undefined, effects: ['read'], approval: {} });
+    await mkdir(paths.dir, { recursive: true });
+    await writeFile(paths.config, JSON.stringify({ agents: [{ package: taskPkg, enabled: true, account: { platform: 'macos', accountKey: 'local' } }], providers: {} }));
+    const start = () =>
+      startAgentHostDaemon({
+        tasksDir,
+        tasks: ledger,
+        openSession: async (r) =>
+          ({
+            binding: () => ({ screenId: r.profile.id, socket: '/tmp/x', window: WINDOW, launchedByRuntime: false }),
+            observe: async () => ({ snapshotId: 's', sessionId: 's', takenAt: new Date().toISOString(), window: WINDOW }),
+            act: async (q: ActionRequest) => ({ actionId: q.actionId, status: 'ok', startedAt: new Date().toISOString(), finishedAt: new Date().toISOString() }),
+            waitFor: async () => ({ ok: true, evidence: [] }),
+            close: async () => undefined,
+          }) as unknown as Session,
+        spawn: createLineProcessSpawner({ inheritEnv: false }),
+        interpreters: { node: process.execPath },
+        requestPollMs: 30,
+        configPollMs: 60_000,
+        resident: { killGraceMs: 300 },
+      });
+    const at = () => new Date().toISOString();
+    await ledger.submit({ taskId: 'db-1', agentId: 'test.task', taskType: 'press', input: { n: 1 }, submittedAt: at() });
+    await assert.rejects(ledger.submit({ taskId: 'db-1', agentId: 'test.task', taskType: 'press', input: {}, submittedAt: at() }), (e) => isRuntimeError(e, 'conflict'));
+    await assert.rejects(ledger.submit({ taskId: 'db 2', agentId: 'test.task', taskType: 'press', input: {}, submittedAt: at() }), (e) => isRuntimeError(e, 'invalid_input'));
+    // A request file from an older command line is taken into the database too.
+    submitTaskRequest(requestPaths(paths.dir), { taskId: 'file-1', agentId: 'test.task', taskType: 'press', input: { n: 9 }, submittedAt: at() });
+    assert.equal((await ledger.get('db-1'))!.state, 'queued');
+
+    const host = await start();
+    hosts.push(host);
+    const ended = async (id: string) => ['succeeded', 'partial', 'failed'].includes((await ledger.get(id))?.state ?? '');
+    for (const deadline = Date.now() + 10_000; !((await ended('db-1')) && (await ended('file-1'))) && Date.now() < deadline; ) await new Promise((r) => setTimeout(r, 30));
+    const one = (await ledger.get('db-1'))!;
+    assert.equal(one.state, 'succeeded', JSON.stringify(one));
+    assert.deepEqual(one.items![0]!.data, { input: { n: 1 } });
+    assert.ok(one.submittedAt && one.startedAt && one.endedAt);
+    assert.equal((await ledger.get('file-1'))!.state, 'succeeded');
+    assert.equal(readdirSync(requestPaths(paths.dir).requests).length, 0, 'the request file was taken');
+
+    // A long task is under way and another waits when the host stops: the first is cancelled, the second stays queued.
+    await ledger.submit({ taskId: 'db-3', agentId: 'test.task', taskType: 'press', input: { waitMs: 3000 }, submittedAt: at() });
+    await ledger.submit({ taskId: 'db-4', agentId: 'test.task', taskType: 'press', input: {}, submittedAt: at() });
+    for (const deadline = Date.now() + 5000; (await ledger.get('db-3'))!.state !== 'running' && Date.now() < deadline; ) await new Promise((r) => setTimeout(r, 30));
+    await host.busy();
+    assert.equal(host.busy(), true);
+    await host.stop();
+    assert.equal((await ledger.get('db-3'))!.state, 'failed');
+    assert.equal((await ledger.get('db-4'))!.state, 'queued');
+    // As if the host had died in the middle of db-5: the next one ends it as interrupted and requeues the taken one.
+    await ledger.record({ taskId: 'db-5', agentId: 'test.task', taskType: 'press', origin: 'runtime', state: 'running', startedAt: at() });
+    // The dead host's session lease on the app; a lease of another kind stays.
+    await store.acquireLease({ scopeKey: 'com.apple.calculator:*', holder: 'runtime', ownerPid: 999999, taskId: 'agent:test.task', ttlMs: 60_000 });
+    await store.acquireLease({ scopeKey: 'other.app:*', holder: 'runtime', ownerPid: 999999, taskId: 'skill-task', ttlMs: 60_000 });
+    const recovered = await ledger.recover({ deadOwners: [999999] });
+    assert.equal(recovered.releasedLeases, 1);
+    await store.acquireLease({ scopeKey: 'com.apple.calculator:*', holder: 'runtime', ownerPid: process.pid, ttlMs: 1000 }).then((l) => store.releaseLease(l.leaseId));
+    await assert.rejects(store.acquireLease({ scopeKey: 'other.app:*', holder: 'runtime', ownerPid: process.pid, ttlMs: 1000 }), (e) => isRuntimeError(e, 'lease_held'));
+    assert.deepEqual(recovered.interrupted, ['db-5']);
+    assert.deepEqual(recovered.requeued, ['db-4']);
+    assert.equal((await ledger.get('db-5'))!.failure, 'interrupted');
+
+    const next = await start();
+    hosts.push(next);
+    for (const deadline = Date.now() + 10_000; !(await ended('db-4')) && Date.now() < deadline; ) await new Promise((r) => setTimeout(r, 30));
+    assert.equal((await ledger.get('db-4'))!.state, 'succeeded');
+    assert.deepEqual((await ledger.list({ states: ['queued', 'running'] })).map((r) => r.taskId), []);
+    assert.equal((await ledger.list({ agentId: 'test.task' })).length, 5);
+  } finally {
+    for (const h of hosts) await h.stop();
+    await store.close();
+    await rm(tasksDir, { recursive: true, force: true });
+  }
+});
+
+test('the worker hosts agents only with a config, the host pid file and proof that dead workers are stopped', async () => {
+  const tasksDir = await tmp('agent-hosting-');
+  const paths = agentDataPaths(tasksDir);
+  const store = await openTaskStore({ path: ':memory:' });
+  const lines: string[] = [];
+  let proof: { stopped: true } | { stopped: false; reason: string } = { stopped: false, reason: 'worker 42 died during a spawn' };
+  let started = 0;
+  const quit: number[] = [];
+  const fakeHost = { agents: [] as unknown[], skipped: [], taskAgents: () => ['x'], busy: () => false, stop: async () => undefined };
+  const hosting = createAgentHosting({
+    tasksDir,
+    tasks: store.agentTasks,
+    openSession: async () => {
+      throw new Error('unused');
+    },
+    spawn: createLineProcessSpawner(),
+    log: (l) => lines.push(l),
+    previousStopped: async () => proof,
+    quitApp: async (b) => void quit.push(b.window.pid),
+    start: (async () => {
+      started += 1;
+      return fakeHost;
+    }) as unknown as typeof startAgentHostDaemon,
+  });
+  try {
+    await hosting.tick();
+    assert.match(readHostingState(paths)!.reason!, /no agent config/);
+    await mkdir(paths.dir, { recursive: true });
+    await writeFile(paths.config, JSON.stringify({ agents: [], providers: {} }));
+    // An older agent host holds the pid file: it keeps its agents.
+    const other = claimHost(paths, process.ppid);
+    await hosting.tick();
+    assert.match(readHostingState(paths)!.reason!, /already running/);
+    other();
+    await hosting.tick();
+    assert.match(readHostingState(paths)!.reason!, /died during a spawn/);
+    assert.equal(runningHostPid(paths), process.pid, 'the pid file stays claimed while it waits');
+    assert.equal(started, 0);
+    proof = { stopped: true };
+    // A host that died left an app it launched.
+    await writeFile(join(paths.dir, 'launched.json'), JSON.stringify({ hostPid: 999999, bindings: [{ screenId: 's', socket: '/tmp/x', window: { ...WINDOW, pid: 4242 }, launchedByRuntime: true }] }));
+    await store.agentTasks.record({ taskId: 'was-running', agentId: 'a', taskType: 't', origin: 'runtime', state: 'running' });
+    await hosting.tick();
+    await hosting.tick();
+    assert.equal(started, 1);
+    assert.deepEqual(quit, [4242], 'the app a dead host left is ended before hosting');
+    assert.equal(readdirSync(paths.dir).includes('launched.json'), false);
+    assert.equal(readHostingState(paths)!.state, 'hosting');
+    assert.equal((await store.agentTasks.get('was-running'))!.failure, 'interrupted');
+    assert.equal(await hosting.busy(), false, 'no resident agent and nothing queued');
+    await store.agentTasks.submit({ taskId: 'q', agentId: 'a', taskType: 't', input: null, submittedAt: new Date().toISOString() });
+    assert.equal(await hosting.busy(), true);
+    await hosting.stop();
+    assert.equal(readHostingState(paths)!.state, 'stopped');
+    assert.equal(runningHostPid(paths), undefined);
+    assert.equal(lines.filter((l) => /died during a spawn/.test(l)).length, 1, 'a reason is logged once');
+  } finally {
+    await hosting.stop();
+    await store.close();
+    await rm(tasksDir, { recursive: true, force: true });
+  }
 });

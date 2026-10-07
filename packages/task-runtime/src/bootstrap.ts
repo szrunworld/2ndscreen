@@ -25,7 +25,8 @@ import {
   type TaskStore,
   type WindowProfile,
 } from './contracts.ts';
-import { ActorRegistry, VERIFY_KILL_GRACE_MS, liveWorkers, pruneClosedRecords, verifyWorkerStopped } from './actors.ts';
+import { ActorRegistry, VERIFY_KILL_GRACE_MS, deadWorkers, liveWorkers, pruneClosedRecords, verifyWorkerStopped } from './actors.ts';
+import { createAgentHosting, type AgentHosting } from './agent-hosting.ts';
 import { createAgentBridge, createLineProcessSpawner } from './adapters/agent-bridge.ts';
 import { createLocalVision, type LocalVisionClient } from './adapters/local-vision.ts';
 import { createCommandRunner, createSecondScreenAdapter } from './adapters/second-screen.ts';
@@ -36,7 +37,7 @@ import { createProcedureEngine } from './procedures.ts';
 import { createRecovery } from './recovery.ts';
 import { createTaskRunner } from './runner.ts';
 import { createSessionManager } from './session.ts';
-import { defaultTaskDbPath, openTaskStore } from './store.ts';
+import { defaultTaskDbPath, openTaskStore, type TaskLedgerStore } from './store.ts';
 import { createTelemetryHub } from './telemetry.ts';
 
 // ---------------------------------------------------------------------------
@@ -179,6 +180,8 @@ export function loadSkills(skillsDir: string): Map<string, SkillPackage> {
 
 export interface ControlClient {
   control: TaskDaemon;
+  /** Agent tasks, in the same ledger. */
+  agentTasks: TaskLedgerStore['agentTasks'];
   /** Starts the background worker unless one owns the ledger already. */
   ensureWorker(): Promise<{ started: boolean; pid?: number }>;
   close(): Promise<void>;
@@ -199,14 +202,6 @@ export function workerCommand(config: RuntimeConfig): { command: string; args: s
   return { command: config.node, args, env, logPath: config.paths.workerLog };
 }
 
-/** How to start the agent host (agents-main.ts), next to the worker and with the same environment. */
-export function agentHostCommand(config: RuntimeConfig): { command: string; args: string[]; env: Record<string, string> } {
-  const worker = workerCommand(config);
-  const dev = config.workerEntry.endsWith('.ts');
-  const entry = join(dirname(config.workerEntry), dev ? 'agents-main.ts' : 'agents.mjs');
-  return { command: worker.command, args: [...worker.args.slice(0, -1), entry], env: worker.env };
-}
-
 export async function openControlClient(config: RuntimeConfig): Promise<ControlClient> {
   preparePrivateDirs(config.paths);
   const skills = loadSkills(config.skillsDir);
@@ -215,6 +210,7 @@ export async function openControlClient(config: RuntimeConfig): Promise<ControlC
   const control = createTaskDaemon({ store, runner: refusingRunner, specs: (id) => skills.get(id)?.spec, claim: false });
   return {
     control,
+    agentTasks: store.agentTasks,
     ensureWorker: () => ensureWorker(store, config),
     async close() {
       await control.shutdown();
@@ -300,8 +296,10 @@ const refusingRunner: TaskRunner = {
 
 export interface Worker {
   daemon: TaskDaemon;
-  store: TaskStore;
+  store: TaskLedgerStore;
   registry: ActorRegistry;
+  /** The worker's 2ndscreen adapter: its commands are on the actor record. */
+  adapter: ReturnType<typeof createSecondScreenAdapter>;
   /** Stop the daemon (tasks become paused), then every helper, then the ledger. */
   close(): Promise<void>;
 }
@@ -340,6 +338,7 @@ export async function startWorker(config: RuntimeConfig, options: WorkerOptions 
     rmSync(screenshotDir, { recursive: true, force: true });
   };
   let daemon: TaskDaemon;
+  let adapter: ReturnType<typeof createSecondScreenAdapter>;
   try {
     // Recorded before the daemon can start a task: every actor of this worker is on file.
     registry = ActorRegistry.create(config.paths.actorsDir);
@@ -347,7 +346,7 @@ export async function startWorker(config: RuntimeConfig, options: WorkerOptions 
     stopHeartbeat = registry.startHeartbeat();
 
     vision = createLocalVision({ helper: config.cli, spawn });
-    const adapter = createSecondScreenAdapter({
+    adapter = createSecondScreenAdapter({
       cli: config.cli,
       socket: config.socket,
       ...(config.app ? { app: config.app } : {}),
@@ -418,6 +417,7 @@ export async function startWorker(config: RuntimeConfig, options: WorkerOptions 
     daemon,
     store,
     registry: registry!,
+    adapter: adapter!,
     close() {
       closing ??= (async () => {
         await daemon.shutdown();
@@ -426,4 +426,48 @@ export async function startWorker(config: RuntimeConfig, options: WorkerOptions 
       return closing;
     },
   };
+}
+
+/**
+ * The agents a worker hosts (agent-hosting.ts): sessions on the worker's
+ * adapter, agent processes started through its actor record, tasks in its
+ * ledger, and the crash check of dead workers' records before any agent
+ * starts.
+ */
+export function createWorkerAgentHosting(
+  config: RuntimeConfig,
+  worker: Pick<Worker, 'store' | 'registry' | 'adapter'>,
+  log: (line: string) => void,
+  options: { spawn?: LineProcessSpawner } = {},
+): AgentHosting {
+  const managers = new Map<string, ReturnType<typeof createSessionManager>>();
+  const manager = (submitAllowed: boolean, foregroundAllowed: boolean) => {
+    const key = `${submitAllowed}/${foregroundAllowed}`;
+    let m = managers.get(key);
+    if (!m) managers.set(key, (m = createSessionManager({ adapter: worker.adapter, leases: worker.store, policy: { submitAllowed, foregroundAllowed } })));
+    return m;
+  };
+  // Agents run with this Node unless their package bundles a runtime; python only when the host names one.
+  const interpreters: Record<string, string> = { node: config.node };
+  if (process.env.SECONDSCREEN_AGENT_PYTHON) interpreters.python = process.env.SECONDSCREEN_AGENT_PYTHON;
+  return createAgentHosting({
+    tasksDir: config.paths.tasksDir,
+    tasks: worker.store.agentTasks,
+    openSession: (r, signal) =>
+      manager(r.submitAllowed, r.foregroundAllowed).open({ taskId: `agent:${r.agentId}`, profile: r.profile, takeOver: r.takeOver, leaseTtlMs: 60_000 }, signal),
+    quitApp: (binding) => worker.adapter.quitApp!(binding),
+    // Agents get only the environment the host builds, and each is on this worker's actor record.
+    spawn: worker.registry.wrap(options.spawn ?? createLineProcessSpawner({ inheritEnv: false })),
+    interpreters,
+    log,
+    async previousStopped() {
+      const workers: number[] = [];
+      for (const dead of deadWorkers(config.paths.actorsDir)) {
+        const verdict = await verifyWorkerStopped(config.paths.actorsDir, { ownerPid: dead.pid, processStartedAt: dead.startedAt });
+        if (!verdict.stopped) return { stopped: false, reason: verdict.reason };
+        workers.push(dead.pid);
+      }
+      return { stopped: true, workers };
+    },
+  });
 }
