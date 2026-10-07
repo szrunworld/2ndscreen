@@ -26,9 +26,12 @@ import {
 } from './contracts.ts';
 
 /** The contract's commands, bind-account for the explicit BOSS account, and the agent views. */
-export type TaskCliCommand = CliCommand | 'bind-account' | 'agents' | 'usage';
+export type TaskCliCommand = CliCommand | 'bind-account' | 'agents' | 'usage' | 'inbox' | 'approve' | 'deny' | 'answer';
 
-export const CLI_COMMANDS: readonly TaskCliCommand[] = ['run', 'status', 'pause', 'resume', 'cancel', 'artifacts', 'inspect-procedure', 'bind-account', 'agents', 'usage'];
+export const CLI_COMMANDS: readonly TaskCliCommand[] = [
+  'run', 'status', 'pause', 'resume', 'cancel', 'artifacts', 'inspect-procedure', 'bind-account',
+  'agents', 'usage', 'inbox', 'approve', 'deny', 'answer',
+];
 
 
 /**
@@ -39,6 +42,11 @@ export const CLI_COMMANDS: readonly TaskCliCommand[] = ['run', 'status', 'pause'
 export interface AgentViewControl {
   agents(options: { includeFinished: boolean }): Promise<unknown>;
   usage(options: { by: UsageGroupBy; since?: string }): Promise<unknown>;
+  /** What waits for a person: approvals and questions from agents. */
+  inbox(): Promise<unknown>;
+  approve(id: string): Promise<unknown>;
+  deny(id: string, guidance: { text?: string; hints: string[] }): Promise<unknown>;
+  answer(id: string, text: string): Promise<unknown>;
 }
 
 /**
@@ -66,6 +74,10 @@ export const CLI_USAGE = [
   '  2ndscreen task bind-account TASK_ID ACCOUNT_KEY',
   '  2ndscreen task agents [--all]',
   '  2ndscreen task usage [--by agent|provider|model|task] [--since ISO_TIME]',
+  '  2ndscreen task inbox',
+  '  2ndscreen task approve INBOX_ID',
+  '  2ndscreen task deny INBOX_ID [--hint HINT]... [--text TEXT]',
+  '  2ndscreen task answer INBOX_ID TEXT',
   '',
   '--limit is how many resumes must be committed; --output is an absolute directory, the',
   'task writes under DIR/TASK_ID. --source defaults to conversations, --mode to available.',
@@ -77,6 +89,10 @@ export const CLI_USAGE = [
   'agents lists agent runs, blocked ones first with what they wait for (an approval, an answer, or',
   'something the agent reported); --all adds finished runs. usage sums provider calls, tokens and',
   'cost per agent (default), provider, model or task, since a time (default: the last 24 hours).',
+  'inbox lists what agents wait for a person on: approvals, shown with what the runtime worked out',
+  '(quota used, time since the last one, earlier unknown results), and questions. approve or deny an',
+  'approval (hints: too_fast, wrong_target, outside_quota, needs_time_limit, not_now); answer a question,',
+  'with one of its choices when it offers some.',
   'Every command prints one JSON line: {"ok":true,"command":…,"result":…} or {"ok":false,…,"error":{code,message}}.',
 ].join('\n');
 
@@ -132,6 +148,12 @@ async function dispatch(command: TaskCliCommand, words: readonly string[], contr
     return agentViewControl(control).agents({ includeFinished: words.includes('--all') });
   }
   if (command === 'usage') return agentViewControl(control).usage(parseUsage(words));
+  if (command === 'inbox') {
+    if (words.some((w) => w === '--help' || w === '-h')) throw HELP_REQUESTED;
+    if (words.length > 0) throw usageError('inbox takes no words');
+    return agentViewControl(control).inbox();
+  }
+  if (command === 'approve' || command === 'deny' || command === 'answer') return decideFromWords(command, words, agentViewControl(control));
   if (command === 'run') {
     const { skillId, input, account } = parseRun(words);
     if (account === undefined) return control.submit(skillId, input);
@@ -169,9 +191,40 @@ async function dispatch(command: TaskCliCommand, words: readonly string[], contr
 
 function agentViewControl(control: TaskControl): AgentViewControl {
   const candidate = control as TaskControl & Partial<AgentViewControl>;
-  if (typeof candidate.agents !== 'function' || typeof candidate.usage !== 'function')
+  if (typeof candidate.agents !== 'function' || typeof candidate.usage !== 'function' || typeof candidate.inbox !== 'function')
     throw new RuntimeError('capability_missing', 'this task runtime has no agent views');
   return candidate as AgentViewControl;
+}
+
+const INBOX_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+function decideFromWords(command: 'approve' | 'deny' | 'answer', words: readonly string[], control: AgentViewControl): Promise<unknown> {
+  if (words.some((w) => w === '--help' || w === '-h')) throw HELP_REQUESTED;
+  const id = words[0];
+  if (id === undefined || !INBOX_ID.test(id)) throw usageError(`${command} takes an INBOX_ID first, as task inbox lists it`);
+  const rest = words.slice(1);
+  if (command === 'approve') {
+    if (rest.length > 0) throw usageError('approve takes only an INBOX_ID');
+    return control.approve(id);
+  }
+  if (command === 'answer') {
+    const text = rest.join(' ');
+    if (text.trim() === '' || text.length > MAX_TEXT || CONTROL.test(text)) throw usageError(`answer takes the answer text after the INBOX_ID, up to ${MAX_TEXT} characters`);
+    return control.answer(id, text);
+  }
+  const hints: string[] = [];
+  let text: string | undefined;
+  for (let i = 0; i < rest.length; i++) {
+    const word = rest[i]!;
+    const value = rest[i + 1];
+    if (word === '--hint' && value !== undefined) hints.push(value);
+    else if (word === '--text' && value !== undefined) {
+      if (value.length > MAX_TEXT || CONTROL.test(value)) throw usageError(`--text is up to ${MAX_TEXT} characters without control characters`);
+      text = value;
+    } else throw usageError(`deny takes --hint HINT and --text TEXT, not ${quote(word)}`);
+    i += 1;
+  }
+  return control.deny(id, { hints, ...(text !== undefined && { text }) });
 }
 
 /** Words after `usage`. */

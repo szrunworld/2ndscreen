@@ -10,6 +10,8 @@ import { runCli, type AgentViewControl } from './cli.ts';
 import { openControlClient, resolveConfig, runtimePaths, type ControlClient } from './bootstrap.ts';
 import { agentDataPaths, createFileUsageLedger, formatUsage, readPriceTable, summarizeUsage } from './agent-ledgers.ts';
 import { formatAgentList, readStatusFile } from './agent-status.ts';
+import { decide, formatInbox, inboxPaths, listInbox } from './agent-inbox.ts';
+import type { ApprovalHint } from './agent-contracts.ts';
 
 const entryDir = dirname(fileURLToPath(import.meta.url));
 
@@ -57,6 +59,20 @@ const control = {
     const ledger = createFileUsageLedger(paths.usage);
     const rows = summarizeUsage(await ledger.list({ since: from }), by, readPriceTable(paths.prices));
     return { by, since: from, rows, skippedLines: ledger.skipped(), lines: formatUsage(rows) };
+  },
+  async inbox() {
+    const entries = listInbox(inboxPaths(agentDataPaths(runtimePaths().tasksDir).dir));
+    return { entries, lines: formatInbox(entries) };
+  },
+  async approve(id) {
+    return { decided: decide(inboxPaths(agentDataPaths(runtimePaths().tasksDir).dir), id, { kind: 'approval', decision: 'grant' }).id, decision: 'grant' };
+  },
+  async deny(id, guidance) {
+    const answer = { kind: 'approval' as const, decision: 'deny' as const, guidance: { hints: guidance.hints as ApprovalHint[], ...(guidance.text !== undefined && { text: guidance.text }) } };
+    return { decided: decide(inboxPaths(agentDataPaths(runtimePaths().tasksDir).dir), id, answer).id, decision: 'deny' };
+  },
+  async answer(id, text) {
+    return { decided: decide(inboxPaths(agentDataPaths(runtimePaths().tasksDir).dir), id, { kind: 'question', answer: text }).id, answer: text };
   },
 } satisfies TaskControl & Pick<ControlClient['control'], 'bindAccount'> & AgentViewControl;
 

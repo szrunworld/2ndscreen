@@ -399,3 +399,15 @@ Swift 侧：`Sources/SecondScreenCore/LocalVision.swift`（实现与协议）、
 | 状态面板 | 每个进程一次运行一条；正常停止（时段结束、被要求停止）记为 done，其余记为 failed 并写明原因 |
 | 停止 | `stop()` 或 `signal` 停止后不再接受 `submit`；放弃之后同样不再接受 |
 
+### 审批与提问收件箱（`agent-inbox.ts`）
+
+托管 agent 的进程没有界面，审批与提问经文件跨进程交给人。
+
+| 项 | 规定 |
+| --- | --- |
+| 位置 | `<tasksDir>/agents/inbox/pending/<id>.json`（宿主写）与 `answers/<id>.json`（人写），目录 0700，文件 0600，原子写入 |
+| `createInboxApprover` / `createInboxAsker` | 实现宿主的 `Approver` / `Asker`：写入待办，按 `pollMs`（默认 500 ms）等答复，拿到后删除两份文件；放弃等待（取消、超时）也删除 |
+| `decide(paths, id, answer)` | 种类必须相符；回答必须是所给选项之一；拒绝提示必须是已知提示；每项只能决定一次，已决定的再决定为 `conflict`，不存在的为 `not_found` |
+| `listInbox` / `formatInbox` | 最早的在前；审批一行同时列出 Runtime 算出的后果（今日已用与剩余、距上次、该目标是否有过不明结果、是否在时段内），不只是 agent 的说法 |
+| 命令行与 MCP | `2ndscreen task inbox`、`approve INBOX_ID`、`deny INBOX_ID [--hint …]… [--text …]`、`answer INBOX_ID TEXT`；MCP `task_inbox`、`task_approve`、`task_deny`、`task_answer` |
+
