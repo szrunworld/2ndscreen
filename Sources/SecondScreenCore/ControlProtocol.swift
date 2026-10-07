@@ -328,6 +328,12 @@ public func sendControlRequest(_ request: ControlRequest, timeout: TimeInterval 
 
     var seconds = timeval(tv_sec: Int(timeout), tv_usec: 0)
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &seconds, socklen_t(MemoryLayout<timeval>.size))
+    // An app that quits while the request is in flight makes the write fail
+    // with EPIPE, reported as an error, rather than ending this process.
+    var noSignal: Int32 = 1
+    guard setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, socklen_t(MemoryLayout<Int32>.size)) == 0 else {
+        throw ControlClientError.io("setsockopt: \(String(cString: strerror(errno)))")
+    }
 
     var address = try unixAddress(ControlProtocol.socketURL.path)
     let connected = withUnsafePointer(to: &address) {
