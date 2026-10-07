@@ -68,6 +68,8 @@ export const HARD_LIMITS: Readonly<Partial<Record<EffectClass, Required<EffectLi
 
 /** "Per day" is a rolling 24 hours, so a restart or a timezone change cannot reset it. */
 export const LIMIT_WINDOW_MS = 24 * 60 * 60 * 1000;
+/** How soon after an external-submit its confirmation must come to count as the same use. */
+export const CONFIRM_WINDOW_MS = 60_000;
 
 const DEFAULT_KILL_GRACE_MS = 3000;
 /** How long an agent may take to exit after its last task message before it is stopped. */
@@ -178,6 +180,8 @@ export interface AuditRecord {
   decision: 'allowed' | 'refused';
   reason?: ActionRefusal['reason'];
   result?: ActionStatus;
+  /** The external-submit this act confirmed, counted as the same use. */
+  confirms?: string;
 }
 
 export type HostEvent =
@@ -279,6 +283,10 @@ export interface HostedAction {
   app: string;
   action: Action;
   target?: string;
+  /** When it was taken. */
+  at?: string;
+  /** The act that confirmed this external-submit, if one did. */
+  confirmedBy?: string;
   result?: ActionResult;
   refusal?: ActionRefusal;
 }
@@ -312,6 +320,8 @@ export interface CheckInput {
   /** Uses of this effect for this app and account within LIMIT_WINDOW_MS. */
   uses: readonly EffectUse[];
   inWorkHours: boolean;
+  /** Completes an external-submit just allowed (act.confirms): limits and approval were applied to that one. */
+  confirming?: boolean;
   latestSnapshot?: string;
   unknownTargets: ReadonlySet<string>;
   approvals: ReadonlyMap<string, { effect: EffectClass; app?: string; target?: string; granted: boolean; used: boolean }>;
@@ -357,7 +367,7 @@ export function checkAction(input: CheckInput): ActionRefusal | undefined {
     mode = [spec.approval[effect] ?? 'human_in_the_loop', grant.mode, input.ceilings.approvalFloor?.[effect] ?? 'trusted_within_ceiling'].reduce(stricterApproval);
   }
 
-  const limit = effectiveLimit(effect, spec, input.ceilings);
+  const limit = input.confirming ? {} : effectiveLimit(effect, spec, input.ceilings);
   if (limit.perDay !== undefined && input.uses.length >= limit.perDay) {
     const oldest = Math.min(...input.uses.map((u) => Date.parse(u.at)));
     return refuse('quota_exhausted', `${input.uses.length} of ${limit.perDay} ${effect} used in the last 24 hours`, [
@@ -380,6 +390,7 @@ export function checkAction(input: CheckInput): ActionRefusal | undefined {
   if (submit && (input.unknownTargets.has('*') || input.unknownTargets.has(input.target ?? '*')))
     return refuse('target_unknown_result', 'an earlier external-submit on this target has an unknown result and is never repeated', [{ kind: 'skip_target' }]);
 
+  if (input.confirming) return undefined;
   if (mode === 'locked_down') return refuse('approval_denied', 'external-submit is locked down for this agent', [{ kind: 'use_read_only' }]);
   if (mode === 'human_in_the_loop') {
     const approval = input.approvalId === undefined ? undefined : input.approvals.get(input.approvalId);
@@ -887,13 +898,30 @@ class HostRun {
     const now = this.clock.now();
     const effect = m.action.effect;
     const accountKey = o.account.accountKey;
-    const limited = effectiveLimit(effect, o.spec, o.ceilings ?? {});
+    // A confirmation completes the external-submit it names, when that one fits; otherwise the act stands alone.
+    const confirmed =
+      m.confirms === undefined || effect !== 'external-submit'
+        ? undefined
+        : task.actions.find(
+            (a) =>
+              a.requestId === m.confirms &&
+              a.app === m.app &&
+              a.action.effect === 'external-submit' &&
+              !a.refusal &&
+              a.result?.status === 'ok' &&
+              a.confirmedBy === undefined &&
+              a.target === m.target &&
+              a.at !== undefined &&
+              now.getTime() - Date.parse(a.at) <= CONFIRM_WINDOW_MS,
+          );
+    const limited = confirmed ? {} : effectiveLimit(effect, o.spec, o.ceilings ?? {});
     const uses =
       limited.perDay !== undefined || limited.minIntervalMs !== undefined
         ? await o.ledger.uses({ application: m.app, accountKey, effect, since: new Date(now.getTime() - LIMIT_WINDOW_MS).toISOString() })
         : [];
     const unknownTargets = this.hooks.unknownTargets;
     const refusal = checkAction({
+      ...(confirmed && { confirming: true }),
       spec: o.spec,
       accountKey,
       app: m.app,
@@ -925,13 +953,14 @@ class HostRun {
             effect,
             ...(m.target !== undefined && { target: m.target }),
             decision,
+            ...(confirmed && { confirms: confirmed.requestId }),
             ...extra,
           },
         },
         task.taskId,
       );
     };
-    const entry: HostedAction = { requestId: m.requestId, app: m.app, action: m.action, ...(m.target !== undefined && { target: m.target }) };
+    const entry: HostedAction = { requestId: m.requestId, app: m.app, action: m.action, at: now.toISOString(), ...(m.target !== undefined && { target: m.target }) };
     task.actions.push(entry);
     const logAction = (extra: Partial<ActionRecord> & Pick<ActionRecord, 'decision'>) =>
       this.emit(
@@ -962,6 +991,7 @@ class HostRun {
       const approval = this.approvals.get(m.approvalId);
       if (approval) approval.used = true;
     }
+    if (confirmed) confirmed.confirmedBy = m.requestId;
     const session = o.sessions.get(m.app)!;
     let result: ActionResult;
     try {
@@ -986,7 +1016,7 @@ class HostRun {
       });
     }
     if (effect === 'external-submit' && result.status === 'unknown') unknownTargets.add(m.target ?? '*');
-    if (limited.perDay !== undefined || limited.minIntervalMs !== undefined)
+    if (!confirmed && (limited.perDay !== undefined || limited.minIntervalMs !== undefined))
       await o.ledger.record({
         agentId: o.spec.id,
         taskId: task.taskId,
