@@ -425,9 +425,11 @@ Provider calls are counted per agent, with tokens and, when
 
 MCP has them as `task_agents` and `task_usage`.
 
-The agent host keeps the resident agents enabled in `agents/config.json`
-of the tasks directory running through their work hours, on agent screens
-of their own. Approvals and questions from agents wait in an inbox until
+The background worker that runs tasks also hosts the agents: it keeps the
+resident agents enabled in `agents/config.json` of the tasks directory
+running through their work hours, on agent screens of their own, and runs
+tasks submitted to agents. Those tasks are kept in the same ledger as the
+skills' tasks, so `task status` answers for both. Approvals and questions from agents wait in an inbox until
 someone decides them:
 
 ```bash

@@ -518,3 +518,24 @@ export function liveWorkers(dir: string): ActorRecord[] {
   }
   return live;
 }
+
+/** Workers with a record that never closed and are not running now: they died, and what they started may live on. */
+export function deadWorkers(dir: string, self: number = process.pid): ActorRecord[] {
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return [];
+  }
+  const dead: ActorRecord[] = [];
+  for (const name of names) {
+    if (!/^\d+-\d+\.json$/.test(name)) continue;
+    try {
+      const record = readRecord(join(dir, name));
+      if (!record.closedAt && record.pid !== self && processIdentity(record.pid, record.startedAt) === 'gone') dead.push(record);
+    } catch {
+      // Unreadable: not provably a dead worker.
+    }
+  }
+  return dead;
+}

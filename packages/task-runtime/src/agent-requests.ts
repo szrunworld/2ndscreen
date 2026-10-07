@@ -1,9 +1,15 @@
-// Tasks handed to the agent host from other processes, and what became of
-// them. `2ndscreen task submit` writes a request under
-// <tasksDir>/agents/requests; the host takes it, runs it on the agent it
-// names, and keeps its outcome under agents/outcomes, which `2ndscreen task
-// outcome` reads. Outcomes are also written for tasks agents create
-// themselves. Files are private to the user and written atomically.
+// Tasks handed to agents from other processes, and what became of them.
+//
+// The ledger of record is the task database (tasks.db, table agent_tasks),
+// the same file the builtin skills' tasks live in: `2ndscreen task submit`
+// records the task there, the worker that hosts the agents takes it, and
+// `2ndscreen task outcome` / `task status` read how it stands. That is the
+// AgentTaskLedger below; store.ts implements it.
+//
+// The files under <tasksDir>/agents/requests and agents/outcomes are the
+// older form, kept so a request written by an older command line is still
+// taken and an outcome an older host wrote can still be read. Files are
+// private to the user and written atomically.
 
 import { closeSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
@@ -48,8 +54,91 @@ export interface TaskOutcomeRecord {
   artifacts?: AgentTaskOutcome['artifacts'];
 }
 
-const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
-const MAX_INPUT_BYTES = 64 * 1024;
+/**
+ * Where agent tasks are recorded. Every call is answered from the ledger's
+ * state when it is made: a record written by one call is seen by the next.
+ */
+export interface AgentTaskLedger {
+  /** Record a runtime task as queued. Refuses with `conflict` an id already used. */
+  submit(request: TaskRequest): Promise<void>;
+  /** Queued runtime tasks no host has taken yet, oldest first; each is marked taken. */
+  take(): Promise<TaskRequest[]>;
+  /** The task's state as it stands now; the input and submit time of an earlier record are kept. */
+  record(record: TaskOutcomeRecord): Promise<void>;
+  get(taskId: string): Promise<TaskOutcomeRecord | undefined>;
+  list(filter?: { states?: TaskState[]; agentId?: string; limit?: number }): Promise<TaskOutcomeRecord[]>;
+  /**
+   * For a host starting where another one stopped: tasks it was running end
+   * as failed (interrupted), since whether their effects happened is only in
+   * the effect ledger; runtime tasks it had taken but not started go back to
+   * the queue. The agents' session leases of `deadOwners` (pids proven
+   * stopped) are given up, so the apps are free at once, not when the leases
+   * run out.
+   */
+  recover(options?: { deadOwners?: readonly number[] }): Promise<{ interrupted: string[]; requeued: string[]; releasedLeases?: number }>;
+}
+
+export const INTERRUPTED_MESSAGE = 'the host stopped while the task ran; the effect ledger says which of its actions happened';
+
+/** The older form: request and outcome files under <tasksDir>/agents. */
+export function createFileTaskLedger(paths: RequestPaths): AgentTaskLedger {
+  return {
+    async submit(request) {
+      submitTaskRequest(paths, request);
+    },
+    async take() {
+      return takeTaskRequests(paths).requests;
+    },
+    async record(record) {
+      writeOutcome(paths, record);
+    },
+    async get(taskId) {
+      return readOutcome(paths, taskId);
+    },
+    async list(filter = {}) {
+      return listOutcomeFiles(paths)
+        .filter((r) => (!filter.states || filter.states.includes(r.state)) && (!filter.agentId || r.agentId === filter.agentId))
+        .slice(0, filter.limit ?? Infinity);
+    },
+    async recover() {
+      const interrupted: string[] = [];
+      for (const r of listOutcomeFiles(paths))
+        if (r.state === 'running' || (r.state === 'queued' && r.origin === 'agent')) {
+          writeOutcome(paths, { ...r, state: 'failed', failure: 'interrupted', message: INTERRUPTED_MESSAGE, endedAt: new Date().toISOString() });
+          interrupted.push(r.taskId);
+        }
+      return { interrupted, requeued: [] };
+    },
+  };
+}
+
+function listOutcomeFiles(paths: RequestPaths): TaskOutcomeRecord[] {
+  let names: string[];
+  try {
+    names = readdirSync(paths.outcomes).filter((n) => n.endsWith('.json'));
+  } catch {
+    return [];
+  }
+  const out: TaskOutcomeRecord[] = [];
+  for (const n of names) {
+    try {
+      out.push(JSON.parse(readFileSync(join(paths.outcomes, n), 'utf8')) as TaskOutcomeRecord);
+    } catch {
+      // being written
+    }
+  }
+  return out.sort((a, b) => (b.submittedAt ?? b.startedAt ?? '').localeCompare(a.submittedAt ?? a.startedAt ?? ''));
+}
+
+export const TASK_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const ID = TASK_ID;
+export const MAX_INPUT_BYTES = 64 * 1024;
+
+/** Refuses a request the ledger may not take: bad ids or an input over 64 KB. */
+export function checkTaskRequest(request: Pick<TaskRequest, 'taskId' | 'agentId' | 'input'>): void {
+  if (!ID.test(request.taskId) || !ID.test(request.agentId)) throw new RuntimeError('invalid_input', 'task and agent ids are letters, digits, ".", "_", ":" or "-"');
+  if (Buffer.byteLength(JSON.stringify(request.input ?? null)) > MAX_INPUT_BYTES) throw new RuntimeError('invalid_input', 'the task input is larger than 64 KB');
+}
 
 function writeAtomic(path: string, value: unknown, exclusive = false): void {
   const temporary = `${path}.${process.pid}.tmp`;
@@ -78,8 +167,7 @@ function prepare(paths: RequestPaths): void {
 
 /** Queue a task for the host. The id must be new; the input is JSON of at most 64 KB. */
 export function submitTaskRequest(paths: RequestPaths, request: TaskRequest): void {
-  if (!ID.test(request.taskId) || !ID.test(request.agentId)) throw new RuntimeError('invalid_input', 'task and agent ids are letters, digits, ".", "_", ":" or "-"');
-  if (Buffer.byteLength(JSON.stringify(request.input ?? null)) > MAX_INPUT_BYTES) throw new RuntimeError('invalid_input', 'the task input is larger than 64 KB');
+  checkTaskRequest(request);
   prepare(paths);
   if (readOutcome(paths, request.taskId) !== undefined) throw new RuntimeError('conflict', `task ${request.taskId} already exists`);
   writeAtomic(join(paths.requests, `${request.taskId}.json`), request, true);

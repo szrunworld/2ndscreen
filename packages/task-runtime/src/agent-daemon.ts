@@ -10,11 +10,12 @@
 // Desktop access comes in through `openSession`, so this module runs in
 // tests with fake sessions and in agents-main.ts with 2ndscreen.
 
-import { closeSync, openSync, readFileSync, rmSync, statSync, writeSync } from 'node:fs';
+import { closeSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs';
+import { join } from 'node:path';
 import { grantsOf, loadAgentPackage, readHostConfig, workHoursFunction, type AgentEntryConfig, type AgentPackage, type HostConfig } from './agent-config.ts';
 import type { Grant } from './agent-contracts.ts';
 import { runAgentTask, startResidentAgent, type AgentTaskOutcome, type Ceilings, type ResidentAgent, type ResidentAgentOptions } from './agent-host.ts';
-import { outcomeRecord, requestPaths, takeTaskRequests, writeOutcome, type TaskOutcomeRecord, type TaskRequest } from './agent-requests.ts';
+import { createFileTaskLedger, outcomeRecord, requestPaths, takeTaskRequests, type AgentTaskLedger, type TaskOutcomeRecord, type TaskRequest } from './agent-requests.ts';
 import { createInboxApprover, createInboxAsker, inboxPaths } from './agent-inbox.ts';
 import { agentDataPaths, appendJsonLine, createFileEffectLedger, createFileUsageLedger, prepareAgentDataDir, type AgentDataPaths } from './agent-ledgers.ts';
 import { createProviderService } from './agent-providers.ts';
@@ -53,6 +54,12 @@ export interface AgentHostDaemonOptions {
   /** Timing knobs for every resident agent, for tests. */
   resident?: Pick<ResidentAgentOptions, 'heartbeatTimeoutMs' | 'workHoursPollMs' | 'maxRestarts' | 'restartDelaysMs' | 'killGraceMs'>;
   fetch?: typeof fetch;
+  /**
+   * Where tasks are taken from and their outcomes kept: the task database in
+   * the worker. Default: the request and outcome files under agents/. Either
+   * way, request files an older command line wrote are taken too.
+   */
+  tasks?: AgentTaskLedger;
 }
 
 export interface HostedAgent {
@@ -72,7 +79,9 @@ export interface AgentHostDaemon {
   /** Task agents the host runs on request, by agent id. */
   taskAgents(): string[];
   /** Take submitted tasks now, as the poller does every requestPollMs. */
-  takeRequests(): void;
+  takeRequests(): Promise<void>;
+  /** Tasks under way or waiting in this host: on request, queued for a task agent, or given to a resident one. */
+  busy(): boolean;
   /** Stop every agent politely, then by force; resolves when all are gone. */
   stop(): Promise<void>;
 }
@@ -102,8 +111,16 @@ export async function startAgentHostDaemon(options: AgentHostDaemonOptions): Pro
 
   const agents: HostedAgent[] = [];
   const skipped: AgentHostDaemon['skipped'] = [];
-  /** Apps the runtime launched, by pid and start time; kept across runs, ended when the host stops. */
+  /**
+   * Apps the runtime launched, by pid and start time; kept across runs, ended
+   * when the host stops. Also on file, so a host that starts after this one
+   * died ends them (endLeftoverApps).
+   */
   const launched = new Map<string, WindowBinding>();
+  const keepLaunched = (binding: WindowBinding) => {
+    launched.set(`${binding.window.pid}@${binding.window.processStartedAt ?? '?'}`, binding);
+    writeLaunched(paths, [...launched.values()]);
+  };
   /** What a running agent reads on every check; replaced in place when the config changes. */
   interface Live {
     entry: AgentEntryConfig;
@@ -123,14 +140,15 @@ export async function startAgentHostDaemon(options: AgentHostDaemonOptions): Pro
   };
 
   const requests = requestPaths(paths.dir);
+  const tasks = options.tasks ?? createFileTaskLedger(requests);
   /** When each runtime task was submitted, for its outcome record. */
   const submitted = new Map<string, string>();
+  /** Records are written in the order they are made. */
+  let recording: Promise<void> = Promise.resolve();
   const record = (r: TaskOutcomeRecord) => {
-    try {
-      writeOutcome(requests, r);
-    } catch (error) {
-      log(`could not write the outcome of ${r.taskId}: ${error instanceof Error ? error.message : String(error)}`);
-    }
+    recording = recording.then(
+      () => tasks.record(r),
+    ).catch((error: unknown) => log(`could not record the state of ${r.taskId}: ${error instanceof Error ? error.message : String(error)}`));
   };
   const ended = (agentId: string, taskId: string, taskType: string, origin: 'runtime' | 'agent', outcome: AgentTaskOutcome, startedAt?: string) =>
     record(
@@ -173,7 +191,7 @@ export async function startAgentHostDaemon(options: AgentHostDaemonOptions): Pro
         );
         opened.set(app.bundleId, session);
         const binding = session.binding();
-        if (binding.launchedByRuntime) launched.set(`${binding.window.pid}@${binding.window.processStartedAt ?? '?'}`, binding);
+        if (binding.launchedByRuntime) keepLaunched(binding);
       }
       return opened;
     } catch (error) {
@@ -242,10 +260,26 @@ export async function startAgentHostDaemon(options: AgentHostDaemonOptions): Pro
     })();
   }
 
-  function take(): void {
+  let taking: Promise<void> | undefined;
+  function take(): Promise<void> {
+    return (taking ??= takeNow().finally(() => (taking = undefined)));
+  }
+  async function takeNow(): Promise<void> {
     if (stopping_.signal.aborted) return;
-    const { requests: taken, problems } = takeTaskRequests(requests);
-    for (const p of problems) log(`request ${p.file} dropped: ${p.reason}`);
+    const taken: TaskRequest[] = [];
+    // Request files: the form an older command line writes, and the whole queue without a database.
+    const files = takeTaskRequests(requests);
+    for (const p of files.problems) log(`request ${p.file} dropped: ${p.reason}`);
+    if (options.tasks) {
+      for (const r of files.requests)
+        await tasks.submit(r).catch((error: unknown) => log(`request ${r.taskId} dropped: ${error instanceof Error ? error.message : String(error)}`));
+      try {
+        taken.push(...(await tasks.take()));
+      } catch (error) {
+        log(`could not take submitted tasks: ${error instanceof Error ? error.message : String(error)}`);
+        return;
+      }
+    } else taken.push(...files.requests);
     for (const request of taken) {
       submitted.set(request.taskId, request.submittedAt);
       const fail = (failure: string, message: string) => {
@@ -318,7 +352,7 @@ export async function startAgentHostDaemon(options: AgentHostDaemonOptions): Pro
               );
               opened.set(app.bundleId, session);
               const binding = session.binding();
-              if (binding.launchedByRuntime) launched.set(`${binding.window.pid}@${binding.window.processStartedAt ?? '?'}`, binding);
+              if (binding.launchedByRuntime) keepLaunched(binding);
             }
             return opened;
           } catch (error) {
@@ -499,13 +533,14 @@ export async function startAgentHostDaemon(options: AgentHostDaemonOptions): Pro
   }, options.configPollMs ?? 5000);
   watcher.unref();
 
-  const poller = setInterval(take, options.requestPollMs ?? 1000);
+  const poller = setInterval(() => void take(), options.requestPollMs ?? 1000);
   poller.unref();
 
   let stopping: Promise<void> | undefined;
   return {
     taskAgents: () => [...taskAgents.keys()],
     takeRequests: take,
+    busy: () => taking !== undefined || [...taskAgents.values()].some((t) => t.running || t.queue.length > 0) || types.size > 0,
     paths,
     board,
     agents,
@@ -516,11 +551,13 @@ export async function startAgentHostDaemon(options: AgentHostDaemonOptions): Pro
         clearInterval(watcher);
         clearInterval(poller);
         await reloading.catch(() => undefined);
-        // Task agents: the one under way is cancelled, queued ones never start.
+        await taking?.catch(() => undefined);
+        // Task agents: the one under way is cancelled. Queued ones stay queued in a ledger for the
+        // next host (its recover() puts them back); without one they end here.
         stopping_.abort();
         for (const [id, ta] of taskAgents)
           for (const r of ta.queue.splice(0))
-            record({ taskId: r.taskId, agentId: id, taskType: r.taskType, origin: 'runtime', state: 'failed', submittedAt: r.submittedAt, endedAt: clock.now().toISOString(), failure: 'cancelled', message: 'the agent host stopped' });
+            if (!options.tasks) record({ taskId: r.taskId, agentId: id, taskType: r.taskType, origin: 'runtime', state: 'failed', submittedAt: r.submittedAt, endedAt: clock.now().toISOString(), failure: 'cancelled', message: 'the agent host stopped' });
         await Promise.all([...taskAgents.values()].map((t) => t.running).filter(Boolean));
         for (const a of agents) a.agent.stop();
         await Promise.all(agents.map((a) => a.agent.done));
@@ -533,10 +570,53 @@ export async function startAgentHostDaemon(options: AgentHostDaemonOptions): Pro
           }
         }
         launched.clear();
+        writeLaunched(paths, []);
+        await recording;
       })();
       return stopping;
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Apps a host launched, on file
+
+const launchedPath = (paths: AgentDataPaths) => join(paths.dir, 'launched.json');
+
+function writeLaunched(paths: AgentDataPaths, bindings: WindowBinding[]): void {
+  try {
+    const path = launchedPath(paths);
+    writeFileSync(`${path}.${process.pid}.tmp`, JSON.stringify({ hostPid: process.pid, bindings }) + '\n', { mode: 0o600 });
+    renameSync(`${path}.${process.pid}.tmp`, path);
+  } catch {
+    // Only a host that dies loses this; the apps then stay until someone quits them.
+  }
+}
+
+/**
+ * Ends the apps a host that is gone launched and left running. Call it only
+ * holding the host pid file, so the host that wrote the list cannot be
+ * alive. quitApp makes sure each pid is still that app process.
+ */
+export async function endLeftoverApps(paths: AgentDataPaths, quitApp: (binding: WindowBinding) => Promise<void>, log: (line: string) => void = () => {}): Promise<number> {
+  let left: { hostPid?: number; bindings?: WindowBinding[] };
+  try {
+    left = JSON.parse(readFileSync(launchedPath(paths), 'utf8')) as typeof left;
+  } catch {
+    return 0;
+  }
+  let ended = 0;
+  for (const binding of left.bindings ?? []) {
+    try {
+      await quitApp(binding);
+      ended += 1;
+      log(`ended ${binding.window.bundleId} (pid ${binding.window.pid}), left by agent host ${left.hostPid ?? '?'}`);
+    } catch (error) {
+      log(`could not end ${binding.window.bundleId} (pid ${binding.window.pid}) left by agent host ${left.hostPid ?? '?'}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  rmSync(launchedPath(paths), { force: true });
+  return ended;
 }
 
 // ---------------------------------------------------------------------------

@@ -25,6 +25,7 @@ import {
   validateProcedure,
 } from './contracts.ts';
 import { artifactRecordProblems } from './artifacts.ts';
+import { checkTaskRequest, INTERRUPTED_MESSAGE, type AgentTaskLedger, type TaskOutcomeRecord, type TaskRequest, type TaskState } from './agent-requests.ts';
 import type {
   AccountScope,
   ArtifactCompleteness,
@@ -153,6 +154,25 @@ export const TASK_STORE_MIGRATIONS: readonly string[] = [
   CREATE INDEX artifacts_task_item ON artifacts(task_id, item_id);
   CREATE INDEX events_task_item ON events(task_id, item_id, seq);
   `,
+  // v3: tasks run by agents (RFC 0001), in the same ledger as the skills' tasks.
+  `
+  CREATE TABLE agent_tasks (
+    id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    task_type TEXT NOT NULL,
+    origin TEXT NOT NULL,
+    state TEXT NOT NULL,
+    input_json TEXT,
+    timeout_ms INTEGER,
+    taken_at TEXT,
+    submitted_at TEXT,
+    started_at TEXT,
+    ended_at TEXT,
+    result_json TEXT,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX agent_tasks_state ON agent_tasks(state, submitted_at);
+  `,
 ];
 
 export const TASK_STORE_SCHEMA_VERSION: number = TASK_STORE_MIGRATIONS.length;
@@ -196,8 +216,13 @@ function mapError(error: unknown): unknown {
   return new RuntimeError('io', `task database error: ${message}`);
 }
 
+/** The task ledger, which also records the tasks agents run. */
+export type TaskLedgerStore = TaskStore & { readonly agentTasks: AgentTaskLedger };
+
+const AGENT_TASK_STATES: readonly TaskState[] = ['queued', 'running', 'succeeded', 'partial', 'failed'];
+
 /** Open (and create or migrate) the task ledger at `path`; ':memory:' for tests. */
-export async function openTaskStore(options: { path: string; clock?: Clock; newId?: () => string }): Promise<TaskStore> {
+export async function openTaskStore(options: { path: string; clock?: Clock; newId?: () => string }): Promise<TaskLedgerStore> {
   const clock = options.clock ?? systemClock;
   const newId = options.newId ?? (() => randomUUID());
   const memory = options.path === ':memory:';
@@ -294,8 +319,9 @@ function migrate(db: DatabaseSync, path: string, clock: Clock): void {
   }
 }
 
-class SqliteTaskStore implements TaskStore {
+class SqliteTaskStore implements TaskLedgerStore {
   private closed = false;
+  readonly agentTasks: AgentTaskLedger;
 
   private readonly db: DatabaseSync;
   private readonly clock: Clock;
@@ -305,6 +331,117 @@ class SqliteTaskStore implements TaskStore {
     this.db = db;
     this.clock = clock;
     this.newId = newId;
+    this.agentTasks = this.agentTaskLedger();
+  }
+
+  // -------------------------------------------------------------------------
+  // agent tasks
+
+  private agentTaskLedger(): AgentTaskLedger {
+    const toRecord = (row: Row): TaskOutcomeRecord => {
+      const result = json<Partial<TaskOutcomeRecord>>(row.result_json) ?? {};
+      return {
+        taskId: String(row.id),
+        agentId: String(row.agent_id),
+        taskType: String(row.task_type),
+        origin: row.origin === 'agent' ? 'agent' : 'runtime',
+        state: row.state as TaskState,
+        ...(str(row.submitted_at) && { submittedAt: String(row.submitted_at) }),
+        ...(str(row.started_at) && { startedAt: String(row.started_at) }),
+        ...(str(row.ended_at) && { endedAt: String(row.ended_at) }),
+        ...result,
+      };
+    };
+    const toRequest = (row: Row): TaskRequest => ({
+      taskId: String(row.id),
+      agentId: String(row.agent_id),
+      taskType: String(row.task_type),
+      input: json<unknown>(row.input_json) ?? null,
+      submittedAt: String(row.submitted_at ?? row.updated_at),
+      ...(typeof row.timeout_ms === 'number' && { timeoutMs: row.timeout_ms }),
+      ...(typeof row.timeout_ms === 'bigint' && { timeoutMs: Number(row.timeout_ms) }),
+    });
+    return {
+      submit: async (request) => {
+        checkTaskRequest(request);
+        if (typeof request.agentId !== 'string' || typeof request.taskType !== 'string' || !isIso(request.submittedAt))
+          throw new RuntimeError('invalid_input', 'an agent task needs an agent id, a task type and a submit time');
+        this.tx((db) => {
+          if (db.prepare('SELECT 1 FROM agent_tasks WHERE id = ?').get(request.taskId) || db.prepare('SELECT 1 FROM tasks WHERE id = ?').get(request.taskId))
+            throw new RuntimeError('conflict', `task ${request.taskId} already exists`);
+          db.prepare(
+            `INSERT INTO agent_tasks (id, agent_id, task_type, origin, state, input_json, timeout_ms, submitted_at, updated_at)
+             VALUES (?, ?, ?, 'runtime', 'queued', ?, ?, ?, ?)`,
+          ).run(request.taskId, request.agentId, request.taskType, JSON.stringify(request.input ?? null), request.timeoutMs ?? null, request.submittedAt, this.now());
+        });
+      },
+      take: async () =>
+        this.tx((db) => {
+          const rows = db
+            .prepare(`SELECT * FROM agent_tasks WHERE state = 'queued' AND origin = 'runtime' AND taken_at IS NULL ORDER BY submitted_at, id`)
+            .all();
+          const now = this.now();
+          for (const row of rows) db.prepare('UPDATE agent_tasks SET taken_at = ?, updated_at = ? WHERE id = ?').run(now, now, String(row.id));
+          return rows.map(toRequest);
+        }),
+      record: async (record) => {
+        if (!AGENT_TASK_STATES.includes(record.state)) throw new RuntimeError('invalid_input', `bad agent task state ${record.state}`);
+        const { taskId, agentId, taskType, origin, state, submittedAt, startedAt, endedAt, ...result } = record;
+        const now = this.now();
+        this.tx((db) => {
+          db.prepare(
+            `INSERT INTO agent_tasks (id, agent_id, task_type, origin, state, submitted_at, started_at, ended_at, result_json, taken_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT (id) DO UPDATE SET
+               state = excluded.state,
+               task_type = CASE WHEN excluded.task_type = '?' THEN agent_tasks.task_type ELSE excluded.task_type END,
+               submitted_at = COALESCE(agent_tasks.submitted_at, excluded.submitted_at),
+               started_at = COALESCE(excluded.started_at, agent_tasks.started_at),
+               ended_at = excluded.ended_at,
+               result_json = excluded.result_json,
+               taken_at = COALESCE(agent_tasks.taken_at, excluded.taken_at),
+               updated_at = excluded.updated_at`,
+          ).run(taskId, agentId, taskType, origin, state, submittedAt ?? null, startedAt ?? null, endedAt ?? null, Object.keys(result).length ? JSON.stringify(result) : null, now, now);
+        });
+      },
+      get: async (taskId) => this.read((db) => {
+        const row = db.prepare('SELECT * FROM agent_tasks WHERE id = ?').get(taskId);
+        return row ? toRecord(row) : undefined;
+      }),
+      list: async (filter = {}) =>
+        this.read((db) => {
+          const where: string[] = [];
+          const args: string[] = [];
+          if (filter.states?.length) {
+            where.push(`state IN (${filter.states.map(() => '?').join(', ')})`);
+            args.push(...filter.states);
+          }
+          if (filter.agentId) {
+            where.push('agent_id = ?');
+            args.push(filter.agentId);
+          }
+          const limit = Number.isInteger(filter.limit) && filter.limit! > 0 ? ` LIMIT ${filter.limit}` : '';
+          return db
+            .prepare(`SELECT * FROM agent_tasks${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY COALESCE(submitted_at, started_at, updated_at) DESC, id${limit}`)
+            .all(...args)
+            .map(toRecord);
+        }),
+      recover: async (options = {}) =>
+        this.tx((db) => {
+          let releasedLeases = 0;
+          for (const pid of options.deadOwners ?? [])
+            releasedLeases += Number(db.prepare(`DELETE FROM leases WHERE owner_pid = ? AND task_id LIKE 'agent:%'`).run(pid).changes);
+          const now = this.now();
+          const stale = db.prepare(`SELECT * FROM agent_tasks WHERE state = 'running' OR (state = 'queued' AND origin = 'agent')`).all();
+          for (const row of stale) {
+            const result = { ...(json<Record<string, unknown>>(row.result_json) ?? {}), failure: 'interrupted', message: INTERRUPTED_MESSAGE };
+            db.prepare(`UPDATE agent_tasks SET state = 'failed', ended_at = ?, result_json = ?, updated_at = ? WHERE id = ?`).run(now, JSON.stringify(result), now, String(row.id));
+          }
+          const taken = db.prepare(`SELECT id FROM agent_tasks WHERE state = 'queued' AND origin = 'runtime' AND taken_at IS NOT NULL`).all();
+          db.prepare(`UPDATE agent_tasks SET taken_at = NULL, updated_at = ? WHERE state = 'queued' AND origin = 'runtime' AND taken_at IS NOT NULL`).run(now);
+          return { interrupted: stale.map((r) => String(r.id)), requeued: taken.map((r) => String(r.id)), releasedLeases };
+        }),
+    };
   }
 
   // -------------------------------------------------------------------------

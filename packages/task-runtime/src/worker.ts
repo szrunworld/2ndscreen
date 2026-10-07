@@ -1,16 +1,18 @@
 // The background worker (worker.mjs once built): the one process that runs
-// tasks and drives the app. `2ndscreen task run|resume` starts it detached
-// when no worker owns the ledger, and it keeps going after that command
-// exits. It leaves on SIGTERM, SIGINT or SIGHUP (running tasks become
-// paused), when another worker owns the ledger, or after a quiet spell with
-// nothing to run — and if work arrived while it was leaving, it starts its
+// tasks and drives the app. `2ndscreen task run|resume|submit` and `task
+// host start` start it detached when no worker owns the ledger, and it keeps
+// going after that command exits. Once it owns the ledger it also hosts the
+// enabled agents (agent-hosting.ts). It leaves on SIGTERM, SIGINT or SIGHUP
+// (running tasks become paused, agents are stopped politely), when another
+// worker owns the ledger, or after a quiet spell with no task to run and no
+// resident agent — and if work arrived while it was leaving, it starts its
 // successor first.
 
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DAEMON_DEFAULTS, ensureDaemon } from './daemon.ts';
 import { openTaskStore } from './store.ts';
-import { resolveConfig, startWorker, workerCommand } from './bootstrap.ts';
+import { createWorkerAgentHosting, resolveConfig, startWorker, workerCommand } from './bootstrap.ts';
 
 const IDLE_MS = Number(process.env.SECONDSCREEN_WORKER_IDLE_MS) > 0 ? Number(process.env.SECONDSCREEN_WORKER_IDLE_MS) : 10 * 60_000;
 /**
@@ -25,6 +27,7 @@ const log = (line: string) => process.stderr.write(`${new Date().toISOString()} 
 const config = resolveConfig(dirname(fileURLToPath(import.meta.url)));
 const worker = await startWorker(config);
 log(`started; ledger ${config.paths.dbPath}`);
+const hosting = createWorkerAgentHosting(config, worker, log);
 if (worker.registry.current.pgid !== process.pid)
   log(`not leading its own process group (${worker.registry.current.pgid}): if it dies mid-task, that task stays blocked until resolved by hand`);
 
@@ -35,11 +38,16 @@ async function leave(why: string, code = 0): Promise<void> {
   clearInterval(timer);
   log(`stopping: ${why}`);
   try {
+    // Agents first: their sessions and records go through the worker's adapter and ledger.
+    await hosting.stop().catch((error: unknown) => log(`error while stopping the agents: ${error instanceof Error ? error.message : String(error)}`));
     await worker.close();
     // Work that arrived after the last look was not seen by any CLI as unowned: hand it on.
     const store = await openTaskStore({ path: config.paths.dbPath });
     try {
-      const waiting = await store.listTasks({ status: ['queued', 'running', 'cancelling'] });
+      const waiting = [
+        ...(await store.listTasks({ status: ['queued', 'running', 'cancelling'] })),
+        ...(await store.agentTasks.list({ states: ['queued'], limit: 1 })),
+      ];
       if (waiting.length > 0 && why !== 'signal') {
         const next = await ensureDaemon(store, workerCommand(config));
         log(`handed ${waiting.length} task(s) on${next.started ? ` to worker ${next.pid}` : ''}`);
@@ -70,10 +78,13 @@ const timer = setInterval(() => {
   void (async () => {
     if (leaving) return;
     const now = Date.now();
-    if (worker.daemon.isOwner()) lastOwner = now;
-    else if (now - Math.max(lastOwner, startedAt) > STANDBY_MS) return leave('another worker owns the ledger');
+    if (worker.daemon.isOwner()) {
+      lastOwner = now;
+      // Agents are hosted only by the worker that owns the ledger.
+      await hosting.tick();
+    } else if (now - Math.max(lastOwner, startedAt) > STANDBY_MS) return leave('another worker owns the ledger');
     const busy = await worker.store.listTasks({ status: ['queued', 'running', 'cancelling'] }).catch(() => [{}]);
-    if (busy.length > 0) lastBusy = now;
+    if (busy.length > 0 || (await hosting.busy().catch(() => true))) lastBusy = now;
     else if (now - lastBusy > IDLE_MS) return leave('idle');
   })();
 }, CHECK_MS);

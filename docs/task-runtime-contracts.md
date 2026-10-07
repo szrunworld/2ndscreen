@@ -411,25 +411,27 @@ Swift 侧：`Sources/SecondScreenCore/LocalVision.swift`（实现与协议）、
 | `listInbox` / `formatInbox` | 最早的在前；审批一行同时列出 Runtime 算出的后果（今日已用与剩余、距上次、该目标是否有过不明结果、是否在时段内），不只是 agent 的说法 |
 | 命令行与 MCP | `2ndscreen task inbox`、`approve INBOX_ID`、`deny INBOX_ID [--hint …]… [--text …]`、`answer INBOX_ID TEXT`；MCP `task_inbox`、`task_approve`、`task_deny`、`task_answer` |
 
-### Agent 宿主进程（`agent-daemon.ts`、`agents-main.ts`、`agent-config.ts`、`agent-providers.ts`）
+### Agent 宿主（`agent-daemon.ts`、`agent-hosting.ts`、`agent-config.ts`、`agent-providers.ts`）
 
-长期运行，维持 `<tasksDir>/agents/config.json` 里启用的常驻 agent。`2ndscreen task host start|stop|status` 启停，MCP `task_host`。打包为 `agents.mjs`。
+后台只有一个进程：持有任务账本守护租约的 worker（`worker.mjs`）同时托管 agent，维持 `<tasksDir>/agents/config.json` 里启用的常驻 agent，并运行提交给任务型 agent 的任务。`2ndscreen task host start|stop|status` 启停，MCP `task_host`。不再有单独的 `agents.mjs`。
 
 | 项 | 规定 |
 | --- | --- |
-| 单实例 | `claimHost` 以 `agents/host.pid` 独占（O_EXCL）；死进程留下的文件被接管，活着的宿主让第二个以 `conflict` 退出 |
+| 单实例 | `claimHost` 以 `agents/host.pid` 独占（O_EXCL）；死进程留下的文件被接管。只有持有守护租约的 worker 去托管；旧版独立宿主还活着时，worker 不托管，在 `agents/hosting.json` 写明在等什么 |
+| 合并进 worker | agent 进程经 worker 的 actor 记录启动（`registry.wrap`），会话用 worker 的适配器与租约。开始托管前：每个没关闭记录就死掉的 worker 都要经 `verifyWorkerStopped` 证实已停（遗留进程组被结束）；证实不了就等待并写明原因。证实后：结束死宿主启动后遗留的应用（`agents/launched.json`，核对 bundle 与启动时间），交回死 worker 名下的 agent 会话租约，账本 `recover()`。worker 只在没有任务、没有常驻 agent、没有排队或运行中的 agent 任务时闲置退出 |
 | 配置 | `validateHostConfig` 一次列出全部问题。每个条目：绝对路径的包、启用、账号（平台与账号键）、可选 `takeOver`、授权、上限、工作时段。授权必须写 `expiresAt` 或 `durable: true`，不允许含糊。provider 只支持 `openai-chat`，`baseUrl` 必须是不带凭据的 https（仅 localhost 可用 http），key 只给环境变量名 |
 | 包 | `loadAgentPackage`：`agent.json` 校验通过且 `runtimeContract` 满足；每个应用一份 `profiles/macos/<id>.json`，id、bundle 与尺寸相符且实际路径在包内；执行体程序在包内 |
 | 会话 | 每次常驻运行开始时打开、结束时关闭（`keepWindow: true`，应用留在私有屏上保持登录，租约交回）；会话打不开计为一次 `no_session` 故障 |
 | 收尾 | runtime 自己启动的应用在宿主最终停止时由 `quitApp` 结束（核对 bundle 与启动时间）；不结束的话，私有屏回收时窗口会被挪到用户屏。适配器 `bindApp` 在启动应用后失败，同样立即结束该应用 |
 | 服务 | 收件箱审批与提问、限额账本、provider（key 来自宿主环境，只发往配置的地址，拒绝重定向）、用量账本、状态看板、审计日志 `agents/audit.jsonl`（每个外发的放行与拒绝） |
-| 日志 | `agents/host.log`；每次运行结束写明原因（`detail`）：协议违规时解析器的报错，观察失败时窗口的错误。观察失败记为 `error`，不再记为协议违规 |
+| 日志 | worker 的日志 `worker.log`；每次运行结束写明原因（`detail`）：协议违规时解析器的报错，观察失败时窗口的错误。观察失败记为 `error`，不再记为协议违规 |
 | 主窗口 | 适配器把比 `mainWindowMinWidth` 窄的窗口视为加载窗口；不写时为窗口配置宽度的一半（按 BOSS 直聘的启动画面定）。固定尺寸的小窗口应用（如计算器 198×350）在窗口配置里写 `mainWindowMinWidth`。窗口配置的尺寸必须在私有屏的范围内（`SCREEN_LIMITS`：320×240 到 6016×3384），加载包时即校验 |
 | 热加载 | 每 `configPollMs`（默认 5 秒）按修改时间与大小检查配置。授权、上限、工作时段、provider 原地替换，运行中的 agent 下一次检查即生效，不重启；包、账号、`takeOver` 改变的 agent 重启，停用或删除的停止，新增的启动；不通过校验的配置不生效，记日志 |
 | 授权命令 | `2ndscreen task grants [AGENT_ID]`、`grant AGENT_ID APPLICATION [--effect] [--mode] [--for 30m/12h/7d | --until ISO | --durable]`、`revoke AGENT_ID APPLICATION [--effect]`；MCP `task_grants`、`task_grant`、`task_revoke`。默认效果 external-submit、模式 human_in_the_loop、期限 7 天（RFC 0001 §7）。同一应用与效果的旧授权被替换；写入前整份配置重新校验，原子替换，0600 |
-| 宿主生命周期 | 宿主一直运行到被要求停止；没有 agent 时等待配置加入 |
-| 按请求运行 | `2ndscreen task submit AGENT_ID TASK_TYPE [--input JSON] [--timeout 30m]` 把请求原子写进 `agents/requests/`，立即返回任务编号；宿主不在时请求排队等待。宿主每 `requestPollMs`（默认 1 秒）领取：常驻 agent 交给它的 `submit`；任务型 agent 为每个任务打开会话、跑 `runAgentTask`、关闭会话，同一 agent 一次一个；不认识的 agent、清单没有的任务类型立即失败并写明原因。宿主停止时正在跑的被取消，排队的记为 `cancelled` |
-| 任务结果 | `agents/outcomes/<taskId>.json`：状态（queued / running / succeeded / partial / failed）、来源（runtime / agent）、提交、开始、结束时间、失败原因与说明、条目、产物、动作数与其中被拒和结果不明的数。agent 自建的任务也记。`2ndscreen task outcome TASK_ID`、MCP `task_submit`、`task_outcome` |
+| 宿主生命周期 | 有常驻 agent 时 worker 一直运行到被要求停止；`task host stop` 停的是 worker，技能任务随之暂停。没有配置时 worker 不托管，配置出现后下一次检查（5 秒）开始托管 |
+| 按请求运行 | `2ndscreen task submit AGENT_ID TASK_TYPE [--input JSON] [--timeout 30m]` 把任务写进 tasks.db 的 `agent_tasks` 表（schema v3，与技能任务同一账本、同一编号空间），确保 worker 在跑，立即返回任务编号。宿主每 `requestPollMs`（默认 1 秒）领取（`AgentTaskLedger.take`，标记已领取）：常驻 agent 交给它的 `submit`；任务型 agent 为每个任务打开会话、跑 `runAgentTask`、关闭会话，同一 agent 一次一个；不认识的 agent、清单没有的任务类型立即失败并写明原因。旧版命令行写在 `agents/requests/` 的请求文件照样被领取并转入账本 |
+| 停止与崩溃 | 宿主停止时正在跑的被取消；排队的留在账本里给下一个宿主。宿主死掉后，下一个宿主的 `recover()` 把它在跑的任务记为 `failed / interrupted`（外发是否发生看限额账本，不重跑），已领取未开始的放回队列 |
+| 任务结果 | 账本里每个任务：状态（queued / running / succeeded / partial / failed）、来源（runtime / agent）、提交、开始、结束时间、失败原因与说明、条目、产物、动作数与其中被拒和结果不明的数。agent 自建的任务也记。`2ndscreen task outcome TASK_ID` 与 `task status TASK_ID` 都能查（status 先查技能任务，再查 agent 任务）；旧宿主写在 `agents/outcomes/` 的结果仍可读。MCP `task_submit`、`task_outcome` |
 | 结束应用 | 结束 runtime 启动的应用时先 `2ndscreen app quit --pid --bundle`（等同 ⌘Q，最多等 10 秒），仍在运行才 SIGTERM、再 SIGKILL；每一步前核对 bundle 与启动时间。BOSS直聘把 SIGTERM 当崩溃并自动重启到用户屏，2026-10-07 实测 |
 | 启动收尾 | `app launch` 返回失败或超时（启动单独放宽到 45 秒）时，若应用在启动前没运行、启动后在运行，且启动时间不早于这次启动前 2 秒，视为这次启动的，核对身份后结束；早已在运行的不碰 |
 

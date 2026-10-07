@@ -53,8 +53,8 @@ enum TaskCommand {
     agents lists agent runs, blocked ones first with what they wait for; usage
     sums provider calls, tokens and cost per agent, provider, model or task.
     inbox lists approvals and questions agents wait on; approve, deny and
-    answer decide them. host runs the agent host that keeps resident agents
-    going through their work hours. grant and revoke change what an agent may
+    answer decide them. host starts or stops the background worker, which also
+    hosts the agents and keeps resident ones going through their work hours. grant and revoke change what an agent may
     send; a grant ends after 7 days unless told otherwise. submit hands a
     task to an agent the host runs; outcome says how it stands.
     """
