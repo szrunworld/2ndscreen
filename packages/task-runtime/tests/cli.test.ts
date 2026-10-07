@@ -129,7 +129,7 @@ test('each command routes to its one TaskControl method', async () => {
   assert.equal(status.json.result.outputPath, '/tmp/out/task-1');
   assert.deepEqual((await cli(['artifacts', 'task-1'])).json.result, []);
   assert.deepEqual((await cli(['inspect-procedure', 'proc-1'], control)).json.result, procedure);
-  assert.deepEqual(CLI_COMMANDS, ['run', 'status', 'pause', 'resume', 'cancel', 'artifacts', 'inspect-procedure', 'bind-account', 'agents', 'usage']);
+  assert.deepEqual(CLI_COMMANDS, ['run', 'status', 'pause', 'resume', 'cancel', 'artifacts', 'inspect-procedure', 'bind-account', 'agents', 'usage', 'inbox', 'approve', 'deny', 'answer']);
 });
 
 test('--account binds the named account at submit, as explicit, and nothing else does', async () => {

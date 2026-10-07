@@ -79,7 +79,8 @@ BOSS 的界面，也不要用 `2ndscreen agent` 去替代它。
 MCP 客户端可用同名工具 `task_run`（参数 `account`）、`task_status`、`task_pause`、`task_resume`、
 `task_cancel`、`task_artifacts`、`task_inspect_procedure`、`task_bind_account`，它们调用的是同一个命令。
 `task_agents`（谁在跑、谁卡在审批或等回答）与 `task_usage`（按 agent 汇总模型调用与成本）对应
-`2ndscreen task agents` 和 `2ndscreen task usage`。
+`2ndscreen task agents` 和 `2ndscreen task usage`。agent 等人审批或回答时，`task_inbox` 列出待办，
+`task_approve`、`task_deny`、`task_answer` 处理，对应 `2ndscreen task inbox|approve|deny|answer`。
 成功的调用还会附上任务资源链接：`2ndscreen://tasks/TASK_ID`（当前状态）和
 `2ndscreen://tasks/TASK_ID/artifacts`（产物索引），用 `resources/read` 读取，内容与 `task_status`、
 `task_artifacts` 的结果相同；只能读这两种地址，不能读任意文件。

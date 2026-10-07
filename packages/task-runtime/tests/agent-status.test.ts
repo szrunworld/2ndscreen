@@ -251,6 +251,7 @@ function control(extra: Partial<AgentViewControl> = {}): TaskControl & AgentView
     submit: unused, status: unused, pause: unused, resume: unused, cancel: unused, artifacts: unused, inspectProcedure: unused,
     agents: async (o) => (calls.push(['agents', o]), { runs: [], lines: ['no agent runs'] }),
     usage: async (o) => (calls.push(['usage', o]), { rows: [] }),
+    inbox: unused, approve: unused, deny: unused, answer: unused,
     ...extra,
   } as TaskControl & AgentViewControl & { calls: unknown[] };
 }

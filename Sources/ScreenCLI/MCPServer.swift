@@ -528,6 +528,35 @@ extension MCPServer {
                               return w
                           },
                           check: checker(["by": .string, "since": .string])))
+        let inboxID: [String: Any] = described(string, "Inbox ID as task_inbox lists it")
+        tools.append(Tool(name: "task_inbox",
+                          description: "What agents wait on a person for: approvals of outbound actions, each with what the runtime worked out (quota used and left, time since the last one, earlier unknown results, work hours), and questions with their choices. Decide them with task_approve, task_deny or task_answer, after asking the user.",
+                          properties: [:], required: [],
+                          words: { _ in ["task", "inbox"] },
+                          check: checker([:])))
+        tools.append(Tool(name: "task_approve",
+                          description: "Approve one pending approval from task_inbox. Only when the user said so: it lets an agent send something on their behalf.",
+                          properties: ["id": inboxID], required: ["id"],
+                          words: { a in ["task", "approve"] + ((a["id"] as? String).map { [$0] } ?? []) },
+                          check: checker(["id": .string])))
+        tools.append(Tool(name: "task_deny",
+                          description: "Deny one pending approval from task_inbox, optionally with a hint the agent can act on and a short text.",
+                          properties: ["id": inboxID,
+                                       "hint": ["type": "string", "enum": ["too_fast", "wrong_target", "outside_quota", "needs_time_limit", "not_now"]],
+                                       "text": described(string, "Why, in a few words")],
+                          required: ["id"],
+                          words: { a in
+                              var w = ["task", "deny"] + ((a["id"] as? String).map { [$0] } ?? [])
+                              if let v = a["hint"] as? String { w += ["--hint", v] }
+                              if let v = a["text"] as? String { w += ["--text", v] }
+                              return w
+                          },
+                          check: checker(["id": .string, "hint": .string, "text": .string])))
+        tools.append(Tool(name: "task_answer",
+                          description: "Answer one pending question from task_inbox with the user's answer; one of its choices when it lists some.",
+                          properties: ["id": inboxID, "answer": described(string, "The answer")], required: ["id", "answer"],
+                          words: { a in ["task", "answer"] + [a["id"], a["answer"]].compactMap { $0 as? String } },
+                          check: checker(["id": .string, "answer": .string])))
         return tools
     }()
 
