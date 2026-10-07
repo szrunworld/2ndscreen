@@ -65,7 +65,11 @@ public final class ControlServer {
         // fails with EPIPE for this connection alone instead of raising
         // SIGPIPE, which would end the whole host.
         var noSignal: Int32 = 1
-        setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, socklen_t(MemoryLayout<Int32>.size))
+        guard setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, socklen_t(MemoryLayout<Int32>.size)) == 0 else {
+            // Without the guard a reply to this client could end the host; drop it.
+            close(client)
+            return
+        }
         clients.async { [handler] in
             defer { close(client) }
             // No request (the client closed, or the read failed): nothing to
