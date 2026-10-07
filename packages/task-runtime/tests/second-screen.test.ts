@@ -1074,3 +1074,17 @@ test('a program that never starts calls no hook, and a failing onSettled rejects
   const timed = createCommandRunner({ onSettled: () => { throw new Error('late'); } });
   await assert.rejects(timed('/bin/sleep', ['30'], { timeoutMs: 100 }), (e) => isRuntimeError(e, 'timeout'));
 });
+
+test('a side instance already started for the socket is waited for, never doubled', async () => {
+  const ps = [
+    `  101 /Apps/2ndscreen.app/Contents/MacOS/2ndscreen HOME=/Users/x SECONDSCREEN_SOCKET=/tmp/other.sock`,
+    `  202 /Apps/2ndscreen.app/Contents/MacOS/2ndscreen HOME=/Users/x SECONDSCREEN_SOCKET=${SOCKET}`,
+  ].join('\n');
+  const { run, calls } = fakeRunner({
+    cli: () => ({ ok: false, error: '2ndscreen is not running; open 2ndscreen.app first' }),
+    tools: { ps: () => ({ stdout: ps }), open: () => ({ code: 0 }) },
+  });
+  const adapter = createSecondScreenAdapter({ signalProcess: recordSignal, cli: 'cli', socket: SOCKET, app: '/Apps/2ndscreen.app', run, screenshotDir: '/nonexistent' });
+  await assert.rejects(adapter.ensureScreen(profile), (e) => isRuntimeError(e, 'timeout') && /pid 202/.test(e.message) && /no second one/.test(e.message));
+  assert.equal(calls.filter((c) => c.file === 'open').length, 0);
+});

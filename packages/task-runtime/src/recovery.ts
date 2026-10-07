@@ -236,11 +236,12 @@ export function createRecovery(deps: {
       // 2. Model repair through the bridge, bounded per item and per task.
       let repairs = context.itemRepairs;
       let bridge: ExplorerBridge | undefined;
+      let lastFailure: string | undefined;
       const reason = modelReason(failure);
       const fallbackPurpose: ModelPurpose = failure.status === 'no_procedure' ? 'ui' : 'repair';
       for (;;) {
         throwIfAborted(signal);
-        if (repairs >= budget.modelRepairsPerItem) return { status: 'exhausted', budget: 'item_repairs' };
+        if (repairs >= budget.modelRepairsPerItem) return { status: 'exhausted', budget: 'item_repairs', ...(lastFailure && { lastFailure }) };
         const before = checkBudget(budget, usageNow());
         if (!before.ok) return { status: 'exhausted', budget: before };
 
@@ -388,6 +389,7 @@ export function createRecovery(deps: {
           // Verify independently; the bridge saying finished is not evidence.
           const { check } = await observeAndVerify();
           telemetry.record({ type: 'unit', unit: unit.name, route, ok: check.ok, elapsedMs: clock.now().getTime() - attemptStarted });
+          if (!check.ok) lastFailure = `the model finished but the postconditions do not hold (${check.evidence.slice(0, 3).join('; ')})`;
           if (check.ok) {
             let proposal: ProcedureProposal | undefined;
             if (unit.learnable && outcome.executed.length > 0) {
@@ -409,6 +411,7 @@ export function createRecovery(deps: {
 
         if (outcome.status !== 'finished' || stopped === 'rounds')
           telemetry.record({ type: 'unit', unit: unit.name, route, ok: false, elapsedMs: clock.now().getTime() - attemptStarted });
+        if (outcome.status !== 'finished' || stopped === 'rounds') lastFailure = stopped === 'rounds' ? 'the model ran out of rounds' : `the exploration failed: ${outcome.failure ?? 'unknown'}`;
         if (outcome.failure === 'model_unavailable') return { status: 'model_unavailable' };
         if (outcome.failure === 'cancelled' && !stopped) return { status: 'cancelled' };
         // Failed for another reason (timeout, error, refused action): the

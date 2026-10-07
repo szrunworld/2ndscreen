@@ -215,7 +215,7 @@ test('a failed or unverified exploration is retried only within the item repair 
   const v = world({ scripts: [{ action: { kind: 'click', target: { kind: 'relative', point: { x: 0.9, y: 0.9 } }, effect: 'navigation' } }] });
   v.app.show('张三');
   const outcome = await v.recovery.recover(v.context('张三', { status: 'no_procedure' }));
-  assert.deepEqual(outcome, { status: 'exhausted', budget: 'item_repairs' });
+  assert.deepEqual(outcome, { status: 'exhausted', budget: 'item_repairs', lastFailure: 'the model finished but the postconditions do not hold (page or identity differs)' });
   assert.equal(v.bridge.requests.length, DEFAULT_BUDGET.modelRepairsPerItem);
   assert.equal(v.repository.inserts, 0, 'nothing unverified is stored');
 });
@@ -306,7 +306,7 @@ test('a bridge that runs over its rounds is a failed attempt, not a repair', asy
   const w = world({ scripts: [{ calls: 4, ignoreAbort: true }] });
   w.app.show('张三');
   const budget = { ...DEFAULT_BUDGET, modelRoundsPerRepair: 2, modelRepairsPerItem: 1 };
-  assert.deepEqual(await w.recovery.recover(w.context('张三', { status: 'no_procedure' }, { budget })), { status: 'exhausted', budget: 'item_repairs' });
+  assert.deepEqual(await w.recovery.recover(w.context('张三', { status: 'no_procedure' }, { budget })), { status: 'exhausted', budget: 'item_repairs', lastFailure: 'the model ran out of rounds' });
 });
 
 test('relocate never resends a step outside the current unit', async () => {
@@ -431,7 +431,7 @@ test('silent calls over the rounds of one repair are a failed attempt', async ()
   const w = world({ scripts: [{ calls: 0, silentCalls: 4 }] });
   w.app.show('张三');
   const budget = { ...DEFAULT_BUDGET, modelRoundsPerRepair: 2, modelRepairsPerItem: 1 };
-  assert.deepEqual(await w.recovery.recover(w.context('张三', { status: 'no_procedure' }, { budget })), { status: 'exhausted', budget: 'item_repairs' });
+  assert.deepEqual(await w.recovery.recover(w.context('张三', { status: 'no_procedure' }, { budget })), { status: 'exhausted', budget: 'item_repairs', lastFailure: 'the model ran out of rounds' });
 });
 
 test('unknown tokens under a configured cap exhaust the budget even with no usage events', async () => {

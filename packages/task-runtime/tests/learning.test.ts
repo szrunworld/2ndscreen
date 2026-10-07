@@ -124,3 +124,17 @@ test('accept takes the next version when another writer inserted the same one fi
   const v = await learner.accept(learner.propose(UNIT, KEY, trace(), bindings), verified, 'item-1');
   assert.equal(v.version, 2);
 });
+
+test('a one-character value becomes a slot only where it is the whole text, as a key labelled with it', () => {
+  const learner = createLearner({ repository: new MemoryRepository(), newId });
+  const press = (label: string): ExecutedStep => ({
+    stepId: `b-${label}`,
+    action: { kind: 'click', target: { kind: 'element', role: 'AXButton', label }, effect: 'navigation' },
+    result: result('ok'),
+    executedBy: 'bridge',
+  });
+  const p = learner.propose(UNIT, KEY, [press('7'), press('17'), press('All Clear')], { ...bindings, digit: '7' });
+  const labels = p.steps.map((s) => s.action.kind === 'click' && s.action.target.kind === 'element' && s.action.target.label);
+  assert.deepEqual(labels, ['{{digit}}', '17', 'All Clear']);
+  assert.ok(p.parameters.includes('digit'));
+});

@@ -399,7 +399,20 @@ Swift 侧：`Sources/SecondScreenCore/LocalVision.swift`（实现与协议）、
 | 状态面板 | 每个进程一次运行一条；正常停止（时段结束、被要求停止）记为 done，其余记为 failed 并写明原因 |
 | 停止 | `stop()` 或 `signal` 停止后不再接受 `submit`；放弃之后同样不再接受 |
 
-### 审批与提问收件箱（`agent-inbox.ts`）
+### 单元服务 `run_unit`（`agent-units.ts`）
+
+把 runner 给内置技能做的事，作为协议服务提供给任何 agent：agent 用后置条件描述一个单元要达到的界面状态，runtime 负责达到并验证。
+
+| 项 | 规定 |
+| --- | --- |
+| 消息 | agent 发 `run_unit { taskId, requestId, app, unit: { name, goal, allowedEffects, postconditions, preconditions?, learnable?, timeoutMs? }, bindings?, itemId? }`；runtime 回 `unit_result`：成功带 `route`（verified / replay / recovered / repaired）、新观察、检查结果和流程（id、版本、状态）；失败带原因（not_offered、invalid_unit、forbidden_effect、unrecovered、model_unavailable、budget_exhausted、not_learnable、cancelled、error）与说明 |
+| 校验 | `unitProblems`：名字小写加下划线；效果只能是 read / navigation / artifact，且必须是清单声明过的；含 external-submit 一律 `forbidden_effect`（外发只走 act 与检查链）；后置条件 1 到 16 条，不得检查文件，不得用页面分类（那是内置技能的分类器）。后置条件里可以写 `{{slot}}`，用 bindings 的值检查，存下的流程保留槽位 |
+| 顺序 | 先看单元是否已经完成（不发任何动作）；再回放本 agent 学到的流程；失败后走恢复：本地路线（等待、重新定位、另一个本地流程），再走探索桥（模型），受任务预算与每项修复次数约束。每一步都由 runtime 在新观察上检查后置条件，模型说完成不算 |
+| 学习 | 流程键 `agent:<agentId>` + agent 版本 + 单元名 + 应用版本 + 窗口配置；不与其他 agent、版本、窗口配置共享。探索走通的路径存为 trial，在不同 `itemId` 上验证成功累计到阈值（默认 3）后为 stable；回放失败即降级。整段等于某个绑定值的短文本（如按键“7”对应 digit=7）也变成槽位 |
+| 记账 | 单元里的模型调用按 agent、任务记入 provider 用量，providerId `runtime.exploration`，用途 repair；状态看板有 unit started / finished 事件 |
+| 托管 | worker 托管 agent 时提供该服务（流程、学习、恢复与技能任务共用 tasks.db）；探索桥进程经 worker 的 actor 记录启动。未提供时答 `not_offered` |
+
+
 
 托管 agent 的进程没有界面，审批与提问经文件跨进程交给人。
 

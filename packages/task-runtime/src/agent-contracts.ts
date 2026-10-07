@@ -21,6 +21,7 @@ import {
   type ArtifactCompleteness,
   type ArtifactKind,
   type Budget,
+  type Condition,
   type EffectClass,
   type Observation,
   type Rect,
@@ -527,6 +528,18 @@ export type RuntimeMessage = MessageBase &
     | { type: 'grant'; taskId: string; approvalId: string }
     | { type: 'deny'; taskId: string; approvalId: string; guidance?: { text?: string; hints: ApprovalHint[] } }
     | { type: 'task_created'; requestId: string; taskId: string }
+    | {
+        type: 'unit_result';
+        taskId: string;
+        requestId: string;
+        ok: true;
+        route: 'verified' | 'replay' | 'recovered' | 'repaired';
+        observation: Observation;
+        check: { ok: boolean; evidence: string[] };
+        /** The procedure replayed or learned, and how far it is from stable. */
+        procedure?: { id: string; version: number; status: string };
+      }
+    | { type: 'unit_result'; taskId: string; requestId: string; ok: false; reason: UnitRefusalReason; message: string; observation?: Observation }
     /** The person's answer to an `ask_user` that carried a questionId; the task goes on where it stopped. */
     | { type: 'user_answer'; taskId: string; questionId: string; answer: string }
     | { type: 'pause'; taskId: string }
@@ -547,6 +560,23 @@ export type RuntimeMessageType = RuntimeMessage['type'];
  * blocked-on-approval and blocked-on-input itself from pending requests.
  */
 export type HeartbeatState = 'idle' | 'working' | 'blocked' | 'paused';
+
+/** A unit as an agent describes it in `run_unit` (checked by unitProblems in agent-units.ts). */
+export interface AgentUnit {
+  name: string;
+  goal: string;
+  /** read, navigation or artifact; never external-submit. */
+  allowedEffects: EffectClass[];
+  /** What must hold when the unit is done; the runtime checks them, nothing else counts. */
+  postconditions: Condition[];
+  preconditions?: Condition[];
+  /** Whether a path the model found may be stored for replay; default true. */
+  learnable?: boolean;
+  timeoutMs?: number;
+}
+
+export type UnitRefusalReason = 'not_offered' | 'invalid_unit' | 'forbidden_effect' | 'unrecovered' | 'model_unavailable' | 'budget_exhausted' | 'not_learnable' | 'cancelled' | 'error';
+export const UNIT_REFUSAL_REASONS: readonly UnitRefusalReason[] = ['not_offered', 'invalid_unit', 'forbidden_effect', 'unrecovered', 'model_unavailable', 'budget_exhausted', 'not_learnable', 'cancelled', 'error'];
 export const HEARTBEAT_STATES: readonly HeartbeatState[] = ['idle', 'working', 'blocked', 'paused'];
 
 export type AgentMessage = MessageBase &
@@ -582,6 +612,12 @@ export type AgentMessage = MessageBase &
     | { type: 'create_task'; requestId: string; taskType: string; input: unknown }
     | { type: 'item'; taskId: string; itemId: string; status: WorkItemStatus; data?: Record<string, unknown> }
     | { type: 'artifact'; taskId: string; path: string; kind: ArtifactKind; completeness: ArtifactCompleteness; sha256?: string }
+    /**
+     * Ask the runtime to reach the unit's postconditions: already done, a
+     * learned procedure replayed, or recovered (locally, then by the model),
+     * each judged by the postconditions on a fresh observation.
+     */
+    | { type: 'run_unit'; taskId: string; requestId: string; app: string; unit: AgentUnit; bindings?: Record<string, string>; itemId?: string }
     | { type: 'unit_started'; taskId: string; unitAttemptId: string; unit: string }
     | { type: 'unit_finished'; taskId: string; unitAttemptId: string; unit: string; ok: boolean }
     | { type: 'heartbeat'; state: HeartbeatState; summary?: string }
@@ -596,6 +632,7 @@ const AGENT_MESSAGE_TYPES: readonly AgentMessageType[] = [
   'observe',
   'act',
   'wait',
+  'run_unit',
   'provider',
   'ask_approval',
   'ask_user',
@@ -615,6 +652,7 @@ const TASK_SCOPED: ReadonlySet<string> = new Set([
   'observe',
   'act',
   'wait',
+  'run_unit',
   'ask_approval',
   'ask_user',
   'item',
@@ -708,6 +746,14 @@ export function parseAgentMessage(line: string, expected?: ExpectedMessage): Val
       needApp();
       errors.push(...validateWaitSpec(raw.wait, 'wait'));
       break;
+    case 'run_unit':
+      needRequest();
+      needApp();
+      // The unit's content is checked by the host against the agent's manifest; here only its shape.
+      if (!isObject(raw.unit)) errors.push('unit must be an object');
+      if (raw.bindings !== undefined && !(isObject(raw.bindings) && Object.values(raw.bindings).every(isString))) errors.push('bindings must map names to strings');
+      if (raw.itemId !== undefined && !isNonEmpty(raw.itemId)) errors.push('itemId must be a non-empty string when present');
+      break;
     case 'provider':
       needRequest();
       if (!isNonEmpty(raw.providerId)) errors.push('providerId is required');
@@ -779,6 +825,7 @@ const RUNTIME_MESSAGE_TYPES: readonly RuntimeMessageType[] = [
   'agent_start',
   'task_start',
   'observation',
+  'unit_result',
   'action_result',
   'provider_result',
   'grant',
@@ -909,6 +956,18 @@ export function parseRuntimeMessage(line: string, expected?: ExpectedMessage): V
       }
       break;
     }
+    case 'unit_result':
+      needTask();
+      needRequest();
+      if (raw.ok === true) {
+        if (!oneOf(raw.route, ['verified', 'replay', 'recovered', 'repaired'])) errors.push('route must be verified, replay, recovered or repaired');
+        if (!isObject(raw.observation) || !isNonEmpty(raw.observation.snapshotId)) errors.push('observation must carry snapshotId');
+        if (!isObject(raw.check) || typeof raw.check.ok !== 'boolean' || !Array.isArray(raw.check.evidence)) errors.push('check must carry ok and evidence');
+      } else if (raw.ok === false) {
+        if (!oneOf(raw.reason, UNIT_REFUSAL_REASONS)) errors.push('reason is not a unit failure reason');
+        if (!isString(raw.message)) errors.push('message must be a string');
+      } else errors.push('ok must be boolean');
+      break;
     case 'provider_result':
       needRequest();
       if (raw.ok === true) {

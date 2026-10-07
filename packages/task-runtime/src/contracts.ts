@@ -1266,7 +1266,7 @@ export interface RecoveryContext {
 export type RecoveryOutcome =
   | { status: 'recovered'; route: 'wait' | 'relocate' | 'local_procedure'; observation: Observation }
   | { status: 'repaired'; outcome: ExplorationOutcome; proposal?: ProcedureProposal; verification: CheckResult }
-  | { status: 'exhausted'; budget: BudgetCheck | 'item_repairs' | 'local' }
+  | { status: 'exhausted'; budget: BudgetCheck | 'item_repairs' | 'local'; /** Why the last model attempt did not reach the unit, when one ran. */ lastFailure?: string }
   | { status: 'model_unavailable' }
   | { status: 'cancelled' };
 
