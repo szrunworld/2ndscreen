@@ -11,8 +11,9 @@
 // tests with fake sessions and in agents-main.ts with 2ndscreen.
 
 import { closeSync, openSync, readFileSync, rmSync, statSync, writeSync } from 'node:fs';
-import { grantsOf, loadAgentPackage, readHostConfig, workHoursFunction, type AgentPackage, type HostConfig } from './agent-config.ts';
-import { startResidentAgent, type ResidentAgent, type ResidentAgentOptions } from './agent-host.ts';
+import { grantsOf, loadAgentPackage, readHostConfig, workHoursFunction, type AgentEntryConfig, type AgentPackage, type HostConfig } from './agent-config.ts';
+import type { Grant } from './agent-contracts.ts';
+import { startResidentAgent, type Ceilings, type ResidentAgent, type ResidentAgentOptions } from './agent-host.ts';
 import { createInboxApprover, createInboxAsker, inboxPaths } from './agent-inbox.ts';
 import { agentDataPaths, appendJsonLine, createFileEffectLedger, createFileUsageLedger, prepareAgentDataDir, type AgentDataPaths } from './agent-ledgers.ts';
 import { createProviderService } from './agent-providers.ts';
@@ -44,6 +45,8 @@ export interface AgentHostDaemonOptions {
   clock?: Clock;
   log?: (line: string) => void;
   inboxPollMs?: number;
+  /** How often the config file is checked for changes; default 5 s. */
+  configPollMs?: number;
   /** Timing knobs for every resident agent, for tests. */
   resident?: Pick<ResidentAgentOptions, 'heartbeatTimeoutMs' | 'workHoursPollMs' | 'maxRestarts' | 'restartDelaysMs' | 'killGraceMs'>;
   fetch?: typeof fetch;
@@ -61,6 +64,8 @@ export interface AgentHostDaemon {
   agents: HostedAgent[];
   /** Entries not started, with why. */
   skipped: Array<{ package: string; reason: string }>;
+  /** Read the config again now, as the watcher does when it changes. */
+  reload(): Promise<void>;
   /** Stop every agent politely, then by force; resolves when all are gone. */
   stop(): Promise<void>;
 }
@@ -84,34 +89,55 @@ export async function startAgentHostDaemon(options: AgentHostDaemonOptions): Pro
   const inboxOptions = { paths: inbox, ...(options.inboxPollMs !== undefined && { pollMs: options.inboxPollMs }), clock, onPending: (e: { kind: string; id: string }) => log(`inbox: ${e.kind} ${e.id} waits for a person`) };
   const approver = createInboxApprover(inboxOptions);
   const asker = createInboxAsker(inboxOptions);
-  const providers = createProviderService({ providers: config.providers, env: hostEnv, ...(options.fetch && { fetch: options.fetch }) });
+  // Read through on every call, so a reloaded config takes effect without a restart.
+  const liveProviders: HostConfig['providers'] = { ...config.providers };
+  const providers = createProviderService({ providers: liveProviders, env: hostEnv, ...(options.fetch && { fetch: options.fetch }) });
 
   const agents: HostedAgent[] = [];
   const skipped: AgentHostDaemon['skipped'] = [];
   /** Apps the runtime launched, by pid and start time; kept across runs, ended when the host stops. */
   const launched = new Map<string, WindowBinding>();
-  const seen = new Set<string>();
-  for (const entry of config.agents) {
-    if (!entry.enabled) continue;
+  /** What a running agent reads on every check; replaced in place when the config changes. */
+  interface Live {
+    entry: AgentEntryConfig;
+    grants: Grant[];
+    ceilings: Ceilings;
+    hours: { inHours: (now: Date) => boolean };
+  }
+  const live = new Map<string, Live>();
+  /** Changing any of these needs a new agent; the rest applies in place. */
+  const restartKey = (e: AgentEntryConfig) => JSON.stringify([e.package, e.account.platform, e.account.accountKey, e.takeOver ?? false]);
+  const fill = (target: Live, entry: AgentEntryConfig, agentId: string, grantedAt: string) => {
+    target.entry = entry;
+    target.grants.splice(0, target.grants.length, ...grantsOf(entry, agentId, grantedAt));
+    for (const k of Object.keys(target.ceilings) as Array<keyof Ceilings>) delete target.ceilings[k];
+    Object.assign(target.ceilings, entry.ceilings ?? {});
+    target.hours.inHours = entry.workHours ? workHoursFunction(entry.workHours) : () => true;
+  };
+
+  function startOne(entry: AgentEntryConfig, grantedAt: string, taken: Set<string>): HostedAgent | undefined {
     let pkg: AgentPackage;
     try {
       pkg = loadAgentPackage(entry.package);
     } catch (error) {
       skipped.push({ package: entry.package, reason: error instanceof Error ? error.message : String(error) });
-      continue;
+      return undefined;
     }
     const { spec } = pkg;
-    if (seen.has(spec.id)) {
+    if (taken.has(spec.id)) {
       skipped.push({ package: entry.package, reason: `${spec.id} is configured twice` });
-      continue;
+      return undefined;
     }
     if (spec.mode !== 'resident') {
       skipped.push({ package: entry.package, reason: `${spec.id} is a task agent; the host keeps resident agents running` });
-      continue;
+      return undefined;
     }
-    seen.add(spec.id);
+    taken.add(spec.id);
     for (const need of spec.providers)
-      if (!config.providers[need.id]) log(`${spec.id}: provider ${need.id} is not configured; its calls will answer provider_unavailable`);
+      if (!liveProviders[need.id]) log(`${spec.id}: provider ${need.id} is not configured; its calls will answer provider_unavailable`);
+    const state: Live = { entry, grants: [], ceilings: {}, hours: { inHours: () => true } };
+    fill(state, entry, spec.id, grantedAt);
+    live.set(spec.id, state);
 
     const submitAllowed = spec.effects.includes('external-submit');
     const agent = startResidentAgent({
@@ -144,15 +170,17 @@ export async function startAgentHostDaemon(options: AgentHostDaemonOptions): Pro
         },
       },
       screenId: pkg.profiles.get(spec.applications[0]!.bundleId)!.id,
-      grants: grantsOf(entry, spec.id, configAt),
+      // Arrays and objects the reload replaces in place: the check chain reads them on every act.
+      grants: state.grants,
       ledger,
-      ...(entry.ceilings && { ceilings: entry.ceilings }),
+      ceilings: state.ceilings,
       approver,
       asker,
       providers,
       usage,
       status: board,
-      ...(entry.workHours && { workHours: workHoursFunction(entry.workHours), timezone: entry.workHours.timezone }),
+      workHours: (now) => state.hours.inHours(now),
+      ...(entry.workHours && { timezone: entry.workHours.timezone }),
       spawn: options.spawn,
       ...(options.interpreters && { interpreters: options.interpreters }),
       hostEnv,
@@ -173,10 +201,104 @@ export async function startAgentHostDaemon(options: AgentHostDaemonOptions): Pro
       onRunEnded: (r) =>
         log(`${spec.id}: run ${r.runId} ended: ${r.end}${r.detail ? ` (${r.detail})` : ''}${r.exitCode !== null ? `, exit ${r.exitCode}` : ''}${r.carried ? `, ${r.carried} task(s) carried` : ''}`),
     });
-    agents.push({ agentId: spec.id, package: pkg.dir, agent });
     log(`${spec.id} ${spec.version}: hosted from ${pkg.dir}`);
+    return { agentId: spec.id, package: pkg.dir, agent };
   }
-  for (const s of skipped) log(`skipped ${s.package}: ${s.reason}`);
+
+  {
+    const taken = new Set<string>();
+    for (const entry of config.agents) {
+      if (!entry.enabled) continue;
+      const hosted = startOne(entry, configAt, taken);
+      if (hosted) agents.push(hosted);
+    }
+    for (const s of skipped) log(`skipped ${s.package}: ${s.reason}`);
+  }
+
+  async function stopAgent(hosted: HostedAgent): Promise<void> {
+    hosted.agent.stop();
+    await hosted.agent.done;
+    live.delete(hosted.agentId);
+    agents.splice(agents.indexOf(hosted), 1);
+  }
+
+  /**
+   * Apply a changed config. Grants, ceilings, work hours and providers change
+   * in place; an agent whose package, account or takeOver changed is
+   * restarted, a disabled or removed one stopped, a new one started. A config
+   * that does not validate changes nothing.
+   */
+  async function reload(): Promise<void> {
+    let next: HostConfig;
+    let at: string;
+    try {
+      next = readHostConfig(paths.config);
+      at = new Date(statSync(paths.config).mtimeMs).toISOString();
+    } catch (error) {
+      log(`config not reloaded, the running one stays: ${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
+    for (const k of Object.keys(liveProviders)) delete liveProviders[k];
+    Object.assign(liveProviders, next.providers);
+    skipped.splice(0);
+    const byPackage = new Map(agents.map((a) => [a.package, a] as const));
+    const wanted = new Set<string>();
+    const taken = new Set<string>(agents.map((a) => a.agentId));
+    for (const entry of next.agents) {
+      if (!entry.enabled) continue;
+      let dir: string;
+      try {
+        dir = loadAgentPackage(entry.package).dir;
+      } catch (error) {
+        skipped.push({ package: entry.package, reason: error instanceof Error ? error.message : String(error) });
+        continue;
+      }
+      const running = byPackage.get(dir);
+      if (running) {
+        wanted.add(running.agentId);
+        const state = live.get(running.agentId)!;
+        if (restartKey(state.entry) === restartKey(entry)) {
+          fill(state, entry, running.agentId, at);
+          continue;
+        }
+        log(`${running.agentId}: package, account or takeOver changed; restarting it`);
+        await stopAgent(running);
+        taken.delete(running.agentId);
+      }
+      const hosted = startOne(entry, at, taken);
+      if (hosted) {
+        agents.push(hosted);
+        wanted.add(hosted.agentId);
+      }
+    }
+    for (const hosted of [...agents])
+      if (!wanted.has(hosted.agentId)) {
+        log(`${hosted.agentId}: no longer enabled; stopping it`);
+        await stopAgent(hosted);
+      }
+    for (const s of skipped) log(`skipped ${s.package}: ${s.reason}`);
+    log(`config reloaded: ${agents.length} agent(s) hosted`);
+  }
+
+  // Watch the config by its modification time and size; reloads run one at a time.
+  let seenStamp = (() => {
+    const st = statSync(paths.config);
+    return `${st.mtimeMs}/${st.size}`;
+  })();
+  let reloading: Promise<void> = Promise.resolve();
+  const watcher = setInterval(() => {
+    let stamp: string;
+    try {
+      const st = statSync(paths.config);
+      stamp = `${st.mtimeMs}/${st.size}`;
+    } catch {
+      return;
+    }
+    if (stamp === seenStamp) return;
+    seenStamp = stamp;
+    reloading = reloading.then(reload, reload);
+  }, options.configPollMs ?? 5000);
+  watcher.unref();
 
   let stopping: Promise<void> | undefined;
   return {
@@ -184,8 +306,11 @@ export async function startAgentHostDaemon(options: AgentHostDaemonOptions): Pro
     board,
     agents,
     skipped,
+    reload: () => (reloading = reloading.then(reload, reload)),
     stop() {
       stopping ??= (async () => {
+        clearInterval(watcher);
+        await reloading.catch(() => undefined);
         for (const a of agents) a.agent.stop();
         await Promise.all(agents.map((a) => a.agent.done));
         for (const binding of launched.values()) {

@@ -26,11 +26,11 @@ import {
 } from './contracts.ts';
 
 /** The contract's commands, bind-account for the explicit BOSS account, and the agent views. */
-export type TaskCliCommand = CliCommand | 'bind-account' | 'agents' | 'usage' | 'inbox' | 'approve' | 'deny' | 'answer' | 'host';
+export type TaskCliCommand = CliCommand | 'bind-account' | 'agents' | 'usage' | 'inbox' | 'approve' | 'deny' | 'answer' | 'host' | 'grants' | 'grant' | 'revoke';
 
 export const CLI_COMMANDS: readonly TaskCliCommand[] = [
   'run', 'status', 'pause', 'resume', 'cancel', 'artifacts', 'inspect-procedure', 'bind-account',
-  'agents', 'usage', 'inbox', 'approve', 'deny', 'answer', 'host',
+  'agents', 'usage', 'inbox', 'approve', 'deny', 'answer', 'host', 'grants', 'grant', 'revoke',
 ];
 
 
@@ -49,6 +49,9 @@ export interface AgentViewControl {
   answer(id: string, text: string): Promise<unknown>;
   /** The long-lived process that keeps resident agents running. */
   host(action: 'start' | 'stop' | 'status'): Promise<unknown>;
+  grants(agentId?: string): Promise<unknown>;
+  grant(request: { agentId: string; application: string; effect: string; mode: string; expiresAt?: string; durable?: boolean }): Promise<unknown>;
+  revoke(request: { agentId: string; application: string; effect?: string }): Promise<unknown>;
 }
 
 /**
@@ -81,6 +84,9 @@ export const CLI_USAGE = [
   '  2ndscreen task deny INBOX_ID [--hint HINT]... [--text TEXT]',
   '  2ndscreen task answer INBOX_ID TEXT',
   '  2ndscreen task host start|stop|status',
+  '  2ndscreen task grants [AGENT_ID]',
+  '  2ndscreen task grant AGENT_ID APPLICATION [--effect EFFECT] [--mode MODE] [--for 30m|12h|7d | --until ISO_TIME | --durable]',
+  '  2ndscreen task revoke AGENT_ID APPLICATION [--effect EFFECT]',
   '',
   '--limit is how many resumes must be committed; --output is an absolute directory, the',
   'task writes under DIR/TASK_ID. --source defaults to conversations, --mode to available.',
@@ -98,6 +104,10 @@ export const CLI_USAGE = [
   'with one of its choices when it offers some.',
   'host start runs the agent host in the background: it keeps the resident agents enabled in',
   '<tasks dir>/agents/config.json running through their work hours; host stop asks it to stop them.',
+  'grant lets an agent use an effect (default external-submit) on an application in the account its',
+  'config names, with an approval mode (default human_in_the_loop: each use is approved in the inbox;',
+  'trusted_within_ceiling; locked_down). A grant ends after 7 days unless --for, --until or --durable says',
+  'otherwise. The running host applies grant and revoke within seconds.',
   'Every command prints one JSON line: {"ok":true,"command":…,"result":…} or {"ok":false,…,"error":{code,message}}.',
 ].join('\n');
 
@@ -159,6 +169,12 @@ async function dispatch(command: TaskCliCommand, words: readonly string[], contr
     return agentViewControl(control).inbox();
   }
   if (command === 'approve' || command === 'deny' || command === 'answer') return decideFromWords(command, words, agentViewControl(control));
+  if (command === 'grants') {
+    if (words.some((w) => w === '--help' || w === '-h')) throw HELP_REQUESTED;
+    if (words.length > 1 || (words[0] !== undefined && !ID.test(words[0]))) throw usageError('grants takes at most an AGENT_ID');
+    return agentViewControl(control).grants(words[0]);
+  }
+  if (command === 'grant' || command === 'revoke') return grantFromWords(command, words, agentViewControl(control), new Date());
   if (command === 'host') {
     if (words.some((w) => w === '--help' || w === '-h')) throw HELP_REQUESTED;
     const action = words[0];
@@ -202,7 +218,7 @@ async function dispatch(command: TaskCliCommand, words: readonly string[], contr
 
 function agentViewControl(control: TaskControl): AgentViewControl {
   const candidate = control as TaskControl & Partial<AgentViewControl>;
-  if (typeof candidate.agents !== 'function' || typeof candidate.usage !== 'function' || typeof candidate.inbox !== 'function' || typeof candidate.host !== 'function')
+  if (typeof candidate.agents !== 'function' || typeof candidate.usage !== 'function' || typeof candidate.inbox !== 'function' || typeof candidate.host !== 'function' || typeof candidate.grant !== 'function')
     throw new RuntimeError('capability_missing', 'this task runtime has no agent views');
   return candidate as AgentViewControl;
 }
@@ -236,6 +252,56 @@ function decideFromWords(command: 'approve' | 'deny' | 'answer', words: readonly
     i += 1;
   }
   return control.deny(id, { hints, ...(text !== undefined && { text }) });
+}
+
+const BUNDLE_ID = /^[A-Za-z0-9][A-Za-z0-9.-]{0,254}$/;
+const DURATION = /^([1-9][0-9]{0,4})(m|h|d)$/;
+const DURATION_MS: Record<string, number> = { m: 60_000, h: 3_600_000, d: 86_400_000 };
+/** A grant with no end named ends after this (RFC 0001 §7). */
+export const DEFAULT_GRANT_MS = 7 * 86_400_000;
+
+function grantFromWords(command: 'grant' | 'revoke', words: readonly string[], control: AgentViewControl, now: Date): Promise<unknown> {
+  if (words.some((w) => w === '--help' || w === '-h')) throw HELP_REQUESTED;
+  const [agentId, application, ...rest] = words;
+  const errors: string[] = [];
+  if (agentId === undefined || !ID.test(agentId)) errors.push(`${command} takes an AGENT_ID first`);
+  if (application === undefined || !BUNDLE_ID.test(application)) errors.push(`${command} takes an APPLICATION bundle id after the AGENT_ID`);
+  let effect: string | undefined;
+  let mode: string | undefined;
+  let end: { expiresAt?: string; durable?: boolean } | undefined;
+  for (let i = 0; i < rest.length; i++) {
+    const word = rest[i]!;
+    const value = rest[i + 1];
+    const once = (what: string) => {
+      if (end !== undefined) errors.push(`${what} and another end of the grant were both given`);
+    };
+    if (word === '--effect' && value !== undefined) (effect = value), i++;
+    else if (command === 'grant' && word === '--mode' && value !== undefined) (mode = value), i++;
+    else if (command === 'grant' && word === '--for' && value !== undefined) {
+      once('--for');
+      const m = DURATION.exec(value);
+      if (!m) errors.push('--for takes a duration such as 30m, 12h or 7d');
+      else end = { expiresAt: new Date(now.getTime() + Number(m[1]) * DURATION_MS[m[2]!]!).toISOString() };
+      i++;
+    } else if (command === 'grant' && word === '--until' && value !== undefined) {
+      once('--until');
+      if (!ISO_TIME.test(value)) errors.push('--until takes an ISO time with a zone');
+      else end = { expiresAt: new Date(value).toISOString() };
+      i++;
+    } else if (command === 'grant' && word === '--durable') {
+      once('--durable');
+      end = { durable: true };
+    } else errors.push(`unknown word ${quote(word)}`);
+  }
+  if (errors.length > 0) throw new RuntimeError('invalid_input', `${command}: ${errors.join('; ')}`, { errors });
+  if (command === 'revoke') return control.revoke({ agentId: agentId!, application: application!, ...(effect !== undefined && { effect }) });
+  return control.grant({
+    agentId: agentId!,
+    application: application!,
+    effect: effect ?? 'external-submit',
+    mode: mode ?? 'human_in_the_loop',
+    ...(end ?? { expiresAt: new Date(now.getTime() + DEFAULT_GRANT_MS).toISOString() }),
+  });
 }
 
 /** Words after `usage`. */

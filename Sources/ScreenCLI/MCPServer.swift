@@ -562,6 +562,41 @@ extension MCPServer {
                           properties: ["action": ["type": "string", "enum": ["status", "start", "stop"]]], required: ["action"],
                           words: { a in ["task", "host"] + ((a["action"] as? String).map { [$0] } ?? []) },
                           check: checker(["action": .string])))
+        let agentID: [String: Any] = described(string, "Agent ID, e.g. remotedesk.boss-recruiter")
+        let application: [String: Any] = described(string, "Bundle id of the application, e.g. com.zhipin.www")
+        let effect: [String: Any] = ["type": "string", "enum": ["read", "navigation", "artifact", "external-submit"], "description": "Default external-submit"]
+        tools.append(Tool(name: "task_grants",
+                          description: "The grants in the agent host's config: which agent may use which effect on which application, in which account, with which approval mode, until when, and whether each is in force now.",
+                          properties: ["agent_id": agentID], required: [],
+                          words: { a in ["task", "grants"] + ((a["agent_id"] as? String).map { [$0] } ?? []) },
+                          check: checker(["agent_id": .string])))
+        tools.append(Tool(name: "task_grant",
+                          description: "Let an agent use an effect on an application, in the account its config names. Only when the user explicitly asks: it lets an agent send things on their behalf. Default effect external-submit and mode human_in_the_loop (each use still approved in task_inbox); a grant ends after 7 days unless for, until or durable says otherwise.",
+                          properties: ["agent_id": agentID, "application": application, "effect": effect,
+                                       "mode": ["type": "string", "enum": ["human_in_the_loop", "trusted_within_ceiling", "locked_down"]],
+                                       "for": described(string, "How long, e.g. 30m, 12h or 7d"),
+                                       "until": described(string, "ISO time with a zone when it ends"),
+                                       "durable": described(boolean, "No end; only when the user says so")],
+                          required: ["agent_id", "application"],
+                          words: { a in
+                              var w = ["task", "grant"] + [a["agent_id"], a["application"]].compactMap { $0 as? String }
+                              for (name, flag) in [("effect", "--effect"), ("mode", "--mode"), ("for", "--for"), ("until", "--until")] {
+                                  if let v = a[name] as? String { w += [flag, v] }
+                              }
+                              if a["durable"] as? Bool == true, isBool(a["durable"]) { w.append("--durable") }
+                              return w
+                          },
+                          check: checker(["agent_id": .string, "application": .string, "effect": .string, "mode": .string, "for": .string, "until": .string, "durable": .boolean])))
+        tools.append(Tool(name: "task_revoke",
+                          description: "Take back an agent's grants on an application, of one effect or all.",
+                          properties: ["agent_id": agentID, "application": application, "effect": effect],
+                          required: ["agent_id", "application"],
+                          words: { a in
+                              var w = ["task", "revoke"] + [a["agent_id"], a["application"]].compactMap { $0 as? String }
+                              if let v = a["effect"] as? String { w += ["--effect", v] }
+                              return w
+                          },
+                          check: checker(["agent_id": .string, "application": .string, "effect": .string])))
         return tools
     }()
 

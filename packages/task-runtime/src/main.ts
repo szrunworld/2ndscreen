@@ -9,7 +9,7 @@ import { RuntimeError, isRuntimeError, type TaskControl } from './contracts.ts';
 import { runCli, type AgentViewControl } from './cli.ts';
 import { agentHostCommand, openControlClient, resolveConfig, runtimePaths, type ControlClient } from './bootstrap.ts';
 import { readFileSync } from 'node:fs';
-import { readHostConfig } from './agent-config.ts';
+import { grantInConfig, listGrants, readHostConfig, revokeInConfig, type GrantRequest } from './agent-config.ts';
 import { runningHostPid } from './agent-daemon.ts';
 import { spawnDetachedWorker } from './daemon.ts';
 import { agentDataPaths, createFileUsageLedger, formatUsage, readPriceTable, summarizeUsage } from './agent-ledgers.ts';
@@ -34,6 +34,9 @@ async function withWorker<T>(taskId: string, result: T): Promise<T> {
   }
   return result;
 }
+
+const grantLine = (g: { agentId: string; accountKey: string; application: string; effect: string; mode: string; durable: boolean; expiresAt?: string; active: boolean }) =>
+  `${g.active ? '+' : 'x'}  ${g.agentId}  ${g.accountKey}  ${g.application}  ${g.effect}  ${g.mode}  ${g.durable ? '长期' : `至 ${g.expiresAt}`}${g.active ? '' : '（已失效）'}`;
 
 const control = {
   async submit(skillId, input, ...rest: unknown[]) {
@@ -121,6 +124,18 @@ const control = {
       await new Promise((r) => setTimeout(r, 100));
     }
     throw new RuntimeError('timeout', 'the agent host did not take over within 10 s', { pid: child, log: tail() });
+  },
+  async grants(agentId) {
+    const views = listGrants(agentDataPaths(runtimePaths().tasksDir).config, agentId);
+    return { grants: views, lines: views.length ? views.map(grantLine) : ['no grants'] };
+  },
+  async grant(request) {
+    const views = grantInConfig(agentDataPaths(runtimePaths().tasksDir).config, request as GrantRequest);
+    return { grants: views, lines: views.map(grantLine), applies: 'within seconds if the agent host runs' };
+  },
+  async revoke(request) {
+    const views = revokeInConfig(agentDataPaths(runtimePaths().tasksDir).config, request as { agentId: string; application: string });
+    return { grants: views, lines: views.length ? views.map(grantLine) : ['no grants left'], applies: 'within seconds if the agent host runs' };
   },
   async answer(id, text) {
     return { decided: decide(inboxPaths(agentDataPaths(runtimePaths().tasksDir).dir), id, { kind: 'question', answer: text }).id, answer: text };

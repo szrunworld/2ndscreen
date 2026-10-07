@@ -23,7 +23,7 @@
 // A grant must say when it ends (`expiresAt`) or that it does not
 // (`durable: true`); there is no silent default.
 
-import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join, resolve, sep } from 'node:path';
 import {
   AGENT_RUNTIME_CONTRACT_VERSION,
@@ -37,7 +37,7 @@ import {
   type Grant,
 } from './agent-contracts.ts';
 import type { Ceilings } from './agent-host.ts';
-import { EFFECT_CLASSES, RuntimeError, type Validated, type WindowProfile } from './contracts.ts';
+import { EFFECT_CLASSES, RuntimeError, type EffectClass, type Validated, type WindowProfile } from './contracts.ts';
 
 export interface WorkHoursConfig {
   timezone: string;
@@ -225,6 +225,9 @@ export function grantsOf(entry: AgentEntryConfig, agentId: string, grantedAt: st
 // ---------------------------------------------------------------------------
 // Packages
 
+/** The sizes 2ndscreen creates an agent screen in (`screen create`), in points. */
+export const SCREEN_LIMITS = { minWidth: 320, minHeight: 240, maxWidth: 6016, maxHeight: 3384 } as const;
+
 export interface AgentPackage {
   dir: string;
   spec: AgentSpec;
@@ -274,6 +277,13 @@ export function loadAgentPackage(dir: string): AgentPackage {
     const profile = JSON.parse(readFileSync(real, 'utf8')) as WindowProfile;
     if (profile.id !== app.windowProfile || profile.bundleId !== app.bundleId || !(profile.logicalWidth > 0) || !(profile.logicalHeight > 0))
       throw new RuntimeError('invalid_input', `${spec.id}: profile ${app.windowProfile} must have id ${app.windowProfile}, bundleId ${app.bundleId} and a size`);
+    if (profile.logicalWidth < SCREEN_LIMITS.minWidth || profile.logicalHeight < SCREEN_LIMITS.minHeight || profile.logicalWidth > SCREEN_LIMITS.maxWidth || profile.logicalHeight > SCREEN_LIMITS.maxHeight)
+      throw new RuntimeError(
+        'invalid_input',
+        `${spec.id}: profile ${app.windowProfile} is ${profile.logicalWidth}x${profile.logicalHeight}; an agent screen is between ${SCREEN_LIMITS.minWidth}x${SCREEN_LIMITS.minHeight} and ${SCREEN_LIMITS.maxWidth}x${SCREEN_LIMITS.maxHeight} points`,
+      );
+    if (profile.mainWindowMinWidth !== undefined && !(Number.isFinite(profile.mainWindowMinWidth) && profile.mainWindowMinWidth > 0 && profile.mainWindowMinWidth <= profile.logicalWidth))
+      throw new RuntimeError('invalid_input', `${spec.id}: profile ${app.windowProfile} mainWindowMinWidth must be above 0 and at most logicalWidth`);
     profiles.set(app.bundleId, profile);
   }
   if (spec.executor.kind === 'process' || spec.executor.kind === 'mcp') {
@@ -322,3 +332,112 @@ export function workHoursFunction(config: WorkHoursConfig): (now: Date) => boole
   };
 }
 
+
+// ---------------------------------------------------------------------------
+// Editing grants (`2ndscreen task grant|revoke|grants`)
+
+function writeConfigAtomic(path: string, config: unknown): void {
+  const temporary = `${path}.${process.pid}.tmp`;
+  writeFileSync(temporary, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
+  renameSync(temporary, path);
+}
+
+/** The agent id an entry's package declares, or undefined when it cannot be read. */
+function agentIdOf(entry: AgentEntryConfig): string | undefined {
+  try {
+    const raw = JSON.parse(readFileSync(join(entry.package, 'agent.json'), 'utf8')) as { id?: unknown };
+    return typeof raw.id === 'string' ? raw.id : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function entriesOf(config: HostConfig, agentId: string): AgentEntryConfig[] {
+  const found = config.agents.filter((e) => agentIdOf(e) === agentId);
+  if (found.length === 0) throw new RuntimeError('not_found', `no agent ${agentId} in the host config`);
+  return found;
+}
+
+export interface GrantRequest {
+  agentId: string;
+  application: string;
+  effect: EffectClass;
+  mode: ApprovalMode;
+  /** Exactly one: an end time, or durable. */
+  expiresAt?: string;
+  durable?: boolean;
+}
+
+export interface GrantView {
+  agentId: string;
+  accountKey: string;
+  application: string;
+  effect: EffectClass;
+  mode: ApprovalMode;
+  grantedAt?: string;
+  expiresAt?: string;
+  durable: boolean;
+  active: boolean;
+}
+
+/** Give or replace the grant for (agent, application, effect); the whole config is checked before it is written. */
+export function grantInConfig(path: string, request: GrantRequest, now: Date = new Date()): GrantView[] {
+  if ((request.expiresAt === undefined) === (request.durable !== true)) throw new RuntimeError('invalid_input', 'a grant ends at a time or is durable, one of the two');
+  if (request.expiresAt !== undefined && Date.parse(request.expiresAt) <= now.getTime()) throw new RuntimeError('invalid_input', 'the grant would already have ended');
+  const config = readHostConfig(path);
+  for (const entry of entriesOf(config, request.agentId)) {
+    const kept = (entry.grants ?? []).filter((g) => !(g.application === request.application && g.effect === request.effect));
+    kept.push({
+      application: request.application,
+      effect: request.effect,
+      mode: request.mode,
+      grantedAt: now.toISOString(),
+      ...(request.durable ? { durable: true } : { durable: false, expiresAt: new Date(request.expiresAt!).toISOString() }),
+    });
+    entry.grants = kept;
+  }
+  const checked = validateHostConfig(config);
+  if (!checked.ok) throw new RuntimeError('invalid_input', checked.errors.join('; '), { errors: checked.errors });
+  writeConfigAtomic(path, config);
+  return listGrants(path, request.agentId, now);
+}
+
+/** Take back grants of (agent, application), of one effect or all; `not_found` when there was none. */
+export function revokeInConfig(path: string, request: { agentId: string; application: string; effect?: EffectClass }, now: Date = new Date()): GrantView[] {
+  const config = readHostConfig(path);
+  let removed = 0;
+  for (const entry of entriesOf(config, request.agentId)) {
+    const before = entry.grants ?? [];
+    entry.grants = before.filter((g) => !(g.application === request.application && (request.effect === undefined || g.effect === request.effect)));
+    removed += before.length - entry.grants.length;
+  }
+  if (removed === 0) throw new RuntimeError('not_found', `${request.agentId} has no such grant on ${request.application}`);
+  writeConfigAtomic(path, config);
+  return listGrants(path, request.agentId, now);
+}
+
+/** Every grant in the config, or one agent's, with whether it is in force now. */
+export function listGrants(path: string, agentId?: string, now: Date = new Date()): GrantView[] {
+  const config = readHostConfig(path);
+  const views: GrantView[] = [];
+  for (const entry of config.agents) {
+    const id = agentIdOf(entry);
+    if (id === undefined || (agentId !== undefined && id !== agentId)) continue;
+    for (const g of entry.grants ?? []) {
+      const durable = g.durable === true;
+      views.push({
+        agentId: id,
+        accountKey: entry.account.accountKey,
+        application: g.application,
+        effect: g.effect,
+        mode: g.mode as ApprovalMode,
+        ...(g.grantedAt !== undefined && { grantedAt: g.grantedAt }),
+        ...(g.expiresAt !== undefined && { expiresAt: new Date(g.expiresAt).toISOString() }),
+        durable,
+        active: entry.enabled && (durable || Date.parse(g.expiresAt!) > now.getTime()),
+      });
+    }
+  }
+  if (agentId !== undefined && views.length === 0) entriesOf(config, agentId); // not_found for an unknown agent
+  return views;
+}

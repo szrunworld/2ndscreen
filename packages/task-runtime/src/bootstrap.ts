@@ -137,12 +137,14 @@ function validateProfile(raw: unknown, where: string): WindowProfile {
   const p = raw as Record<string, unknown>;
   const errors: string[] = [];
   if (typeof p !== 'object' || p === null || Array.isArray(p)) throw new RuntimeError('invalid_input', `${where}: not an object`);
-  const allowed = new Set(['id', 'version', 'logicalWidth', 'logicalHeight', 'bundleId', 'appVersion', 'locale']);
+  const allowed = new Set(['id', 'version', 'logicalWidth', 'logicalHeight', 'bundleId', 'appVersion', 'locale', 'mainWindowMinWidth']);
   for (const key of Object.keys(p)) if (!allowed.has(key)) errors.push(`unknown field ${key}`);
   if (typeof p.id !== 'string' || p.id === '') errors.push('id must be a string');
   for (const key of ['version', 'logicalWidth', 'logicalHeight'] as const)
     if (!Number.isInteger(p[key]) || (p[key] as number) < 1) errors.push(`${key} must be a positive integer`);
   if (typeof p.bundleId !== 'string' || p.bundleId === '' || p.bundleId.includes(':')) errors.push('bundleId must be a bundle id');
+  if (p.mainWindowMinWidth !== undefined && !(typeof p.mainWindowMinWidth === 'number' && p.mainWindowMinWidth > 0 && p.mainWindowMinWidth <= (p.logicalWidth as number)))
+    errors.push('mainWindowMinWidth must be above 0 and at most logicalWidth');
   if (errors.length) throw new RuntimeError('invalid_input', `${where}: ${errors.join('; ')}`, { errors });
   return p as unknown as WindowProfile;
 }

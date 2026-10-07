@@ -282,7 +282,7 @@ export function createSecondScreenAdapter(options: SecondScreenAdapterOptions): 
     while (Date.now() < deadline) {
       const reply = await cli(['state', '--screen', screenId, '--pid', String(pid)], signal);
       const window = reply.ok ? windowOf(reply) : undefined;
-      if (window && window.frame.width >= profile.logicalWidth * MAIN_WINDOW_MIN_SHARE) {
+      if (window && window.frame.width >= (profile.mainWindowMinWidth ?? profile.logicalWidth * MAIN_WINDOW_MIN_SHARE)) {
         if (last && last.windowId === window.windowId && sameRect(last.frame, window.frame)) return { ...window, title: String(reply.json.app ?? '') };
         last = window;
       } else {

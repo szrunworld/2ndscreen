@@ -194,6 +194,26 @@ test('bindApp launches a missing app and waits past its loading window to a sett
   assert.ok(reads >= 4, 'the main window is read twice before it counts as settled');
 });
 
+test('a profile can say how narrow its main window may be, for a small fixed window such as Calculator', async () => {
+  const small = { x: 3100, y: 100, width: 198, height: 350 };
+  const runner = () =>
+    fakeRunner({
+      cli: (args) => {
+        switch (verb(args)) {
+          case 'screen list':
+            return { ok: true, screens: [SCREEN] };
+          case 'state':
+            return { ok: true, pid: 4242, windowID: 77, app: 'Calculator', windowFrame: small };
+        }
+        return { ok: false, error: 'unexpected' };
+      },
+      tools: { ...identityTools, lsappinfo: (args) => (args.includes('bundleID') ? { stdout: `"CFBundleIdentifier"="${BUNDLE}"\n` } : { stdout: '"pid"=4242\n' }) },
+    });
+  const declared = { ...profile, mainWindowMinWidth: 180 };
+  const bound = await createSecondScreenAdapter({ signalProcess: recordSignal, cli: 'cli', socket: SOCKET, run: runner().run, screenshotDir: '/x' }).bindApp(profile.id, declared, { takeOver: false });
+  assert.deepEqual(bound.window.frame, small);
+});
+
 test('bindApp leaves an app running elsewhere alone without takeOver, and moves it with takeOver', async () => {
   const handlers = {
     cli: (args: string[]) => {
