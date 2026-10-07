@@ -21,7 +21,7 @@ import { agentDataPaths, appendJsonLine, createFileEffectLedger, createFileUsage
 import { createProviderService } from './agent-providers.ts';
 import type { UnitService } from './agent-units.ts';
 import { createFileStatusPersister, createStatusBoard, type StatusBoard } from './agent-status.ts';
-import { DEFAULT_BUDGET, RuntimeError, systemClock, type Clock, type LineProcessSpawner, type Session, type WindowBinding, type WindowProfile } from './contracts.ts';
+import { DEFAULT_BUDGET, RuntimeError, isRuntimeError, systemClock, type Clock, type LineProcessSpawner, type Session, type WindowBinding, type WindowProfile } from './contracts.ts';
 
 export interface AgentSessionRequest {
   agentId: string;
@@ -124,6 +124,24 @@ export async function startAgentHostDaemon(options: AgentHostDaemonOptions): Pro
     launched.set(`${binding.window.pid}@${binding.window.processStartedAt ?? '?'}`, binding);
     writeLaunched(paths, [...launched.values()]);
   };
+  /**
+   * An app the runtime launched for a session that then waited for a person
+   * (login_required) is kept open for them, with no session to remember it
+   * by; the adapter names it in the error. It is on the launched list, so
+   * stopping the host, or the next host after a crash, ends it.
+   */
+  const keepLaunchedFrom = (error: unknown) => {
+    if (!isRuntimeError(error, 'login_required')) return;
+    const l = error.details?.launched as { screenId?: unknown; pid?: unknown; bundleId?: unknown; startedAt?: unknown } | undefined;
+    if (!l || typeof l.pid !== 'number' || typeof l.bundleId !== 'string' || typeof l.startedAt !== 'string') return;
+    const empty = { x: 0, y: 0, width: 0, height: 0 };
+    keepLaunched({
+      screenId: typeof l.screenId === 'string' ? l.screenId : '',
+      socket: '',
+      window: { pid: l.pid, windowId: 0, processStartedAt: l.startedAt, bundleId: l.bundleId, title: '', frame: empty, contentFrame: empty, scale: 1, displayId: 0 },
+      launchedByRuntime: true,
+    });
+  };
   /** What a running agent reads on every check; replaced in place when the config changes. */
   interface Live {
     entry: AgentEntryConfig;
@@ -205,6 +223,7 @@ export async function startAgentHostDaemon(options: AgentHostDaemonOptions): Pro
       }
       return opened;
     } catch (error) {
+      keepLaunchedFrom(error);
       for (const s of opened.values()) await s.close({ keepWindow: true }).catch(() => undefined);
       throw error;
     }
@@ -376,6 +395,7 @@ export async function startAgentHostDaemon(options: AgentHostDaemonOptions): Pro
             }
             return opened;
           } catch (error) {
+            keepLaunchedFrom(error);
             for (const s of opened.values()) await s.close({ keepWindow: true }).catch(() => undefined);
             throw error;
           }

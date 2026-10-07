@@ -17,7 +17,7 @@ import { agentDataPaths } from '../src/agent-ledgers.ts';
 import { createProviderService } from '../src/agent-providers.ts';
 import { readStatusFile } from '../src/agent-status.ts';
 import { AGENT_PROTOCOL } from '../src/agent-contracts.ts';
-import { isRuntimeError, type ActionRequest, type Session, type WindowGeometry } from '../src/contracts.ts';
+import { RuntimeError, isRuntimeError, type ActionRequest, type Session, type WindowGeometry } from '../src/contracts.ts';
 
 async function tmp(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), prefix));
@@ -821,5 +821,59 @@ test('a builtin skill\'s entry is left to the worker\'s skill runner: the host n
     }
   } finally {
     await rm(tasksDir, { recursive: true, force: true });
+  }
+});
+
+test('an app launched for a session that then waits for a login is kept for the person, and ended when the host stops', async () => {
+  const tasksDir = await tmp('agent-login-kept-');
+  const paths = agentDataPaths(tasksDir);
+  const req = requestPaths(paths.dir);
+  let hostRef: { stop(): Promise<void> } | undefined;
+  const quit: Array<{ pid: number; startedAt?: string; launchedByRuntime: boolean }> = [];
+  try {
+    const taskPkg = await makePackage(join(tasksDir, 'task-pkg'), TASK_AGENT, { id: 'test.task', mode: 'task', schedule: undefined, effects: ['read'], approval: {} });
+    await mkdir(paths.dir, { recursive: true });
+    await writeFile(paths.config, JSON.stringify({ agents: [{ package: taskPkg, enabled: true, account: { platform: 'macos', accountKey: 'local' } }], providers: {} }));
+    let attempts = 0;
+    const host = await startAgentHostDaemon({
+      tasksDir,
+      openSession: async () => {
+        attempts += 1;
+        // First: the runtime launched the app, which then showed a login window. Second: a login window of an app
+        // the runtime did not launch (the adapter names nothing). Neither session opens.
+        if (attempts === 1)
+          throw new RuntimeError('login_required', 'a login window', { pid: 4343, launched: { screenId: 'calc-800x600', pid: 4343, bundleId: 'com.apple.calculator', startedAt: '2026-10-07T00:00:00Z' } });
+        throw new RuntimeError('login_required', 'a login window');
+      },
+      quitApp: async (binding) => void quit.push({ pid: binding.window.pid, startedAt: binding.window.processStartedAt, launchedByRuntime: binding.launchedByRuntime }),
+      spawn: createLineProcessSpawner({ inheritEnv: false }),
+      interpreters: { node: process.execPath },
+      requestPollMs: 30,
+      configPollMs: 60_000,
+    });
+    hostRef = host;
+    const at = () => new Date().toISOString();
+    submitTaskRequest(req, { taskId: 'login-1', agentId: 'test.task', taskType: 'press', input: {}, submittedAt: at() });
+    const ended = (id: string) => ['succeeded', 'partial', 'failed'].includes(readOutcome(req, id)?.state ?? '');
+    let deadline = Date.now() + 10_000;
+    while (!ended('login-1') && Date.now() < deadline) await new Promise((r) => setTimeout(r, 30));
+    assert.equal(readOutcome(req, 'login-1')!.failure, 'login_required');
+    // Kept for the person: still running, and on the launched list so a later host can end it after a crash.
+    assert.deepEqual(quit, []);
+    const launched = JSON.parse(await readFile(join(paths.dir, 'launched.json'), 'utf8')) as { bindings: Array<{ window: { pid: number } }> };
+    assert.deepEqual(launched.bindings.map((b) => b.window.pid), [4343]);
+
+    submitTaskRequest(req, { taskId: 'login-2', agentId: 'test.task', taskType: 'press', input: {}, submittedAt: at() });
+    deadline = Date.now() + 10_000;
+    while (!ended('login-2') && Date.now() < deadline) await new Promise((r) => setTimeout(r, 30));
+    assert.equal(readOutcome(req, 'login-2')!.failure, 'login_required');
+
+    await host.stop();
+    hostRef = undefined;
+    // The host ends only what the runtime launched: the person's own app is not on the list.
+    assert.deepEqual(quit, [{ pid: 4343, startedAt: '2026-10-07T00:00:00Z', launchedByRuntime: true }]);
+    assert.deepEqual(JSON.parse(await readFile(join(paths.dir, 'launched.json'), 'utf8')).bindings, []);
+  } finally {
+    await hostRef?.stop();
   }
 });

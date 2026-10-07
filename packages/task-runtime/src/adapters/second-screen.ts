@@ -567,8 +567,16 @@ export function createSecondScreenAdapter(options: SecondScreenAdapterOptions): 
       try {
         return await bindAppOnce(screenId, profile, bindOptions, signal, launchedApp);
       } catch (error) {
-        // An app waiting for a person to log in stays open on its screen for them; ending it would start the login over.
-        if (!isRuntimeError(error, 'login_required')) await endLaunched(launchedApp, profile.bundleId).catch(() => undefined);
+        // An app waiting for a person to log in stays open on its screen for them; ending it would start the login
+        // over. The host is told what was launched, so it can end the app when it stops or when a later host finds
+        // it left behind; an app the runtime did not launch is never reported.
+        if (isRuntimeError(error, 'login_required')) {
+          const { pid, who } = launchedApp;
+          if (pid !== undefined && who?.startedAt && who.bundleId === profile.bundleId)
+            throw new RuntimeError(error.code, error.message, { ...error.details, launched: { screenId, pid, bundleId: profile.bundleId, startedAt: who.startedAt } });
+          throw error;
+        }
+        await endLaunched(launchedApp, profile.bundleId).catch(() => undefined);
         throw error;
       }
     },
