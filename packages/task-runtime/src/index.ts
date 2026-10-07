@@ -11,6 +11,9 @@ export * from './agent-host.ts';
 export * from './agent-status.ts';
 export * from './agent-ledgers.ts';
 export * from './agent-inbox.ts';
+export * from './agent-config.ts';
+export * from './agent-providers.ts';
+export * from './agent-daemon.ts';
 export {
   loadSkills,
   openControlClient,

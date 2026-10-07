@@ -8,7 +8,7 @@
 //   node scripts/build.mjs [OUT_DIR]      default dist/task-runtime
 //
 // OUT_DIR gets main.mjs (the `2ndscreen task` command line), worker.mjs (the
-// background daemon), skills/ and build.json. bin/node is added by
+// background daemon), agents.mjs (the agent host), skills/ and build.json. bin/node is added by
 // scripts/install-task-runtime.sh at the repository root.
 
 import { build } from 'esbuild';
@@ -26,7 +26,7 @@ rmSync(out, { recursive: true, force: true });
 mkdirSync(out, { recursive: true });
 
 await build({
-  entryPoints: { main: join(pkg, 'src/main.ts'), worker: join(pkg, 'src/worker.ts') },
+  entryPoints: { main: join(pkg, 'src/main.ts'), worker: join(pkg, 'src/worker.ts'), agents: join(pkg, 'src/agents-main.ts') },
   outdir: out,
   outExtension: { '.js': '.mjs' },
   bundle: true,

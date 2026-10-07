@@ -557,6 +557,11 @@ extension MCPServer {
                           properties: ["id": inboxID, "answer": described(string, "The answer")], required: ["id", "answer"],
                           words: { a in ["task", "answer"] + [a["id"], a["answer"]].compactMap { $0 as? String } },
                           check: checker(["id": .string, "answer": .string])))
+        tools.append(Tool(name: "task_host",
+                          description: "The agent host: the background process that keeps the resident agents enabled in the tasks directory's agents/config.json running through their work hours. status says whether it runs and how its agents are; start and stop it only when the user asks.",
+                          properties: ["action": ["type": "string", "enum": ["status", "start", "stop"]]], required: ["action"],
+                          words: { a in ["task", "host"] + ((a["action"] as? String).map { [$0] } ?? []) },
+                          check: checker(["action": .string])))
         return tools
     }()
 

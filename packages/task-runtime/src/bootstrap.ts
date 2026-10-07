@@ -197,6 +197,14 @@ export function workerCommand(config: RuntimeConfig): { command: string; args: s
   return { command: config.node, args, env, logPath: config.paths.workerLog };
 }
 
+/** How to start the agent host (agents-main.ts), next to the worker and with the same environment. */
+export function agentHostCommand(config: RuntimeConfig): { command: string; args: string[]; env: Record<string, string> } {
+  const worker = workerCommand(config);
+  const dev = config.workerEntry.endsWith('.ts');
+  const entry = join(dirname(config.workerEntry), dev ? 'agents-main.ts' : 'agents.mjs');
+  return { command: worker.command, args: [...worker.args.slice(0, -1), entry], env: worker.env };
+}
+
 export async function openControlClient(config: RuntimeConfig): Promise<ControlClient> {
   preparePrivateDirs(config.paths);
   const skills = loadSkills(config.skillsDir);

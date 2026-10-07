@@ -26,11 +26,11 @@ import {
 } from './contracts.ts';
 
 /** The contract's commands, bind-account for the explicit BOSS account, and the agent views. */
-export type TaskCliCommand = CliCommand | 'bind-account' | 'agents' | 'usage' | 'inbox' | 'approve' | 'deny' | 'answer';
+export type TaskCliCommand = CliCommand | 'bind-account' | 'agents' | 'usage' | 'inbox' | 'approve' | 'deny' | 'answer' | 'host';
 
 export const CLI_COMMANDS: readonly TaskCliCommand[] = [
   'run', 'status', 'pause', 'resume', 'cancel', 'artifacts', 'inspect-procedure', 'bind-account',
-  'agents', 'usage', 'inbox', 'approve', 'deny', 'answer',
+  'agents', 'usage', 'inbox', 'approve', 'deny', 'answer', 'host',
 ];
 
 
@@ -47,6 +47,8 @@ export interface AgentViewControl {
   approve(id: string): Promise<unknown>;
   deny(id: string, guidance: { text?: string; hints: string[] }): Promise<unknown>;
   answer(id: string, text: string): Promise<unknown>;
+  /** The long-lived process that keeps resident agents running. */
+  host(action: 'start' | 'stop' | 'status'): Promise<unknown>;
 }
 
 /**
@@ -78,6 +80,7 @@ export const CLI_USAGE = [
   '  2ndscreen task approve INBOX_ID',
   '  2ndscreen task deny INBOX_ID [--hint HINT]... [--text TEXT]',
   '  2ndscreen task answer INBOX_ID TEXT',
+  '  2ndscreen task host start|stop|status',
   '',
   '--limit is how many resumes must be committed; --output is an absolute directory, the',
   'task writes under DIR/TASK_ID. --source defaults to conversations, --mode to available.',
@@ -93,6 +96,8 @@ export const CLI_USAGE = [
   '(quota used, time since the last one, earlier unknown results), and questions. approve or deny an',
   'approval (hints: too_fast, wrong_target, outside_quota, needs_time_limit, not_now); answer a question,',
   'with one of its choices when it offers some.',
+  'host start runs the agent host in the background: it keeps the resident agents enabled in',
+  '<tasks dir>/agents/config.json running through their work hours; host stop asks it to stop them.',
   'Every command prints one JSON line: {"ok":true,"command":…,"result":…} or {"ok":false,…,"error":{code,message}}.',
 ].join('\n');
 
@@ -154,6 +159,12 @@ async function dispatch(command: TaskCliCommand, words: readonly string[], contr
     return agentViewControl(control).inbox();
   }
   if (command === 'approve' || command === 'deny' || command === 'answer') return decideFromWords(command, words, agentViewControl(control));
+  if (command === 'host') {
+    if (words.some((w) => w === '--help' || w === '-h')) throw HELP_REQUESTED;
+    const action = words[0];
+    if (words.length !== 1 || (action !== 'start' && action !== 'stop' && action !== 'status')) throw usageError('host takes start, stop or status');
+    return agentViewControl(control).host(action);
+  }
   if (command === 'run') {
     const { skillId, input, account } = parseRun(words);
     if (account === undefined) return control.submit(skillId, input);
@@ -191,7 +202,7 @@ async function dispatch(command: TaskCliCommand, words: readonly string[], contr
 
 function agentViewControl(control: TaskControl): AgentViewControl {
   const candidate = control as TaskControl & Partial<AgentViewControl>;
-  if (typeof candidate.agents !== 'function' || typeof candidate.usage !== 'function' || typeof candidate.inbox !== 'function')
+  if (typeof candidate.agents !== 'function' || typeof candidate.usage !== 'function' || typeof candidate.inbox !== 'function' || typeof candidate.host !== 'function')
     throw new RuntimeError('capability_missing', 'this task runtime has no agent views');
   return candidate as AgentViewControl;
 }

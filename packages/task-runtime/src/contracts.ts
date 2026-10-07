@@ -602,6 +602,12 @@ export interface DesktopAdapter {
   /** Deliver one action. Never retries; the caller decides. */
   act(binding: WindowBinding, request: ActionRequest, signal?: AbortSignal): Promise<ActionResult>;
   releaseWindow(binding: WindowBinding, signal?: AbortSignal): Promise<void>;
+  /**
+   * End the app of a binding the runtime launched, so its window is never
+   * moved onto the user's displays when its agent screen goes away. Only the
+   * very process bound (same bundle, same start time) is signalled.
+   */
+  quitApp?(binding: WindowBinding, signal?: AbortSignal): Promise<void>;
 }
 
 export type LeaseHolder = 'runtime' | 'bridge' | 'legacy-assistant';

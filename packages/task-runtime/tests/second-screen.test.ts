@@ -20,6 +20,10 @@ import { RuntimeError, isRuntimeError, type CommandResult, type CommandRunner, t
 // A synthetic 2ndscreen: every program the adapter runs goes to a handler
 // here, so no real screen, app or BOSS account is touched.
 
+/** Never signals a real process from a test: records what the adapter would send. */
+const signalled: Array<[number, string]> = [];
+const recordSignal = (pid: number, signal: string) => void signalled.push([pid, signal]);
+
 const BUNDLE = 'com.example.synthetic';
 const SOCKET = '/tmp/synthetic-2ndscreen.sock';
 const profile: WindowProfile = { id: 'synthetic-1440x900', version: 1, logicalWidth: 1440, logicalHeight: 900, bundleId: BUNDLE };
@@ -116,7 +120,7 @@ test('ensureScreen starts the side instance on its own socket and creates an own
       },
     },
   });
-  const adapter = createSecondScreenAdapter({ cli: 'cli', socket: SOCKET, app: '/Apps/2ndscreen.app', run, screenshotDir: '/nonexistent' });
+  const adapter = createSecondScreenAdapter({ signalProcess: recordSignal, cli: 'cli', socket: SOCKET, app: '/Apps/2ndscreen.app', run, screenshotDir: '/nonexistent' });
   assert.deepEqual(await adapter.ensureScreen(profile), { screenId: profile.id, socket: SOCKET });
   const open = calls.find((c) => c.file === 'open')!;
   assert.deepEqual(open.args, ['-g', '-n', '--env', `SECONDSCREEN_SOCKET=${SOCKET}`, '/Apps/2ndscreen.app']);
@@ -141,7 +145,7 @@ test('ensureScreen reuses a matching screen, resizes a different one it owns, an
       return { ok: false, error: 'unexpected' };
     },
   });
-  const adapter = createSecondScreenAdapter({ cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' });
+  const adapter = createSecondScreenAdapter({ signalProcess: recordSignal, cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' });
   await adapter.ensureScreen(profile);
   assert.deepEqual(calls.find((c) => verb(c.args) === 'screen resize')!.args, ['screen', 'resize', profile.id, '--size', '1440x900']);
   await adapter.ensureScreen(profile);
@@ -151,7 +155,7 @@ test('ensureScreen reuses a matching screen, resizes a different one it owns, an
 
 test('ensureScreen without an app to start reports capability_missing; a bad profile id is invalid', async () => {
   const { run } = fakeRunner({ cli: () => ({ ok: false, error: '2ndscreen is not running; open 2ndscreen.app first' }) });
-  const adapter = createSecondScreenAdapter({ cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' });
+  const adapter = createSecondScreenAdapter({ signalProcess: recordSignal, cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' });
   await assert.rejects(adapter.ensureScreen(profile), (e) => isRuntimeError(e, 'capability_missing'));
   await assert.rejects(adapter.ensureScreen({ ...profile, id: 'bad/name' }), (e) => isRuntimeError(e, 'invalid_input'));
 });
@@ -176,7 +180,7 @@ test('bindApp launches a missing app and waits past its loading window to a sett
     },
     tools: identityTools,
   });
-  const adapter = createSecondScreenAdapter({ cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' });
+  const adapter = createSecondScreenAdapter({ signalProcess: recordSignal, cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' });
   const bound = await adapter.bindApp(profile.id, profile, { takeOver: false });
   assert.equal(bound.launchedByRuntime, true);
   assert.equal(bound.window.windowId, 77);
@@ -210,7 +214,7 @@ test('bindApp leaves an app running elsewhere alone without takeOver, and moves 
   };
   let moved = false;
   const first = fakeRunner(handlers);
-  const adapter = createSecondScreenAdapter({ cli: 'cli', socket: SOCKET, run: first.run, screenshotDir: '/x' });
+  const adapter = createSecondScreenAdapter({ signalProcess: recordSignal, cli: 'cli', socket: SOCKET, run: first.run, screenshotDir: '/x' });
   await assert.rejects(adapter.bindApp(profile.id, profile, { takeOver: false }), (e) => {
     assert.ok(isRuntimeError(e, 'conflict'));
     assert.equal(e.details?.pid, 999);
@@ -220,7 +224,7 @@ test('bindApp leaves an app running elsewhere alone without takeOver, and moves 
   assert.ok(!first.calls.some((c) => verb(c.args) === 'window move' || verb(c.args) === 'app launch'));
 
   const second = fakeRunner(handlers);
-  const taking = createSecondScreenAdapter({ cli: 'cli', socket: SOCKET, run: second.run, screenshotDir: '/x' });
+  const taking = createSecondScreenAdapter({ signalProcess: recordSignal, cli: 'cli', socket: SOCKET, run: second.run, screenshotDir: '/x' });
   const bound = await taking.bindApp(profile.id, profile, { takeOver: true });
   assert.equal(bound.launchedByRuntime, false);
   assert.deepEqual(second.calls.find((c) => verb(c.args) === 'window move')!.args, ['window', 'move', '--screen', profile.id, '--pid', '999', '--fill']);
@@ -238,12 +242,12 @@ test('bindApp attaches to an app already on its screen without launching or movi
       tools: { ...identityTools, lsappinfo: (args) => (args.includes('bundleID') ? { stdout: `"CFBundleIdentifier"="${bundle}"` } : { stdout: '"pid"=4242' }) },
     });
   const good = make(BUNDLE);
-  const bound = await createSecondScreenAdapter({ cli: 'cli', socket: SOCKET, run: good.run, screenshotDir: '/x' }).bindApp(profile.id, profile, { takeOver: false });
+  const bound = await createSecondScreenAdapter({ signalProcess: recordSignal, cli: 'cli', socket: SOCKET, run: good.run, screenshotDir: '/x' }).bindApp(profile.id, profile, { takeOver: false });
   assert.equal(bound.launchedByRuntime, false);
   assert.ok(!good.calls.some((c) => ['app launch', 'window move'].includes(verb(c.args))));
   const wrong = make('com.other.app');
   await assert.rejects(
-    createSecondScreenAdapter({ cli: 'cli', socket: SOCKET, run: wrong.run, screenshotDir: '/x' }).bindApp(profile.id, profile, { takeOver: false }),
+    createSecondScreenAdapter({ signalProcess: recordSignal, cli: 'cli', socket: SOCKET, run: wrong.run, screenshotDir: '/x' }).bindApp(profile.id, profile, { takeOver: false }),
     (e) => isRuntimeError(e, 'conflict'),
   );
 });
@@ -290,7 +294,7 @@ test('bindApp refuses a window reaching past its screen without takeOver, and do
   for (const frame of [{ x: 3200, y: 25, width: 1360, height: 848 }, { x: 2960, y: -10, width: 1520, height: 950 }]) {
     let moves = 0;
     const { run, calls } = placedApp(() => frame, undefined, () => moves++);
-    const adapter = createSecondScreenAdapter({ cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' });
+    const adapter = createSecondScreenAdapter({ signalProcess: recordSignal, cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' });
     await assert.rejects(adapter.bindApp(profile.id, profile, { takeOver: false }), (e) => {
       assert.ok(isRuntimeError(e, 'conflict'));
       assert.match(e.message, /reaches past screen .* pass takeOver to refit it/);
@@ -306,7 +310,7 @@ test('bindApp refuses a window reaching past its screen without takeOver, and do
 test('bindApp with takeOver refits an oversized window once and binds it where it settled', async () => {
   let frame: Rect = { x: 2960, y: -10, width: 1520, height: 950 };
   const { run, calls } = placedApp(() => frame, undefined, () => (frame = { x: 3000, y: 25, width: 1440, height: 875 }));
-  const bound = await createSecondScreenAdapter({ cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' }).bindApp(profile.id, profile, { takeOver: true });
+  const bound = await createSecondScreenAdapter({ signalProcess: recordSignal, cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' }).bindApp(profile.id, profile, { takeOver: true });
   assert.deepEqual(bound.window.frame, { x: 3000, y: 25, width: 1440, height: 875 });
   const moves = calls.filter((c) => verb(c.args) === 'window move');
   assert.equal(moves.length, 1);
@@ -332,7 +336,7 @@ test('bindApp refits a window it launched itself without needing takeOver', asyn
     },
     tools: identityTools,
   });
-  const bound = await createSecondScreenAdapter({ cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' }).bindApp(profile.id, profile, { takeOver: false });
+  const bound = await createSecondScreenAdapter({ signalProcess: recordSignal, cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' }).bindApp(profile.id, profile, { takeOver: false });
   assert.equal(bound.launchedByRuntime, true);
   assert.deepEqual(bound.window.frame, MAIN);
   assert.equal(calls.filter((c) => verb(c.args) === 'window move').length, 1);
@@ -343,10 +347,85 @@ test('bindApp gives up honestly when refitting does not bring the window inside'
   let moves = 0;
   const { run } = placedApp(() => frame, undefined, () => moves++);
   await assert.rejects(
-    createSecondScreenAdapter({ cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' }).bindApp(profile.id, profile, { takeOver: true }),
+    createSecondScreenAdapter({ signalProcess: recordSignal, cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' }).bindApp(profile.id, profile, { takeOver: true }),
     (e) => isRuntimeError(e, 'conflict') && /still reaches past screen .* after 2 refits/.test(e.message),
   );
   assert.equal(moves, 2, 'bounded');
+});
+
+test('an app bindApp launched is ended when the binding then fails, and only that very process', async () => {
+  const sent: Array<[number, string]> = [];
+  let gone = false;
+  const tools: Record<string, Handler> = {
+    ...identityTools,
+    // The process is gone once it has been signalled: ps finds nothing.
+    ps: () => (gone ? { stdout: '' } : { stdout: 'Thu Sep 17 21:55:13 2026\n' }),
+  };
+  const outside = { x: 2960, y: -10, width: 1520, height: 950 };
+  const launching = fakeRunner({
+    cli: (args) => {
+      switch (verb(args)) {
+        case 'screen list':
+          return { ok: true, screens: [SCREEN] };
+        case 'app launch':
+          return { ok: true, pid: 4242 };
+        case 'state':
+          return { ok: true, pid: 4242, windowID: 77, app: 'Synthetic', windowFrame: outside };
+        case 'window move':
+          return { ok: true };
+      }
+      return { ok: false, error: 'unexpected' };
+    },
+    tools,
+  });
+  const adapter = createSecondScreenAdapter({
+    signalProcess: (pid, signal) => {
+      sent.push([pid, signal]);
+      gone = true;
+    },
+    cli: 'cli',
+    socket: SOCKET,
+    run: launching.run,
+    screenshotDir: '/x',
+  });
+  await assert.rejects(adapter.bindApp(profile.id, profile, { takeOver: false }), (e) => isRuntimeError(e, 'conflict'));
+  assert.deepEqual(sent, [[4242, 'SIGTERM']], 'SIGTERM was enough; no SIGKILL once it is gone');
+
+  // An app the adapter did not launch is never signalled, whatever goes wrong.
+  const attached: Array<[number, string]> = [];
+  const { run } = placedApp(() => outside, undefined, () => {});
+  await assert.rejects(
+    createSecondScreenAdapter({ signalProcess: (pid, signal) => void attached.push([pid, signal]), cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' }).bindApp(profile.id, profile, { takeOver: true }),
+    (e) => isRuntimeError(e, 'conflict'),
+  );
+  assert.deepEqual(attached, []);
+  assert.deepEqual(signalled, [], 'no other test signalled anything');
+
+  // quitApp: only for an app the runtime launched, and only that very process.
+  const quitting: Array<[number, string]> = [];
+  let alive = true;
+  const quitter = fakeRunner({
+    cli: () => ({ ok: false, error: 'unexpected' }),
+    tools: { ...identityTools, ps: () => (alive ? { stdout: 'Thu Sep 17 21:55:13 2026\n' } : { stdout: '' }) },
+  });
+  const quitAdapter = createSecondScreenAdapter({
+    signalProcess: (pid, signal) => {
+      quitting.push([pid, signal]);
+      alive = false;
+    },
+    cli: 'cli',
+    socket: SOCKET,
+    run: quitter.run,
+    screenshotDir: '/x',
+  });
+  await assert.rejects(quitAdapter.quitApp!({ ...binding, launchedByRuntime: false }), (e) => isRuntimeError(e, 'conflict'));
+  await quitAdapter.quitApp!(binding);
+  assert.deepEqual(quitting, [[4242, 'SIGTERM']]);
+  // A recycled pid (another start time) is left alone.
+  const other = { ...binding, window: { ...binding.window, processStartedAt: '2026-01-01T00:00:00.000Z' } };
+  alive = true;
+  await quitAdapter.quitApp!(other);
+  assert.deepEqual(quitting, [[4242, 'SIGTERM']]);
 });
 
 test('bindApp checks the window against the screen as it is now, not where it was', async () => {
@@ -354,7 +433,7 @@ test('bindApp checks the window against the screen as it is now, not where it wa
   const moved = { x: 5000, y: 0, width: 1440, height: 900 };
   const frame = { x: 5000, y: 25, width: 1360, height: 848 };
   const { run, calls } = placedApp(() => frame, () => [SCREEN.frame, moved]);
-  const bound = await createSecondScreenAdapter({ cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' }).bindApp(profile.id, profile, { takeOver: false });
+  const bound = await createSecondScreenAdapter({ signalProcess: recordSignal, cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' }).bindApp(profile.id, profile, { takeOver: false });
   assert.deepEqual(bound.window.frame, frame);
   assert.ok(!calls.some((c) => verb(c.args) === 'window move'));
 });
@@ -378,7 +457,7 @@ test('observe refuses a screenshot of a window not wholly on its screen as the s
         },
       },
     });
-    const adapter = createSecondScreenAdapter({ cli: 'cli', socket: SOCKET, run, screenshotDir: dir });
+    const adapter = createSecondScreenAdapter({ signalProcess: recordSignal, cli: 'cli', socket: SOCKET, run, screenshotDir: dir });
     const refused = async (pattern: RegExp) => {
       await assert.rejects(adapter.observe(binding, { screenshot: true, region: { x: 3300, y: 100, width: 734, height: 700 } }), (e) => {
         assert.ok(isRuntimeError(e, 'window_lost'));
@@ -441,7 +520,7 @@ test('observe returns typed elements, text and a measured screenshot, and a crop
         },
       },
     });
-    const adapter = createSecondScreenAdapter({ cli: 'cli', socket: SOCKET, run, screenshotDir: dir, clock: { now: () => new Date('2026-10-04T08:00:00Z') } });
+    const adapter = createSecondScreenAdapter({ signalProcess: recordSignal, cli: 'cli', socket: SOCKET, run, screenshotDir: dir, clock: { now: () => new Date('2026-10-04T08:00:00Z') } });
     const o = await adapter.observe(binding, { elements: true, screenshot: true });
     assert.equal(o.takenAt, '2026-10-04T08:00:00.000Z');
     assert.deepEqual(o.elements?.map((e) => e.index), [0, 1]);
@@ -466,7 +545,7 @@ test('observe follows a geometry change but reports a replaced window as window_
   let frame = MAIN;
   let windowID = 77;
   const { run } = fakeRunner({ cli: () => ({ ok: true, pid: 4242, windowID, app: 'S', windowFrame: frame, elements: [] }) });
-  const adapter = createSecondScreenAdapter({ cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' });
+  const adapter = createSecondScreenAdapter({ signalProcess: recordSignal, cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' });
   frame = { x: 3000, y: 25, width: 1440, height: 875 };
   const o = await adapter.observe(binding, { elements: false });
   assert.deepEqual(o.window.frame, frame);
@@ -476,14 +555,14 @@ test('observe follows a geometry change but reports a replaced window as window_
   await assert.rejects(adapter.observe(binding, {}), (e) => isRuntimeError(e, 'window_lost'));
   const gone = fakeRunner({ cli: () => ({ ok: false, error: 'pid 4242 has no on-screen window 77' }) });
   await assert.rejects(
-    createSecondScreenAdapter({ cli: 'cli', socket: SOCKET, run: gone.run, screenshotDir: '/x' }).observe(binding, {}),
+    createSecondScreenAdapter({ signalProcess: recordSignal, cli: 'cli', socket: SOCKET, run: gone.run, screenshotDir: '/x' }).observe(binding, {}),
     (e) => isRuntimeError(e, 'window_lost'),
   );
 });
 
 test('act maps each action to its CLI words and route, in the bound window only', async () => {
   const { run, calls } = fakeRunner({ cli: () => ({ ok: true, route: 'event.pid' }), tools: identityTools });
-  const adapter = createSecondScreenAdapter({ cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' });
+  const adapter = createSecondScreenAdapter({ signalProcess: recordSignal, cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' });
   const base = ['--screen', profile.id, '--pid', '4242', '--window-id', '77'];
 
   let r = await adapter.act(binding, { actionId: 'a1', snapshotId: 's1', action: { kind: 'click', target: { kind: 'element', index: 3 }, count: 2, effect: 'navigation' } });
@@ -524,7 +603,7 @@ test('act reports stale indexes, classified failures, and unknown when a command
     },
     tools: identityTools,
   });
-  const adapter = createSecondScreenAdapter({ cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' });
+  const adapter = createSecondScreenAdapter({ signalProcess: recordSignal, cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' });
   const click = { actionId: 'a', snapshotId: 's', action: { kind: 'click' as const, target: { kind: 'element' as const, index: 9 }, effect: 'read' as const } };
   assert.equal((await adapter.act(binding, click)).status, 'stale_snapshot');
   reply = { ok: false, error: '2ndscreen needs the Accessibility permission to move windows' };
@@ -544,7 +623,7 @@ test('act reports stale indexes, classified failures, and unknown when a command
 test('an explicit accessibility press goes out as ax-press on one index and reports its own route', async () => {
   let reply: object = { ok: true, route: 'ax.press.explicit' };
   const { run, calls } = fakeRunner({ cli: () => reply, tools: identityTools });
-  const adapter = createSecondScreenAdapter({ cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' });
+  const adapter = createSecondScreenAdapter({ signalProcess: recordSignal, cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' });
   const base = ['--screen', profile.id, '--pid', '4242', '--window-id', '77'];
   const press = (extra: object = {}, target: object = { kind: 'element', index: 5 }) =>
     adapter.act(binding, { actionId: 'p', snapshotId: 's', action: { kind: 'click', target, method: 'accessibility', effect: 'navigation', ...extra } as never });
@@ -595,7 +674,7 @@ test('an explicit accessibility press goes out as ax-press on one index and repo
 
 test('an aborted signal stops every operation before it runs a command', async () => {
   const { run, calls } = fakeRunner({ cli: () => ({ ok: true }) });
-  const adapter = createSecondScreenAdapter({ cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' });
+  const adapter = createSecondScreenAdapter({ signalProcess: recordSignal, cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' });
   const signal = AbortSignal.abort();
   await assert.rejects(adapter.ensureScreen(profile, signal), (e) => isRuntimeError(e, 'cancelled'));
   await assert.rejects(adapter.observe(binding, {}, signal), (e) => isRuntimeError(e, 'cancelled'));
@@ -606,7 +685,7 @@ test('an aborted signal stops every operation before it runs a command', async (
 test('releaseWindow releases only the bound window and tolerates one already gone', async () => {
   let gone = false;
   const { run, calls } = fakeRunner({ cli: () => (gone ? { ok: false, error: 'pid 4242 has no matching window on screen "x"' } : { ok: true }), tools: identityTools });
-  const adapter = createSecondScreenAdapter({ cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' });
+  const adapter = createSecondScreenAdapter({ signalProcess: recordSignal, cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' });
   await adapter.releaseWindow(binding);
   assert.deepEqual(calls.find((c) => c.file === 'cli')!.args, ['window', 'release', '--screen', profile.id, '--pid', '4242', '--window-id', '77']);
   gone = true;
@@ -626,7 +705,7 @@ test('capabilities probe only by reading, and report what they cannot verify as 
       },
       tools: { plutil: () => ({ stdout: '1.4.0\n' }) },
     });
-    const caps = await createSecondScreenAdapter({ cli: 'cli', socket: SOCKET, app: '/A.app', run, screenshotDir: dir }).capabilities();
+    const caps = await createSecondScreenAdapter({ signalProcess: recordSignal, cli: 'cli', socket: SOCKET, app: '/A.app', run, screenshotDir: dir }).capabilities();
     assert.deepEqual(caps, {
       version: '1.4.0',
       backgroundClick: true,
@@ -671,13 +750,13 @@ test('createCommandRunner resolves exit codes and turns timeouts, aborts and mis
 test('ensureScreen will not resize a screen it does not own', async () => {
   for (const ownerPID of [undefined, process.pid + 1]) {
     const { run, calls } = fakeRunner({ cli: (args) => (verb(args) === 'screen list' ? { ok: true, screens: [{ ...SCREEN, width: 1280, height: 800, ownerPID }] } : { ok: true }) });
-    const adapter = createSecondScreenAdapter({ cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' });
+    const adapter = createSecondScreenAdapter({ signalProcess: recordSignal, cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' });
     await assert.rejects(adapter.ensureScreen(profile), (e) => isRuntimeError(e, 'conflict'));
     assert.deepEqual(calls.map((c) => verb(c.args)), ['screen list', 'screen list'], 'listed only; nothing resized, created or destroyed');
   }
   // A right-sized screen of someone else's is used as it is, without change.
   const { run, calls } = fakeRunner({ cli: () => ({ ok: true, screens: [{ ...SCREEN, ownerPID: 1 }] }) });
-  await createSecondScreenAdapter({ cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' }).ensureScreen(profile);
+  await createSecondScreenAdapter({ signalProcess: recordSignal, cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' }).ensureScreen(profile);
   assert.ok(calls.every((c) => verb(c.args) === 'screen list'));
 });
 
@@ -690,7 +769,7 @@ test('input and release are refused for a recycled pid, another app, or a bindin
   ];
   for (const [name, bound, tools] of cases) {
     const { run, calls } = fakeRunner({ cli: () => ({ ok: true }), tools });
-    const adapter = createSecondScreenAdapter({ cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' });
+    const adapter = createSecondScreenAdapter({ signalProcess: recordSignal, cli: 'cli', socket: SOCKET, run, screenshotDir: '/x' });
     const r = await adapter.act(bound, { actionId: 'a', action: { kind: 'click', target: { kind: 'relative', point: { x: 0.5, y: 0.5 } }, effect: 'read' } });
     assert.equal(r.status, 'failed', name);
     assert.equal(r.error?.code, 'window_lost', name);
@@ -720,7 +799,7 @@ test('session and adapter together map window fractions against the window as it
       },
       tools: { ...identityTools, lsappinfo: (args) => (args.includes('bundleID') ? { stdout: `"CFBundleIdentifier"="${BUNDLE}"` } : { stdout: '"pid"=4242' }) },
     });
-    const adapter = createSecondScreenAdapter({ cli: 'cli', socket: SOCKET, run, screenshotDir: dir });
+    const adapter = createSecondScreenAdapter({ signalProcess: recordSignal, cli: 'cli', socket: SOCKET, run, screenshotDir: dir });
     const vision = {
       // The text sits at the centre of whatever image it is given.
       async ocr(_p: string, _o?: unknown) {
@@ -779,7 +858,7 @@ test('the session resolves a semantic target to one index and keeps the accessib
       },
       tools: { ...identityTools, lsappinfo: (args) => (args.includes('bundleID') ? { stdout: `"CFBundleIdentifier"="${BUNDLE}"` } : { stdout: '"pid"=4242' }) },
     });
-    const adapter = createSecondScreenAdapter({ cli: 'cli', socket: SOCKET, run, screenshotDir: dir });
+    const adapter = createSecondScreenAdapter({ signalProcess: recordSignal, cli: 'cli', socket: SOCKET, run, screenshotDir: dir });
     const leases = {
       async acquireLease(r: { scopeKey: string; holder: 'runtime'; ownerPid: number; taskId?: string; ttlMs: number }) {
         return { scopeKey: r.scopeKey, holder: r.holder, ownerPid: r.ownerPid, taskId: r.taskId, leaseId: 'l', expiresAt: new Date(Date.now() + r.ttlMs).toISOString() };

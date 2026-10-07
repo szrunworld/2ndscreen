@@ -7,7 +7,11 @@ import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RuntimeError, isRuntimeError, type TaskControl } from './contracts.ts';
 import { runCli, type AgentViewControl } from './cli.ts';
-import { openControlClient, resolveConfig, runtimePaths, type ControlClient } from './bootstrap.ts';
+import { agentHostCommand, openControlClient, resolveConfig, runtimePaths, type ControlClient } from './bootstrap.ts';
+import { readFileSync } from 'node:fs';
+import { readHostConfig } from './agent-config.ts';
+import { runningHostPid } from './agent-daemon.ts';
+import { spawnDetachedWorker } from './daemon.ts';
 import { agentDataPaths, createFileUsageLedger, formatUsage, readPriceTable, summarizeUsage } from './agent-ledgers.ts';
 import { formatAgentList, readStatusFile } from './agent-status.ts';
 import { decide, formatInbox, inboxPaths, listInbox } from './agent-inbox.ts';
@@ -70,6 +74,53 @@ const control = {
   async deny(id, guidance) {
     const answer = { kind: 'approval' as const, decision: 'deny' as const, guidance: { hints: guidance.hints as ApprovalHint[], ...(guidance.text !== undefined && { text: guidance.text }) } };
     return { decided: decide(inboxPaths(agentDataPaths(runtimePaths().tasksDir).dir), id, answer).id, decision: 'deny' };
+  },
+  async host(action) {
+    const paths = agentDataPaths(runtimePaths().tasksDir);
+    const pid = runningHostPid(paths);
+    const tail = () => {
+      try {
+        return readFileSync(paths.hostLog, 'utf8').trimEnd().split('\n').slice(-5);
+      } catch {
+        return [];
+      }
+    };
+    if (action === 'status') {
+      let configured: number | string;
+      try {
+        configured = readHostConfig(paths.config).agents.filter((a) => a.enabled).length;
+      } catch (error) {
+        configured = error instanceof Error ? error.message : String(error);
+      }
+      const snapshot = readStatusFile(paths.status);
+      return { running: pid !== undefined, ...(pid !== undefined && { pid }), enabledAgents: configured, runs: pid !== undefined ? snapshot.runs : [], log: paths.hostLog };
+    }
+    if (action === 'stop') {
+      if (pid === undefined) return { running: false, stopped: false };
+      process.kill(pid, 'SIGTERM');
+      // The agents are asked to stop and then made to; give that its time.
+      for (let i = 0; i < 300 && runningHostPid(paths) === pid; i++) await new Promise((r) => setTimeout(r, 100));
+      if (runningHostPid(paths) === pid) throw new RuntimeError('timeout', `the agent host (pid ${pid}) has not stopped after 30 s`, { pid });
+      return { running: false, stopped: true, pid };
+    }
+    if (pid !== undefined) return { running: true, started: false, pid };
+    // A config that would not start is said here, not only in the log.
+    readHostConfig(paths.config);
+    const command = agentHostCommand(resolveConfig(entryDir));
+    const child = await spawnDetachedWorker({ ...command, logPath: paths.hostLog });
+    for (let i = 0; i < 100; i++) {
+      const now = runningHostPid(paths);
+      if (now === child) return { running: true, started: true, pid: child, log: paths.hostLog };
+      if (now === undefined) {
+        try {
+          process.kill(child, 0);
+        } catch {
+          throw new RuntimeError('io', 'the agent host exited at once', { log: tail() });
+        }
+      }
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    throw new RuntimeError('timeout', 'the agent host did not take over within 10 s', { pid: child, log: tail() });
   },
   async answer(id, text) {
     return { decided: decide(inboxPaths(agentDataPaths(runtimePaths().tasksDir).dir), id, { kind: 'question', answer: text }).id, answer: text };

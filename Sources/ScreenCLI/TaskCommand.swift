@@ -21,7 +21,7 @@ import Foundation
 /// Without a runtime, every task command fails with capability_missing.
 enum TaskCommand {
     static let commands = ["run", "status", "pause", "resume", "cancel", "artifacts", "inspect-procedure", "bind-account", "agents", "usage",
-                           "inbox", "approve", "deny", "answer"]
+                           "inbox", "approve", "deny", "answer", "host"]
 
     static let usage = """
     usage:
@@ -38,6 +38,7 @@ enum TaskCommand {
       2ndscreen task approve INBOX_ID
       2ndscreen task deny INBOX_ID [--hint HINT]... [--text TEXT]
       2ndscreen task answer INBOX_ID TEXT
+      2ndscreen task host start|stop|status
 
     Runs skill tasks such as boss.collect-resumes in the background through the
     task runtime bundled with 2ndscreen.app. Every command prints one JSON line
@@ -45,7 +46,8 @@ enum TaskCommand {
     agents lists agent runs, blocked ones first with what they wait for; usage
     sums provider calls, tokens and cost per agent, provider, model or task.
     inbox lists approvals and questions agents wait on; approve, deny and
-    answer decide them.
+    answer decide them. host runs the agent host that keeps resident agents
+    going through their work hours.
     """
 
     static func run(_ words: [String]) -> Never {

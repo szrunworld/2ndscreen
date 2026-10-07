@@ -28,11 +28,29 @@ export interface AgentDataPaths {
   usage: string;
   /** Optional PriceTable, as JSON, that `task usage` prices calls with. */
   prices: string;
+  /** The agent host's configuration (agent-config.ts). */
+  config: string;
+  /** Pid of the running agent host, while one runs. */
+  hostPid: string;
+  /** The agent host's own log. */
+  hostLog: string;
+  /** Every external-submit the host allowed or refused, as JSON lines. */
+  audit: string;
 }
 
 export function agentDataPaths(tasksDir: string): AgentDataPaths {
   const dir = join(tasksDir, 'agents');
-  return { dir, status: join(dir, 'status.json'), effects: join(dir, 'effects.jsonl'), usage: join(dir, 'provider-usage.jsonl'), prices: join(dir, 'prices.json') };
+  return {
+    dir,
+    status: join(dir, 'status.json'),
+    effects: join(dir, 'effects.jsonl'),
+    usage: join(dir, 'provider-usage.jsonl'),
+    prices: join(dir, 'prices.json'),
+    config: join(dir, 'config.json'),
+    hostPid: join(dir, 'host.pid'),
+    hostLog: join(dir, 'host.log'),
+    audit: join(dir, 'audit.jsonl'),
+  };
 }
 
 /** Creates the agent data directory readable by the user alone, tightening it if it exists (like preparePrivateDirs). */
@@ -86,7 +104,7 @@ function readLines(path: string): string[] {
  * else's write in progress. The use a crash cut short goes uncounted, as
  * does one whose action was sent just before a crash and never recorded.
  */
-function append(path: string, record: unknown): void {
+export function appendJsonLine(path: string, record: unknown): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   let fd: number | undefined;
   try {
@@ -180,7 +198,7 @@ export function createFileEffectLedger(path: string): FileEffectLedger {
       return all().filter((u) => u.application === q.application && u.accountKey === q.accountKey && u.effect === q.effect && Date.parse(u.at) >= since);
     },
     async record(use) {
-      append(path, use);
+      appendJsonLine(path, use);
     },
     async compact(before) {
       const cutoff = Date.parse(before);
@@ -254,7 +272,7 @@ export function createFileUsageLedger(path: string): ProviderUsageLedger & { ski
   let skipped = 0;
   return {
     async record(r) {
-      append(path, r);
+      appendJsonLine(path, r);
     },
     async list(q = {}) {
       skipped = 0;
