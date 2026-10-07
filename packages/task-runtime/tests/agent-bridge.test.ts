@@ -1,6 +1,7 @@
 import { mock, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -671,5 +672,21 @@ test('real children: once exited() resolves the group is gone, and later kills s
     }
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('a child\'s stderr can go to a log file of its own, chosen from its environment', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'stderr-log-'));
+  try {
+    const spawn = createLineProcessSpawner({ inheritEnv: false, stderrPath: (env) => (env?.WHO ? join(dir, 'logs', `${env.WHO}.log`) : undefined) });
+    const child = spawn(process.execPath, ['-e', 'console.error("hello from stderr"); console.log("out")'], { WHO: 'demo.agent' });
+    const lines: string[] = [];
+    for await (const l of child.lines()) lines.push(l);
+    await child.exited();
+    await new Promise((r) => setTimeout(r, 50));
+    assert.deepEqual(lines, ['out']);
+    assert.match(readFileSync(join(dir, 'logs', 'demo.agent.log'), 'utf8'), /hello from stderr/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });

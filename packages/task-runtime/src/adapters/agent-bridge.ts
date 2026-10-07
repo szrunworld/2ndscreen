@@ -12,6 +12,8 @@
 // back from a process that can no longer act on it.
 
 import { spawn as spawnChild } from 'node:child_process';
+import { createWriteStream, mkdirSync, renameSync, statSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import {
   RuntimeError,
@@ -324,9 +326,12 @@ class Run {
 
 type Snapshot = Pick<Observation, 'snapshotId' | 'pageClass'>;
 
+const STDERR_LOG_MAX_BYTES = 10 * 1024 * 1024;
+
 /**
  * Children through node:child_process, each leading its own process group,
- * so a signal reaches anything it started. stderr is drained and dropped.
+ * so a signal reaches anything it started. stderr is drained and dropped,
+ * or appended to the file `stderrPath` names.
  * Children inherit the runtime's environment unless `inheritEnv` is false;
  * then they get exactly the variables passed.
  * `exited()` resolves only once the child has exited and its whole group is
@@ -334,7 +339,17 @@ type Snapshot = Pick<Observation, 'snapshotId' | 'pageClass'>;
  * closed. Once the child has exited, `kill` sends nothing: the cleanup owns
  * the group, and a pid that is gone may be reused.
  */
-export function createLineProcessSpawner(options: { inheritEnv?: boolean } = {}): LineProcessSpawner {
+export function createLineProcessSpawner(
+  options: {
+    inheritEnv?: boolean;
+    /**
+     * Where a child's stderr is appended, from the environment it gets
+     * (e.g. by AGENT_DESKTOP_AGENT_ID); undefined drops it. A file over
+     * 10 MB is moved to <path>.1 first.
+     */
+    stderrPath?: (env: Readonly<Record<string, string>> | undefined) => string | undefined;
+  } = {},
+): LineProcessSpawner {
   // Agents get only the environment their host builds: no inherited keys.
   const inherit = options.inheritEnv ?? true;
   return (file, args, env) => {
@@ -378,7 +393,22 @@ export function createLineProcessSpawner(options: { inheritEnv?: boolean } = {})
       });
     });
     child.stdin.on('error', () => {});
-    child.stderr.resume();
+    const logPath = options.stderrPath?.(env);
+    if (logPath) {
+      try {
+        mkdirSync(dirname(logPath), { recursive: true, mode: 0o700 });
+        try {
+          if (statSync(logPath).size > STDERR_LOG_MAX_BYTES) renameSync(logPath, `${logPath}.1`);
+        } catch {
+          // no file yet
+        }
+        const out = createWriteStream(logPath, { flags: 'a', mode: 0o600 });
+        out.on('error', () => child.stderr.resume());
+        child.stderr.pipe(out);
+      } catch {
+        child.stderr.resume();
+      }
+    } else child.stderr.resume();
     return {
       pid,
       write: (line) => void child.stdin.write(line),
