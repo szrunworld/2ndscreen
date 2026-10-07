@@ -39,7 +39,7 @@ enum MCPServer {
             return result(id, [
                 "protocolVersion": negotiatedVersion,
                 "capabilities": ["tools": [String: Any](), "resources": [String: Any]()],
-                "serverInfo": ["name": "2ndscreen", "version": "0.1.0"],
+                "serverInfo": ["name": "2ndscreen", "version": "0.2.0"],
                 "instructions": """
                     Private virtual screens for testing macOS apps without touching the user's \
                     screen, pointer, or focus. Create a screen, launch the app there, look with \
