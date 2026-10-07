@@ -1,7 +1,12 @@
 // Puts the runtime together: where its files live, the skills it can run,
 // a control client for the short-lived `2ndscreen task` process, and the
-// full worker (session, ledger, procedures, BOSS workflow, vision, bridge,
-// runner, daemon) for the background process that owns the tasks.
+// full worker (session, ledger, procedures, the registered workflows, vision,
+// bridge, runner, daemon) for the background process that owns the tasks.
+//
+// The generic runtime starts with no business package: no skills directory,
+// an empty one, and so no workflow, runner or business session. A skill
+// package is a business registration; its workflow must be registered in
+// this build (workflows.ts) or the package fails to load, by name.
 //
 // The command line never runs tasks. It opens the ledger, makes its one
 // control call through a daemon that does not claim tasks, makes sure a
@@ -11,7 +16,6 @@
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
-import { createBossResumesWorkflow } from './boss/workflow.ts';
 import {
   DEFAULT_PROMOTION,
   RuntimeError,
@@ -43,6 +47,7 @@ import { createTaskRunner } from './runner.ts';
 import { createSessionManager } from './session.ts';
 import { defaultTaskDbPath, openTaskStore, type TaskLedgerStore } from './store.ts';
 import { createTelemetryHub } from './telemetry.ts';
+import { NO_WORKFLOWS, legacyWorkflows, type WorkflowRegistry } from './workflows.ts';
 
 // ---------------------------------------------------------------------------
 // Where things are
@@ -91,6 +96,8 @@ export interface RuntimeConfig {
   /** 2ndscreen.app, to start that side instance when it is not running. */
   app?: string;
   skillsDir: string;
+  /** Whether SECONDSCREEN_SKILLS_DIR named the directory: then it must exist. The default may be absent. */
+  skillsDirExplicit: boolean;
   /** Node running this runtime, and the worker entry it starts. */
   node: string;
   workerEntry: string;
@@ -114,13 +121,15 @@ export function resolveConfig(entryDir: string, env: NodeJS.ProcessEnv = process
   // Installed at <app>/Contents/Resources/task-runtime: the app is three levels up.
   const bundled = resolve(entryDir, '../../..');
   const app = absolute('SECONDSCREEN_APP') ?? (installed && bundled.endsWith('.app') ? bundled : undefined);
-  const skillsDir = absolute('SECONDSCREEN_SKILLS_DIR') ?? (installed ? join(entryDir, 'skills') : resolve(entryDir, '../../../skills'));
+  const explicitSkills = absolute('SECONDSCREEN_SKILLS_DIR');
+  const skillsDir = explicitSkills ?? (installed ? join(entryDir, 'skills') : resolve(entryDir, '../../../skills'));
   return {
     paths: runtimePaths(env),
     cli,
     socket: absolute('SECONDSCREEN_SOCKET') ?? join(homedir(), 'Library/Caches/2ndscreen/boss.sock'),
     ...(app ? { app } : {}),
     skillsDir,
+    skillsDirExplicit: explicitSkills !== undefined,
     node: process.execPath,
     workerEntry: installed ? join(entryDir, 'worker.mjs') : join(entryDir, 'worker.ts'),
   };
@@ -135,8 +144,12 @@ export interface SkillPackage {
   profile: WindowProfile;
 }
 
-/** Workflows this build can run, by TaskSpec.workflow. */
-const WORKFLOWS: Readonly<Record<string, true>> = { 'boss-resumes-v1': true };
+export interface LoadSkillsOptions {
+  /** The directory was named explicitly (SECONDSCREEN_SKILLS_DIR): then it must exist and be readable. */
+  explicit?: boolean;
+  /** The workflows this build registers; a skill naming another one fails to load. Default: none. */
+  workflows?: WorkflowRegistry;
+}
 
 function validateProfile(raw: unknown, where: string): WindowProfile {
   const p = raw as Record<string, unknown>;
@@ -154,21 +167,38 @@ function validateProfile(raw: unknown, where: string): WindowProfile {
   return p as unknown as WindowProfile;
 }
 
-/** Every skill under `skillsDir` with a task.json, checked in full. A broken skill fails the load. */
-export function loadSkills(skillsDir: string): Map<string, SkillPackage> {
+/**
+ * Every skill package under `skillsDir` with a task.json, checked in full. A
+ * broken package fails the load; so does one whose workflow this build does
+ * not register. No directory, or none with a package in it, is the generic
+ * runtime with no business installed: an empty map — unless the directory
+ * was named explicitly, which is a configuration error when it is missing.
+ */
+export function loadSkills(skillsDir: string, options: LoadSkillsOptions = {}): Map<string, SkillPackage> {
+  const workflows = options.workflows ?? NO_WORKFLOWS;
   const skills = new Map<string, SkillPackage>();
   let names: string[];
   try {
     names = readdirSync(skillsDir).sort();
-  } catch {
-    throw new RuntimeError('capability_missing', `no skills at ${skillsDir}`);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' && !options.explicit) return skills;
+    if (code === 'ENOENT') throw new RuntimeError('invalid_input', `SECONDSCREEN_SKILLS_DIR ${skillsDir} does not exist`);
+    throw new RuntimeError('invalid_input', `cannot read the skills directory ${skillsDir}: ${code ?? String(error)}`);
   }
   for (const name of names) {
     const dir = join(skillsDir, name);
     const taskJson = join(dir, 'task.json');
     if (!existsSync(taskJson)) continue;
-    const spec = assertValid(validateTaskSpec(JSON.parse(readFileSync(taskJson, 'utf8'))), `${taskJson}`);
-    if (!WORKFLOWS[spec.workflow]) throw new RuntimeError('capability_missing', `${taskJson}: workflow ${spec.workflow} is not in this build`);
+    let raw: unknown;
+    try {
+      raw = JSON.parse(readFileSync(taskJson, 'utf8'));
+    } catch (error) {
+      throw new RuntimeError('invalid_input', `${taskJson}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    const spec = assertValid(validateTaskSpec(raw), `${taskJson}`);
+    if (!workflows.has(spec.workflow))
+      throw new RuntimeError('capability_missing', `${taskJson}: workflow ${spec.workflow} is not registered in this build (registered: ${workflows.ids().join(', ') || 'none'})`);
     const profilePath = join(dir, 'profiles', 'macos', `${spec.windowProfile}.json`);
     const profile = validateProfile(JSON.parse(readFileSync(profilePath, 'utf8')), profilePath);
     if (profile.id !== spec.windowProfile) throw new RuntimeError('invalid_input', `${profilePath}: id is not ${spec.windowProfile}`);
@@ -199,8 +229,9 @@ export function workerCommand(config: RuntimeConfig): { command: string; args: s
     SECONDSCREEN_CLI: config.cli,
     SECONDSCREEN_SOCKET: config.socket,
     SECONDSCREEN_TASKS_DIR: config.paths.tasksDir,
-    SECONDSCREEN_SKILLS_DIR: config.skillsDir,
   };
+  // The worker resolves the same default next to its own entry; only an explicit choice is passed on.
+  if (config.skillsDirExplicit) env.SECONDSCREEN_SKILLS_DIR = config.skillsDir;
   if (config.app) env.SECONDSCREEN_APP = config.app;
   // Development runs the TypeScript entry through this package's tsx; installs run the built worker.mjs.
   const quiet = '--disable-warning=ExperimentalWarning'; // node:sqlite's, on Node 22
@@ -208,9 +239,14 @@ export function workerCommand(config: RuntimeConfig): { command: string; args: s
   return { command: config.node, args, env, logPath: config.paths.workerLog };
 }
 
-export async function openControlClient(config: RuntimeConfig): Promise<ControlClient> {
+export interface ControlClientOptions {
+  /** The workflows this build registers (workflows.ts). Default: the legacy set this package still carries. */
+  workflows?: WorkflowRegistry;
+}
+
+export async function openControlClient(config: RuntimeConfig, options: ControlClientOptions = {}): Promise<ControlClient> {
   preparePrivateDirs(config.paths);
-  const skills = loadSkills(config.skillsDir);
+  const skills = loadSkills(config.skillsDir, { explicit: config.skillsDirExplicit, workflows: options.workflows ?? (await legacyWorkflows()) });
   const store = await openTaskStore({ path: config.paths.dbPath });
   // This process exits right after its call: it never claims or runs a task.
   const control = createTaskDaemon({ store, runner: refusingRunner, specs: (id) => skills.get(id)?.spec, claim: false });
@@ -319,13 +355,16 @@ export interface WorkerOptions {
   spawn?: LineProcessSpawner;
   /** Replaces the workflow for a skill (tests). */
   workflow?: (spec: TaskSpec) => BossWorkflow;
+  /** The workflows this build registers (workflows.ts). Default: the legacy set this package still carries. */
+  workflows?: WorkflowRegistry;
   /** Daemon timing, for tests. */
   daemon?: { pollMs?: number; leaseTtlMs?: number; ackWaitMs?: number };
 }
 
 export async function startWorker(config: RuntimeConfig, options: WorkerOptions = {}): Promise<Worker> {
   preparePrivateDirs(config.paths);
-  const skills = loadSkills(config.skillsDir);
+  const workflows = options.workflows ?? (await legacyWorkflows());
+  const skills = loadSkills(config.skillsDir, { explicit: config.skillsDirExplicit, workflows });
   // Screenshots of workers that are gone are not evidence of anything now; A4 keeps its own copies.
   for (const name of readdirSync(config.paths.screenshotsDir)) {
     const pid = Number(name);
@@ -394,7 +433,8 @@ export async function startWorker(config: RuntimeConfig, options: WorkerOptions 
       const engine = createProcedureEngine({ repository: store, rule: { ...DEFAULT_PROMOTION, promoteAfterSuccesses: spec.learning.promoteAfterSuccesses } });
       const learner = createLearner({ repository: store });
       const recovery = createRecovery({ engine, learner, explorer, telemetry: hub.shared });
-      const workflow = options.workflow?.(spec) ?? createBossResumesWorkflow({ vision, telemetry: hub.shared });
+      // A business workflow is built only here, for an installed package that names it.
+      const workflow = options.workflow?.(spec) ?? workflows.create(spec.workflow, { vision, telemetry: hub.shared });
       runners.set(
         spec.id,
         createTaskRunner({
@@ -415,7 +455,7 @@ export async function startWorker(config: RuntimeConfig, options: WorkerOptions 
       async run(taskId, signal) {
         const task = await store.getTask(taskId);
         const chosen = task && runners.get(task.skillId);
-        if (!chosen) throw new RuntimeError('not_found', `no runner for task ${taskId}`);
+        if (!chosen) throw new RuntimeError('capability_missing', `no runner for task ${taskId}: the skill package ${task?.skillId ?? '?'} is not installed in this runtime`);
         return chosen.run(taskId, signal);
       },
     };

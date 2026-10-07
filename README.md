@@ -399,6 +399,13 @@ read with `resources/read` through the same `task status` and `task artifacts`
 commands; any other URI is refused. Clients on a protocol before 2025-06-18
 get the two URIs as a line of text instead of `resource_link` content.
 
+The runtime starts without any skill: no `skills` directory, or one with
+no package in it, is a generic runtime that hosts agents and answers
+`task` commands but has nothing to `run`. A skill package is loaded only
+where its workflow is registered in the build; tasks left in the ledger by
+a package this runtime does not carry are kept as they are, with a
+`skill_missing` control event saying why.
+
 The runtime (`packages/task-runtime`) ships inside the app with its own
 Node, pinned by SHA-256 in `scripts/fetch-node.sh`; nothing comes from npx,
 the PATH or the working directory. `scripts/bundle-app.sh` puts it in
