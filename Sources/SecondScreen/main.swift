@@ -10,10 +10,14 @@ import SecondScreenCore
 // agents run to test a build, keep to the background on their own sockets
 // and do not count.
 if !ControlProtocol.isSideInstance {
-    switch EndpointOwnership.inspect(socketPath: ControlProtocol.primarySocketURL.path) {
+    let socket = ControlProtocol.primarySocketURL.path
+    switch (try? EndpointOwnership.inspect(socketPath: socket)) ?? .free {
     case .active(let record), .starting(let record):
         let owner = record.map { "\($0.identity.product) (pid \($0.identity.pid))" } ?? "another process"
-        FileHandle.standardError.write("2ndscreen: \(owner) owns \(ControlProtocol.primarySocketURL.path); not starting\n".data(using: .utf8)!)
+        FileHandle.standardError.write("2ndscreen: \(owner) owns \(socket); not starting\n".data(using: .utf8)!)
+        exit(0)
+    case .activeLegacy:
+        FileHandle.standardError.write("2ndscreen: an older 2ndscreen still serves \(socket); not starting\n".data(using: .utf8)!)
         exit(0)
     case .free, .stale:
         break

@@ -642,7 +642,10 @@ the socket (`control.sock` → `control.lock`, held with `flock`), so two
 hosts started at once end with one owner: the other gets an `EndpointError`
 naming who holds it, and removes nothing. Only the owner creates the socket
 and, on stop, removes socket and lock; a socket a crashed owner left behind
-(its lock gone with it) is replaced by the next owner. Set
+(its lock gone with it, and refusing connections) is replaced by the next
+owner. A socket with no lock that still answers a request belongs to a
+host from before locks (v0.2.0): it is never taken over, and the new host
+says so and leaves. Set
 `runtime.identity` before `start`: it goes into the lock file and is what
 `2ndscreen host info` answers, with the protocol and engine versions and
 the host's capabilities, so a client can check which instance it reached.

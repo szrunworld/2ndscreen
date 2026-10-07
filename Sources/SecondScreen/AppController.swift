@@ -132,7 +132,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             FileHandle.standardError.write("2ndscreen: not starting: \(error.localizedDescription)\n".data(using: .utf8)!)
             exit(0)
         } catch {
-            presentError("Agents cannot reach 2ndscreen: \(error.localizedDescription)")
+            // Without its endpoint the app is of no use to agents or to the
+            // menu that lists their screens: say so and leave, making no display.
+            presentError("2ndscreen cannot start its control socket: \(error.localizedDescription)")
+            exit(1)
         }
 
         if preferences.enabled, !ControlProtocol.isSideInstance {

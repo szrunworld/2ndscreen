@@ -21,9 +21,10 @@ enum HostCommand {
         } catch ControlClientError.notRunning {
             let state: String
             var owner: EndpointRecord?
-            switch EndpointOwnership.inspect(socketPath: socket) {
+            switch (try? EndpointOwnership.inspect(socketPath: socket)) ?? .free {
             case .free: state = "free"
             case .stale: state = "stale"
+            case .activeLegacy: state = "served by a host from before endpoint locks"
             case .starting(let record): state = "starting"; owner = record
             case .active(let record): state = "active"; owner = record
             }

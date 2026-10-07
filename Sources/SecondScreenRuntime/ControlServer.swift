@@ -34,33 +34,38 @@ public final class ControlServer {
     public var isOwner: Bool { ownership?.isHeld == true }
 
     public func start() throws {
-        // Taking the endpoint also clears a socket a dead owner left; a living owner makes this throw.
+        // Taking the endpoint also clears a socket nobody serves; a living owner makes this throw.
         let ownership = try EndpointOwnership.acquire(socketPath: path, identity: identity)
-        self.ownership = ownership
-
-        listener = socket(AF_UNIX, SOCK_STREAM, 0)
-        guard listener >= 0 else {
-            let message = String(cString: strerror(errno))
-            ownership.release(removingSocket: false)
-            self.ownership = nil
-            throw ControlClientError.io("socket: \(message)")
+        // Whatever fails from here on is undone: the listener closed, the lock
+        // given back, and only what this start made removed. The caller is
+        // never left with a server that holds the endpoint.
+        var fd: Int32 = -1
+        var bound = false
+        func undo(_ error: Error) -> Error {
+            if fd >= 0 { close(fd) }
+            ownership.release(removingSocket: bound)
+            return error
         }
-        var address = try unixAddress(path)
-        let bound = withUnsafePointer(to: &address) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                bind(listener, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+        do {
+            fd = socket(AF_UNIX, SOCK_STREAM, 0)
+            guard fd >= 0 else { throw ControlClientError.io("socket: \(String(cString: strerror(errno)))") }
+            var address = try unixAddress(path)
+            let ok = withUnsafePointer(to: &address) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+                }
             }
+            guard ok == 0 else { throw ControlClientError.io("could not listen on \(path): \(String(cString: strerror(errno)))") }
+            bound = true
+            guard chmod(path, 0o600) == 0, listen(fd, 16) == 0 else {
+                throw ControlClientError.io("could not listen on \(path): \(String(cString: strerror(errno)))")
+            }
+            try ownership.markListening()
+        } catch {
+            throw undo(error)
         }
-        guard bound == 0, chmod(path, 0o600) == 0, listen(listener, 16) == 0 else {
-            let message = String(cString: strerror(errno))
-            close(listener)
-            listener = -1
-            // Whatever is at the path now is this owner's own, half-made; nobody else's.
-            ownership.release(removingSocket: true)
-            self.ownership = nil
-            throw ControlClientError.io("could not listen on \(path): \(message)")
-        }
-        try ownership.markListening()
+        self.ownership = ownership
+        listener = fd
 
         let source = DispatchSource.makeReadSource(fileDescriptor: listener, queue: clients)
         source.setEventHandler { [weak self] in self?.acceptClient() }
