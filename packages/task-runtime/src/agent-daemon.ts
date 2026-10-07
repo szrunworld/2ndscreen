@@ -12,7 +12,7 @@
 
 import { closeSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
-import { grantsOf, loadAgentPackage, readHostConfig, workHoursFunction, type AgentEntryConfig, type AgentPackage, type HostConfig } from './agent-config.ts';
+import { builtinSkillOf, grantsOf, loadAgentPackage, readHostConfig, workHoursFunction, type AgentEntryConfig, type AgentPackage, type HostConfig } from './agent-config.ts';
 import type { Grant } from './agent-contracts.ts';
 import { runAgentTask, startResidentAgent, type AgentTaskOutcome, type Ceilings, type ResidentAgent, type ResidentAgentOptions } from './agent-host.ts';
 import { createFileTaskLedger, outcomeRecord, requestPaths, takeTaskRequests, type AgentTaskLedger, type TaskOutcomeRecord, type TaskRequest } from './agent-requests.ts';
@@ -322,6 +322,8 @@ export async function startAgentHostDaemon(options: AgentHostDaemonOptions): Pro
   }
 
   function startOne(entry: AgentEntryConfig, grantedAt: string, taken: Set<string>): HostedAgent | undefined {
+    // A builtin skill runs in the worker's skill runner, which reads its entry itself.
+    if (builtinSkillOf(entry)) return undefined;
     let pkg: AgentPackage;
     try {
       pkg = loadAgentPackage(entry.package);
@@ -462,7 +464,7 @@ export async function startAgentHostDaemon(options: AgentHostDaemonOptions): Pro
     const wanted = new Set<string>();
     const taken = new Set<string>(agents.map((a) => a.agentId));
     for (const entry of next.agents) {
-      if (!entry.enabled) continue;
+      if (!entry.enabled || builtinSkillOf(entry)) continue;
       let dir: string;
       try {
         dir = loadAgentPackage(entry.package).dir;

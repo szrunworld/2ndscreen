@@ -14,7 +14,7 @@
 import { closeSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AgentTaskOutcome } from './agent-host.ts';
-import { RuntimeError } from './contracts.ts';
+import { RuntimeError, TERMINAL_TASK_STATUSES, type TaskRecord } from './contracts.ts';
 
 export interface RequestPaths {
   requests: string;
@@ -35,7 +35,28 @@ export interface TaskRequest {
   timeoutMs?: number;
 }
 
-export type TaskState = 'queued' | 'running' | 'succeeded' | 'partial' | 'failed';
+export type TaskState = 'queued' | 'running' | 'succeeded' | 'partial' | 'failed' | BuiltinOnlyState;
+/** States only a builtin skill's task reaches: agents' tasks never pause or wait for a person in the ledger. */
+export type BuiltinOnlyState = 'paused' | 'waiting_user' | 'cancelled';
+
+/** A builtin skill's task (tasks table) in the shape of an agent task's outcome, so one command reads both. */
+export function outcomeOfSkillTask(task: TaskRecord, outputPath?: string): TaskOutcomeRecord {
+  const state: TaskState =
+    task.status === 'cancelling' ? 'running' : task.status;
+  const ended = TERMINAL_TASK_STATUSES.includes(task.status);
+  return {
+    taskId: task.id,
+    agentId: task.skillId,
+    taskType: task.skillId.includes('.') ? task.skillId.slice(task.skillId.lastIndexOf('.') + 1) : task.skillId,
+    origin: 'runtime',
+    state,
+    submittedAt: task.createdAt,
+    ...(ended && { endedAt: task.updatedAt }),
+    ...(task.error && { failure: task.error.code, message: task.error.message }),
+    ...(task.terminationReason && { terminationReason: task.terminationReason }),
+    builtin: { status: task.status, ...(task.phase && { phase: task.phase }), ...(task.waitReason && { waitReason: task.waitReason }), counts: task.counts, ...(outputPath && { outputPath }) },
+  };
+}
 
 export interface TaskOutcomeRecord {
   taskId: string;
@@ -52,6 +73,8 @@ export interface TaskOutcomeRecord {
   actions?: { total: number; refused: number; unknown: number };
   items?: AgentTaskOutcome['items'];
   artifacts?: AgentTaskOutcome['artifacts'];
+  /** For a builtin skill's task: its own status, phase, wait reason and counts. */
+  builtin?: { status: TaskRecord['status']; phase?: TaskRecord['phase']; waitReason?: TaskRecord['waitReason']; counts: TaskRecord['counts']; outputPath?: string };
 }
 
 /**

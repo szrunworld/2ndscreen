@@ -28,6 +28,9 @@ import {
 import { ActorRegistry, VERIFY_KILL_GRACE_MS, deadWorkers, liveWorkers, pruneClosedRecords, verifyWorkerStopped } from './actors.ts';
 import { createAgentHosting, type AgentHosting } from './agent-hosting.ts';
 import { createUnitService } from './agent-units.ts';
+import { agentSpecFromTaskSpec } from './agent-contracts.ts';
+import { agentDataPaths, createFileEffectLedger, prepareAgentDataDir } from './agent-ledgers.ts';
+import { builtinPolicySource, checkedSessionManager } from './builtin-agents.ts';
 import { createAgentBridge, createLineProcessSpawner } from './adapters/agent-bridge.ts';
 import { createLocalVision, type LocalVisionClient } from './adapters/local-vision.ts';
 import { createCommandRunner, createSecondScreenAdapter } from './adapters/second-screen.ts';
@@ -183,6 +186,8 @@ export interface ControlClient {
   control: TaskDaemon;
   /** Agent tasks, in the same ledger. */
   agentTasks: TaskLedgerStore['agentTasks'];
+  /** The task type a builtin skill takes as an agent of the hub (agentSpecFromTaskSpec), if the id is one. */
+  builtinTaskType(skillId: string): string | undefined;
   /** Starts the background worker unless one owns the ledger already. */
   ensureWorker(): Promise<{ started: boolean; pid?: number }>;
   close(): Promise<void>;
@@ -212,6 +217,10 @@ export async function openControlClient(config: RuntimeConfig): Promise<ControlC
   return {
     control,
     agentTasks: store.agentTasks,
+    builtinTaskType: (id) => {
+      const skill = skills.get(id);
+      return skill ? Object.keys(agentSpecFromTaskSpec(skill.spec).tasks)[0] : undefined;
+    },
     ensureWorker: () => ensureWorker(store, config),
     async close() {
       await control.shutdown();
@@ -361,13 +370,26 @@ export async function startWorker(config: RuntimeConfig, options: WorkerOptions 
     const explorer = async () => createAgentBridge({ cli: config.cli, spawn });
 
     const runners = new Map<string, TaskRunner>();
+    const agentPaths = agentDataPaths(config.paths.tasksDir);
+    prepareAgentDataDir(agentPaths);
+    const effects = createFileEffectLedger(agentPaths.effects);
     for (const { spec, profile } of skills.values()) {
-      const sessions = createSessionManager({
-        adapter,
-        leases: store,
-        policy: { submitAllowed: spec.submitAllowed, foregroundAllowed: spec.foregroundAllowed },
-        vision,
-      });
+      // The skill as an agent of the hub: every act passes the same check chain as a process agent's,
+      // with the work hours and ceilings of its builtin:<id> entry in the agent config.
+      const sessions = checkedSessionManager(
+        createSessionManager({
+          adapter,
+          leases: store,
+          policy: { submitAllowed: spec.submitAllowed, foregroundAllowed: spec.foregroundAllowed },
+          vision,
+        }),
+        {
+          spec: agentSpecFromTaskSpec(spec),
+          policy: builtinPolicySource(agentPaths.config, spec.id),
+          ledger: effects,
+          onRefusal: (r) => process.stderr.write(`${new Date().toISOString()} worker ${process.pid}: ${spec.id}: task ${r.taskId}: action refused (${r.reason}): ${r.message}\n`),
+        },
+      );
       // No telemetry on the engine: the runner counts replays itself.
       const engine = createProcedureEngine({ repository: store, rule: { ...DEFAULT_PROMOTION, promoteAfterSuccesses: spec.learning.promoteAfterSuccesses } });
       const learner = createLearner({ repository: store });

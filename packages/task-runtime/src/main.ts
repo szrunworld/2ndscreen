@@ -6,7 +6,7 @@
 
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { RuntimeError, isRuntimeError, type TaskControl } from './contracts.ts';
+import { RuntimeError, assertValid, isRuntimeError, validateCollectResumesInput, type CollectResumesInput, type TaskControl } from './contracts.ts';
 import { runCli, type AgentViewControl } from './cli.ts';
 import { openControlClient, resolveConfig, runtimePaths, type ControlClient } from './bootstrap.ts';
 import { readFileSync } from 'node:fs';
@@ -16,7 +16,7 @@ import { readHostingState } from './agent-hosting.ts';
 import { agentDataPaths, createFileUsageLedger, formatUsage, readPriceTable, summarizeUsage } from './agent-ledgers.ts';
 import { formatAgentList, readStatusFile } from './agent-status.ts';
 import { decide, formatInbox, inboxPaths, listInbox } from './agent-inbox.ts';
-import { readOutcome, requestPaths } from './agent-requests.ts';
+import { outcomeOfSkillTask, readOutcome, requestPaths } from './agent-requests.ts';
 import { randomUUID } from 'node:crypto';
 import type { ApprovalHint } from './agent-contracts.ts';
 
@@ -159,14 +159,29 @@ const control = {
   },
   async submitTask(request) {
     const client = await open();
+    // A builtin skill is an agent of the hub too: its task goes to its runner, in the same ledger.
+    const builtinType = client.builtinTaskType(request.agentId);
+    if (builtinType !== undefined) {
+      if (request.taskType !== builtinType) throw new RuntimeError('invalid_input', `${request.agentId} takes task type ${builtinType}`);
+      assertValid(validateCollectResumesInput(request.input), 'input');
+      const result = await client.control.submit(request.agentId, request.input as CollectResumesInput);
+      return withWorker(result.taskId, { taskId: result.taskId, state: 'queued' });
+    }
     const taskId = randomUUID();
     await client.agentTasks.submit({ taskId, ...request, submittedAt: new Date().toISOString() });
     return withWorker(taskId, { taskId, state: 'queued' });
   },
   async outcome(taskId) {
-    const record = (await (await open()).agentTasks.get(taskId)) ?? readOutcome(requestPaths(agentDataPaths(runtimePaths().tasksDir).dir), taskId);
-    if (!record) throw new RuntimeError('not_found', `no agent task ${taskId}`);
-    return record;
+    const client = await open();
+    const record = (await client.agentTasks.get(taskId)) ?? readOutcome(requestPaths(agentDataPaths(runtimePaths().tasksDir).dir), taskId);
+    if (record) return record;
+    try {
+      const report = await client.control.status(taskId);
+      return outcomeOfSkillTask(report.task, report.outputPath);
+    } catch (error) {
+      if (!isRuntimeError(error, 'not_found')) throw error;
+    }
+    throw new RuntimeError('not_found', `no task ${taskId}`);
   },
   async grants(agentId) {
     const views = listGrants(agentDataPaths(runtimePaths().tasksDir).config, agentId);
