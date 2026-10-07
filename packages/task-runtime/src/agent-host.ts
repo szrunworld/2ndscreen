@@ -501,7 +501,7 @@ async function drive(run: HostRun, child: LineProcess, ctl: DriveControl): Promi
   if (ctl.heartbeatTimeoutMs !== undefined) {
     const limit = ctl.heartbeatTimeoutMs;
     timers.push(setInterval(() => {
-      if (Date.now() - run.lastHeardAt > limit) stop('heartbeat_lost', false);
+      if (run.answering === 0 && Date.now() - run.lastHeardAt > limit) stop('heartbeat_lost', false);
     }, Math.max(10, Math.min(1000, Math.floor(limit / 4)))));
   }
   const wanted = ctl.stillWanted;
@@ -684,8 +684,27 @@ class HostRun {
     }
   }
 
-  /** Handle one line. Requests are answered before the next line is read. */
+  /**
+   * Handle one line. Requests are answered before the next line is read.
+   * While the host works on an answer (an approval a person has not decided,
+   * a question, a slow act) the agent is waiting on the host, not silent:
+   * the heartbeat watchdog does not count that time, and silence counts
+   * again from the answer.
+   */
   async take(line: string): Promise<Verdict> {
+    this.answering += 1;
+    try {
+      return await this.takeLine(line);
+    } finally {
+      this.answering -= 1;
+      this.lastHeardAt = Date.now();
+    }
+  }
+
+  /** Lines the host is still answering; the heartbeat watchdog waits while there are any. */
+  answering = 0;
+
+  private async takeLine(line: string): Promise<Verdict> {
     this.lastHeardAt = Date.now();
     const signal = this.controller.signal;
     const parsed = parseAgentMessage(line, { agentRunId: this.runId, ...(this.inSeq > 0 && { lastSeq: this.inSeq }) });
