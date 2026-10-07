@@ -31,8 +31,10 @@ import {
   type Grant,
   type ProviderPurpose,
   type RuntimeMessage,
+  type UnitRefusalReason,
 } from './agent-contracts.ts';
 import type { StatusBoard } from './agent-status.ts';
+import { unitProblems, type UnitRunResult, type UnitService } from './agent-units.ts';
 import type { ProviderUsageLedger } from './agent-ledgers.ts';
 import {
   DEFAULT_BUDGET,
@@ -54,6 +56,7 @@ import {
   type ObserveOptions,
   type Session,
   type TerminationReason,
+  type Usage,
   type WaitReason,
   type WorkItemStatus,
 } from './contracts.ts';
@@ -209,6 +212,12 @@ export interface AgentHostOptions {
   /** Answers questions; without one a question stays open until the task is cancelled or times out. */
   asker?: Asker;
   providers?: ProviderService;
+  /**
+   * The `run_unit` service (agent-units.ts) and each application's window
+   * profile, which keys the procedures learned for it. Without it run_unit
+   * answers `not_offered`.
+   */
+  units?: { service: UnitService; profiles: ReadonlyMap<string, { id: string; appVersion?: string }> };
   /** Where every provider call is recorded, attributed to the agent, task and run. */
   usage?: ProviderUsageLedger;
   /** Kept current for the whole run: working, idle, blocked on what, finished. */
@@ -768,6 +777,12 @@ class HostRun {
       case 'provider':
         await this.provider(m, signal);
         return 'ok';
+      case 'run_unit': {
+        const session = this.session(m.app);
+        if (!session) return this.breakWith(`${m.type} on ${m.app}, which the agent does not declare`);
+        await this.runUnit(m, task!, session, signal);
+        return 'ok';
+      }
       case 'ask_approval':
         await this.askApproval(m, signal);
         return 'ok';
@@ -799,6 +814,8 @@ class HostRun {
       case 'task_finished':
       case 'task_failed':
         task!.terminal = m;
+        this.options.units?.service.release(task!.taskId);
+        this.unitUsage.delete(task!.taskId);
         if (this.mode === 'task') return 'finished';
         this.hooks.onTaskEnded?.(task!.taskId, this.taskOutcome(task!.taskId, null));
         return 'ok';
@@ -972,6 +989,85 @@ class HostRun {
       this.send({ ...base, ok: false, reason: unavailable ? 'provider_unavailable' : 'error', message: unavailable ? 'the provider is unavailable' : 'the provider call failed' });
     }
   }
+
+  private async runUnit(m: Extract<AgentMessage, { type: 'run_unit' }>, task: TaskState, session: Session, signal: AbortSignal): Promise<void> {
+    const o = this.options;
+    const base = { type: 'unit_result' as const, taskId: m.taskId, requestId: m.requestId };
+    const refuse = (reason: UnitRefusalReason, message: string, observation?: Observation) =>
+      this.send({ ...base, ok: false, reason, message, ...(observation && { observation }) });
+    const units = o.units;
+    const profile = units?.profiles.get(m.app);
+    if (!units || !profile) return refuse('not_offered', 'this runtime does not run units for this application');
+    const problems = unitProblems(m.unit, o.spec.effects);
+    if (problems.forbidden) return refuse('forbidden_effect', 'a unit may not send anything: external-submit goes through act and the check chain');
+    if (problems.errors.length) return refuse('invalid_unit', problems.errors.slice(0, 5).join('; '));
+    const started = this.clock.now();
+    this.emit({ type: 'unit', unit: m.unit.name, unitAttemptId: m.requestId, phase: 'started' }, m.taskId);
+    let result: UnitRunResult;
+    try {
+      result = await units.service.run(
+        {
+          agentId: o.spec.id,
+          agentVersion: o.spec.version,
+          taskId: m.taskId,
+          ...(m.itemId !== undefined && { itemId: m.itemId }),
+          profile,
+          unit: m.unit,
+          bindings: m.bindings ?? {},
+          session,
+          budget: task.budget,
+        },
+        signal,
+      );
+    } catch (error) {
+      if (signal.aborted) return;
+      this.emit({ type: 'unit', unit: m.unit.name, unitAttemptId: m.requestId, phase: 'finished', ok: false }, m.taskId);
+      return refuse('error', error instanceof Error ? error.message.slice(0, 300) : 'the unit failed');
+    }
+    if (signal.aborted) return;
+    // Model calls the unit made, attributed like the agent's own provider calls.
+    const before = this.unitUsage.get(m.taskId);
+    const calls = result.usage.uiModelCalls + result.usage.repairModelCalls - ((before?.uiModelCalls ?? 0) + (before?.repairModelCalls ?? 0));
+    this.unitUsage.set(m.taskId, result.usage);
+    if (calls > 0) {
+      const tokens = (now: Usage['inputTokens'], then: Usage['inputTokens'] | undefined) =>
+        now === 'unknown' || then === 'unknown' ? ('unknown' as const) : now - (then ?? 0);
+      try {
+        await o.usage?.record({
+          at: started.toISOString(),
+          agentId: o.spec.id,
+          runId: this.runId,
+          taskId: m.taskId,
+          providerId: 'runtime.exploration',
+          purpose: 'repair',
+          ok: result.ok,
+          inputTokens: tokens(result.usage.inputTokens, before?.inputTokens),
+          outputTokens: tokens(result.usage.outputTokens, before?.outputTokens),
+          latencyMs: this.clock.now().getTime() - started.getTime(),
+        });
+      } catch {
+        // Accounting that cannot be written must not change the agent's answer.
+      }
+    }
+    this.emit({ type: 'unit', unit: m.unit.name, unitAttemptId: m.requestId, phase: 'finished', ok: result.ok }, m.taskId);
+    if (result.ok) {
+      this.latest.set(m.app, result.observation.snapshotId);
+      this.send({
+        ...base,
+        ok: true,
+        route: result.route,
+        observation: result.observation,
+        check: { ok: result.check.ok, evidence: result.check.evidence },
+        ...(result.procedure && { procedure: result.procedure }),
+      });
+    } else {
+      if (result.observation) this.latest.set(m.app, result.observation.snapshotId);
+      refuse(result.reason, result.message, result.observation);
+    }
+  }
+
+  /** What each task's units had spent at their last answer, to record only what is new. */
+  private readonly unitUsage = new Map<string, Usage>();
 
   private async askApproval(m: Extract<AgentMessage, { type: 'ask_approval' }>, signal: AbortSignal): Promise<void> {
     const o = this.options;

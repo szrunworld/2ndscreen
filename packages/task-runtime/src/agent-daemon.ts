@@ -19,6 +19,7 @@ import { createFileTaskLedger, outcomeRecord, requestPaths, takeTaskRequests, ty
 import { createInboxApprover, createInboxAsker, inboxPaths } from './agent-inbox.ts';
 import { agentDataPaths, appendJsonLine, createFileEffectLedger, createFileUsageLedger, prepareAgentDataDir, type AgentDataPaths } from './agent-ledgers.ts';
 import { createProviderService } from './agent-providers.ts';
+import type { UnitService } from './agent-units.ts';
 import { createFileStatusPersister, createStatusBoard, type StatusBoard } from './agent-status.ts';
 import { DEFAULT_BUDGET, RuntimeError, systemClock, type Clock, type LineProcessSpawner, type Session, type WindowBinding, type WindowProfile } from './contracts.ts';
 
@@ -54,6 +55,8 @@ export interface AgentHostDaemonOptions {
   /** Timing knobs for every resident agent, for tests. */
   resident?: Pick<ResidentAgentOptions, 'heartbeatTimeoutMs' | 'workHoursPollMs' | 'maxRestarts' | 'restartDelaysMs' | 'killGraceMs'>;
   fetch?: typeof fetch;
+  /** The run_unit service (agent-units.ts); without it agents' run_unit answers not_offered. */
+  units?: UnitService;
   /**
    * Where tasks are taken from and their outcomes kept: the task database in
    * the worker. Default: the request and outcome files under agents/. Either
@@ -180,6 +183,11 @@ export async function startAgentHostDaemon(options: AgentHostDaemonOptions): Pro
     log(`${pkg.spec.id} ${pkg.spec.version}: runs tasks on request, from ${pkg.dir}`);
   }
 
+  const unitsFor = (pkg: AgentPackage) =>
+    options.units
+      ? { units: { service: options.units, profiles: new Map([...pkg.profiles].map(([bundleId, p]) => [bundleId, { id: p.id, ...(p.appVersion !== undefined && { appVersion: p.appVersion }) }] as const)) } }
+      : {};
+
   async function openFor(pkg: AgentPackage, entry: AgentEntryConfig, signal: AbortSignal): Promise<Map<string, Session>> {
     const { spec } = pkg;
     const opened = new Map<string, Session>();
@@ -226,6 +234,7 @@ export async function startAgentHostDaemon(options: AgentHostDaemonOptions): Pro
           approver,
           asker,
           providers,
+          ...unitsFor(pkg),
           usage,
           status: board,
           workHours: (now) => state.hours.inHours(now),
@@ -374,6 +383,7 @@ export async function startAgentHostDaemon(options: AgentHostDaemonOptions): Pro
       approver,
       asker,
       providers,
+      ...unitsFor(pkg),
       usage,
       status: board,
       workHours: (now) => state.hours.inHours(now),

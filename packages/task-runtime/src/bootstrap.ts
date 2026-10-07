@@ -27,6 +27,7 @@ import {
 } from './contracts.ts';
 import { ActorRegistry, VERIFY_KILL_GRACE_MS, deadWorkers, liveWorkers, pruneClosedRecords, verifyWorkerStopped } from './actors.ts';
 import { createAgentHosting, type AgentHosting } from './agent-hosting.ts';
+import { createUnitService } from './agent-units.ts';
 import { createAgentBridge, createLineProcessSpawner } from './adapters/agent-bridge.ts';
 import { createLocalVision, type LocalVisionClient } from './adapters/local-vision.ts';
 import { createCommandRunner, createSecondScreenAdapter } from './adapters/second-screen.ts';
@@ -447,12 +448,20 @@ export function createWorkerAgentHosting(
     if (!m) managers.set(key, (m = createSessionManager({ adapter: worker.adapter, leases: worker.store, policy: { submitAllowed, foregroundAllowed } })));
     return m;
   };
+  // run_unit for agents: the runner's procedures, learning and recovery, on the same ledger. The
+  // bridge is made only when a unit needs exploration, and its process is on the actor record.
+  const units = createUnitService({
+    engine: createProcedureEngine({ repository: worker.store, rule: DEFAULT_PROMOTION }),
+    learner: createLearner({ repository: worker.store }),
+    explorer: async () => createAgentBridge({ cli: config.cli, spawn: worker.registry.wrap(createLineProcessSpawner()) }),
+  });
   // Agents run with this Node unless their package bundles a runtime; python only when the host names one.
   const interpreters: Record<string, string> = { node: config.node };
   if (process.env.SECONDSCREEN_AGENT_PYTHON) interpreters.python = process.env.SECONDSCREEN_AGENT_PYTHON;
   return createAgentHosting({
     tasksDir: config.paths.tasksDir,
     tasks: worker.store.agentTasks,
+    units,
     openSession: (r, signal) =>
       manager(r.submitAllowed, r.foregroundAllowed).open({ taskId: `agent:${r.agentId}`, profile: r.profile, takeOver: r.takeOver, leaseTtlMs: 60_000 }, signal),
     quitApp: (binding) => worker.adapter.quitApp!(binding),

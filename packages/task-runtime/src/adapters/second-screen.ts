@@ -232,13 +232,33 @@ export function createSecondScreenAdapter(options: SecondScreenAdapterOptions): 
     if (first.ok) return;
     if (classifyCliError(first.error ?? '') !== 'capability_missing') throw cliError('screen list', first);
     if (!options.app) throw new RuntimeError('capability_missing', `no 2ndscreen side instance answers on ${options.socket}, and no app to start one`);
-    const opened = await tool('open', ['-g', '-n', '--env', `SECONDSCREEN_SOCKET=${options.socket}`, options.app], signal);
-    if (opened.code !== 0) throw new RuntimeError('capability_missing', `cannot start 2ndscreen: ${(opened.stderr || opened.stdout).trim()}`);
+    // One started earlier may still be coming up, or be stuck: another would only pile up beside it.
+    const existing = await startedInstance(signal);
+    if (existing === undefined) {
+      const opened = await tool('open', ['-g', '-n', '--env', `SECONDSCREEN_SOCKET=${options.socket}`, options.app], signal);
+      if (opened.code !== 0) throw new RuntimeError('capability_missing', `cannot start 2ndscreen: ${(opened.stderr || opened.stdout).trim()}`);
+    }
     for (let attempt = 0; attempt < INSTANCE_POLLS; attempt++) {
       await delay(INSTANCE_POLL_MS, signal);
       if ((await cli(['screen', 'list'], signal)).ok) return;
     }
+    if (existing !== undefined)
+      throw new RuntimeError('timeout', `the 2ndscreen side instance (pid ${existing}) on ${options.socket} is not answering; no second one is started`, { pid: existing });
     throw new RuntimeError('timeout', 'the 2ndscreen side instance did not start');
+  }
+
+  /** The pid of a side instance of options.app already running for this socket, if ps shows one. */
+  async function startedInstance(signal?: AbortSignal): Promise<number | undefined> {
+    if (!options.app) return undefined;
+    // `-E` appends each process's environment to its command line (own processes only).
+    const out = await tool('ps', ['-xwwE', '-o', 'pid=,command='], signal);
+    if (out.code !== 0) return undefined;
+    const executable = `${options.app.replace(/\/+$/, '')}/Contents/MacOS/`;
+    for (const line of out.stdout.split('\n')) {
+      const m = /^\s*(\d+)\s+(.*)$/.exec(line);
+      if (m && m[2]!.startsWith(executable) && m[2]!.includes(` SECONDSCREEN_SOCKET=${options.socket}`)) return Number(m[1]);
+    }
+    return undefined;
   }
 
   async function runningPid(bundleId: string, signal?: AbortSignal): Promise<number | undefined> {

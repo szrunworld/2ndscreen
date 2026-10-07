@@ -45,7 +45,20 @@ function slotter(bindings: Bindings): <T>(value: T) => T {
   const entries = Object.entries(bindings)
     .filter(([, v]) => v.trim().length >= MIN_SLOT_VALUE)
     .sort((a, b) => b[1].length - a[1].length);
-  if (entries.length === 0) return (v) => v;
+  // A short value is a slot only where it is the whole text, as a key labelled "7" for digit 7;
+  // inside longer text it would match by accident.
+  const whole = new Map(Object.entries(bindings).filter(([, v]) => v.trim().length > 0 && v.trim().length < MIN_SLOT_VALUE).map(([name, v]) => [v, name]));
+  const exact = (s: string): string | undefined => (whole.has(s) ? `{{${whole.get(s)}}}` : undefined);
+  if (entries.length === 0) {
+    if (whole.size === 0) return (v) => v;
+    const walkShort = (v: unknown, field?: string): unknown => {
+      if (typeof v === 'string') return field && TEXT_FIELDS.has(field) && !PATTERN_FIELDS.has(field) ? (exact(v) ?? v) : v;
+      if (Array.isArray(v)) return v.map((x) => walkShort(x));
+      if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walkShort(x, k)]));
+      return v;
+    };
+    return <T>(value: T) => walkShort(value) as T;
+  }
   const build = (escape: boolean) => {
     const byText = new Map(entries.map(([name, v]) => [escape ? escapePattern(v) : v, name]));
     const regex = new RegExp([...byText.keys()].map(escapePattern).join('|'), 'g');
@@ -56,7 +69,7 @@ function slotter(bindings: Bindings): <T>(value: T) => T {
   const walk = (v: unknown, field?: string): unknown => {
     if (typeof v === 'string') {
       if (!field || !TEXT_FIELDS.has(field)) return v;
-      return PATTERN_FIELDS.has(field) ? pattern(v) : plain(v);
+      return PATTERN_FIELDS.has(field) ? pattern(v) : (exact(v) ?? plain(v));
     }
     if (Array.isArray(v)) return v.map((x) => walk(x));
     if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x, k)]));

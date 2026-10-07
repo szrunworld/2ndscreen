@@ -19,6 +19,7 @@ import {
   type HostEvent,
 } from '../src/agent-host.ts';
 import { createStatusBoard } from '../src/agent-status.ts';
+import type { UnitRunRequest, UnitService } from '../src/agent-units.ts';
 import { createFileEffectLedger, createMemoryUsageLedger, summarizeUsage } from '../src/agent-ledgers.ts';
 import { DEFAULT_BUDGET, RuntimeError, isRuntimeError, type ActionRequest, type ActionStatus, type Clock, type Session, type WindowGeometry } from '../src/contracts.ts';
 
@@ -58,6 +59,7 @@ function summarize(r) {
     ? { type: r.type, refusal: r.refusal.reason, wait: r.refusal.nextSteps.find((s) => s.kind === 'wait')?.ms ?? null }
     : { type: r.type, status: r.result.status };
   if (r.type === 'provider_result') return { type: r.type, ok: r.ok, reason: r.reason ?? null, output: r.output ?? null };
+  if (r.type === 'unit_result') return { type: r.type, ok: r.ok, route: r.route ?? null, reason: r.reason ?? null, procedure: r.procedure?.status ?? null };
   return { type: r.type };
 }
 async function run() {
@@ -641,4 +643,59 @@ test('limits recorded in the file ledger survive a new host, and an unreadable l
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test('run_unit goes to the unit service with the app\'s window profile; a sending unit or one without a service is refused', async () => {
+  const unit = {
+    name: 'open_chat',
+    goal: '打开与 {{candidate.name}} 的沟通',
+    allowedEffects: ['navigation'],
+    postconditions: [{ kind: 'text', pattern: '{{candidate.name}}', present: true }],
+  };
+  const seen: UnitRunRequest[] = [];
+  const service: UnitService = {
+    async run(request) {
+      seen.push(request);
+      const observation = await request.session.observe({ elements: true });
+      return {
+        ok: true,
+        route: 'repaired',
+        observation,
+        check: { ok: true, evidence: ['text found'] },
+        procedure: { id: 'p1', version: 1, status: 'trial' },
+        usage: { uiModelCalls: 2, repairModelCalls: 0, analysisModelCalls: 0, inputTokens: 300, outputTokens: 20, screenshots: 0, ocrCalls: 0, replayedUnits: 0, exploredUnits: 1, localRecoveries: 0, elapsedMs: 5 },
+      };
+    },
+    usage: () => {
+      throw new Error('unused');
+    },
+    release: () => undefined,
+  };
+  const usage = createMemoryUsageLedger();
+  const { outcome, report, events } = await runEcho(
+    {
+      steps: [
+        { type: 'run_unit', app: BOSS, unit, bindings: { 'candidate.name': '陈一' }, itemId: 'cand-1' },
+        { type: 'run_unit', app: BOSS, unit: { ...unit, allowedEffects: ['navigation', 'external-submit'] } },
+        { type: 'run_unit', app: BOSS, unit: { ...unit, postconditions: [] } },
+        { type: 'run_unit', app: MAIL, unit },
+      ],
+    },
+    { units: { service, profiles: new Map([[BOSS, { id: 'boss-macos-1440x900', appVersion: '4.2' }]]) }, usage },
+  );
+  assert.equal(outcome.status, 'succeeded', JSON.stringify(outcome));
+  assert.deepEqual(report!.responses, [
+    { type: 'unit_result', ok: true, route: 'repaired', reason: null, procedure: 'trial' },
+    { type: 'unit_result', ok: false, route: null, reason: 'forbidden_effect', procedure: null },
+    { type: 'unit_result', ok: false, route: null, reason: 'invalid_unit', procedure: null },
+    { type: 'unit_result', ok: false, route: null, reason: 'not_offered', procedure: null },
+  ]);
+  assert.equal(seen.length, 1, 'only the valid unit reached the service');
+  assert.deepEqual([seen[0]!.agentId, seen[0]!.taskId, seen[0]!.itemId, seen[0]!.profile.id, seen[0]!.bindings], ['test.echo', 't1', 'cand-1', 'boss-macos-1440x900', { 'candidate.name': '陈一' }]);
+  // The model calls the unit made are on the agent's account, like its own provider calls.
+  assert.deepEqual(usage.all.map((r) => [r.providerId, r.purpose, r.inputTokens, r.taskId]), [['runtime.exploration', 'repair', 300, 't1']]);
+  assert.deepEqual(events.filter((e) => e.type === 'unit').map((e) => e.type === 'unit' && [e.unit, e.phase, e.ok ?? null]), [
+    ['open_chat', 'started', null],
+    ['open_chat', 'finished', true],
+  ]);
 });

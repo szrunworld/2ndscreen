@@ -212,6 +212,16 @@ test('every agent message type parses when well-formed', () => {
     { seq: 13, type: 'task_finished', taskId: 't1', status: 'succeeded', terminationReason: 'target_reached' },
     { seq: 14, type: 'task_failed', taskId: 't1', reason: 'provider_unavailable', message: 'no model' },
     { seq: 15, type: 'agent_stopped', reason: 'work_hours' },
+    {
+      seq: 16,
+      type: 'run_unit',
+      taskId: 't1',
+      requestId: 'r9',
+      app: 'com.zhipin.www',
+      unit: { name: 'open_chat', goal: '打开沟通', allowedEffects: ['navigation'], postconditions: [{ kind: 'text', pattern: '{{candidate.name}}', present: true }] },
+      bindings: { 'candidate.name': '陈一' },
+      itemId: 'cand-1',
+    },
   ];
   let last = 0;
   for (const m of messages) {
@@ -324,6 +334,8 @@ test('every runtime message type parses when well-formed', () => {
     { seq: 13, type: 'cancel', taskId: 't1' },
     { seq: 14, type: 'stop' },
     { seq: 15, type: 'user_answer', taskId: 't1', questionId: 'q1', answer: '前端' },
+    { seq: 16, type: 'unit_result', taskId: 't1', requestId: 'r9', ok: true, route: 'replay', observation: { snapshotId: 's2', window: {} }, check: { ok: true, evidence: ['text found'] }, procedure: { id: 'p1', version: 2, status: 'stable' } },
+    { seq: 17, type: 'unit_result', taskId: 't1', requestId: 'r10', ok: false, reason: 'forbidden_effect', message: 'a unit may not send anything' },
   ];
   let last = 0;
   for (const m of messages) {
@@ -348,4 +360,12 @@ test('runtime messages are checked for the same base and shape rules', () => {
   refuseRuntime({ seq: 1, type: 'stop', agentRunId: 'other' }, 'another agent run');
   refuseRuntime({ seq: 1, type: 'teleport' }, 'type is not a runtime message type');
   refuseRuntime({ seq: 1, type: 'user_answer', taskId: 't', answer: 'x' }, 'questionId is required');
+});
+
+test('run_unit needs a request, an app and a unit object; unit_result says ok with a route, or why not', () => {
+  refuse({ seq: 1, type: 'run_unit', taskId: 't1', requestId: 'r1', app: 'com.zhipin.www' }, 'unit must be an object');
+  refuse({ seq: 1, type: 'run_unit', taskId: 't1', requestId: 'r1', app: 'com.zhipin.www', unit: {}, bindings: { n: 1 } }, 'bindings must map names to strings');
+  refuse({ seq: 1, type: 'run_unit', requestId: 'r1', app: 'com.zhipin.www', unit: {} }, 'run_unit must carry taskId');
+  refuseRuntime({ seq: 1, type: 'unit_result', taskId: 't1', requestId: 'r1', ok: true, route: 'guessed', observation: { snapshotId: 's' }, check: { ok: true, evidence: [] } }, 'route must be');
+  refuseRuntime({ seq: 1, type: 'unit_result', taskId: 't1', requestId: 'r1', ok: false, reason: 'nope', message: '' }, 'reason is not a unit failure reason');
 });
