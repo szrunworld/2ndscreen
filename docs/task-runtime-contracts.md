@@ -411,3 +411,19 @@ Swift 侧：`Sources/SecondScreenCore/LocalVision.swift`（实现与协议）、
 | `listInbox` / `formatInbox` | 最早的在前；审批一行同时列出 Runtime 算出的后果（今日已用与剩余、距上次、该目标是否有过不明结果、是否在时段内），不只是 agent 的说法 |
 | 命令行与 MCP | `2ndscreen task inbox`、`approve INBOX_ID`、`deny INBOX_ID [--hint …]… [--text …]`、`answer INBOX_ID TEXT`；MCP `task_inbox`、`task_approve`、`task_deny`、`task_answer` |
 
+### Agent 宿主进程（`agent-daemon.ts`、`agents-main.ts`、`agent-config.ts`、`agent-providers.ts`）
+
+长期运行，维持 `<tasksDir>/agents/config.json` 里启用的常驻 agent。`2ndscreen task host start|stop|status` 启停，MCP `task_host`。打包为 `agents.mjs`。
+
+| 项 | 规定 |
+| --- | --- |
+| 单实例 | `claimHost` 以 `agents/host.pid` 独占（O_EXCL）；死进程留下的文件被接管，活着的宿主让第二个以 `conflict` 退出 |
+| 配置 | `validateHostConfig` 一次列出全部问题。每个条目：绝对路径的包、启用、账号（平台与账号键）、可选 `takeOver`、授权、上限、工作时段。授权必须写 `expiresAt` 或 `durable: true`，不允许含糊。provider 只支持 `openai-chat`，`baseUrl` 必须是不带凭据的 https（仅 localhost 可用 http），key 只给环境变量名 |
+| 包 | `loadAgentPackage`：`agent.json` 校验通过且 `runtimeContract` 满足；每个应用一份 `profiles/macos/<id>.json`，id、bundle 与尺寸相符且实际路径在包内；执行体程序在包内 |
+| 会话 | 每次常驻运行开始时打开、结束时关闭（`keepWindow: true`，应用留在私有屏上保持登录，租约交回）；会话打不开计为一次 `no_session` 故障 |
+| 收尾 | runtime 自己启动的应用在宿主最终停止时由 `quitApp` 结束（核对 bundle 与启动时间）；不结束的话，私有屏回收时窗口会被挪到用户屏。适配器 `bindApp` 在启动应用后失败，同样立即结束该应用 |
+| 服务 | 收件箱审批与提问、限额账本、provider（key 来自宿主环境，只发往配置的地址，拒绝重定向）、用量账本、状态看板、审计日志 `agents/audit.jsonl`（每个外发的放行与拒绝） |
+| 日志 | `agents/host.log`；每次运行结束写明原因（`detail`）：协议违规时解析器的报错，观察失败时窗口的错误。观察失败记为 `error`，不再记为协议违规 |
+| 已知限制 | 适配器把宽度不足窗口配置一半的窗口视为加载窗口（按 BOSS 直聘的启动画面定）。固定尺寸的小窗口应用（如计算器 198×350）需要把窗口配置写到实际尺寸附近，否则会话一直打不开 |
+| 尚未覆盖 | 任务型 agent 由宿主按请求运行、配置热加载、`grant`/`revoke` 命令 |
+

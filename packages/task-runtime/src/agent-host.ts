@@ -17,6 +17,7 @@ import { isAbsolute, resolve, sep } from 'node:path';
 import {
   AGENT_PROTOCOL,
   AGENT_PROTOCOL_VERSION,
+  type AgentAccount,
   type AgentMode,
   type ScheduleInfo,
   stricterApproval,
@@ -39,7 +40,6 @@ import {
   encodeJsonLine,
   isRuntimeError,
   systemClock,
-  type AccountScope,
   type Action,
   type ActionResult,
   type ActionStatus,
@@ -198,7 +198,7 @@ export interface AgentHostOptions {
   /** Absolute directory of the installed package. */
   packageDir: string;
   spec: AgentSpec;
-  account: AccountScope;
+  account: AgentAccount;
   /** One open session per application the spec declares, by bundle id, held by the caller for the whole run. */
   sessions: ReadonlyMap<string, Session>;
   screenId: string;
@@ -517,6 +517,7 @@ async function drive(run: HostRun, child: LineProcess, ctl: DriveControl): Promi
         if (stopping === 'protocol' || run.broken) continue; // keep draining so the child never blocks
         const verdict = await run.take(line);
         if (verdict === 'protocol') stop('protocol', false);
+        else if (verdict === 'failed') stop('error', false);
         else if (verdict === 'finished' || verdict === 'stopped') {
           try {
             child.closeInput();
@@ -542,7 +543,7 @@ async function drive(run: HostRun, child: LineProcess, ctl: DriveControl): Promi
 // ---------------------------------------------------------------------------
 // The conversation with one process
 
-type Verdict = 'ok' | 'protocol' | 'finished' | 'stopped';
+type Verdict = 'ok' | 'protocol' | 'failed' | 'finished' | 'stopped';
 
 interface TaskState {
   taskId: string;
@@ -581,6 +582,9 @@ class HostRun {
   lastHeardAt = Date.now();
   stopped?: Extract<AgentMessage, { type: 'agent_stopped' }>;
   broken = false;
+  /** Why the run broke or failed, for logs and run records. */
+  problem?: string;
+  private lastObserveError?: string;
 
   private readonly options: AgentHostOptions;
   private readonly clock: Clock;
@@ -685,14 +689,14 @@ class HostRun {
     this.lastHeardAt = Date.now();
     const signal = this.controller.signal;
     const parsed = parseAgentMessage(line, { agentRunId: this.runId, ...(this.inSeq > 0 && { lastSeq: this.inSeq }) });
-    if (!parsed.ok) return this.breakWith();
+    if (!parsed.ok) return this.breakWith(`malformed line: ${parsed.errors.slice(0, 3).join('; ')}`);
     const m = parsed.value;
     this.inSeq = m.seq;
-    if (this.stopped) return this.breakWith();
+    if (this.stopped) return this.breakWith(`${m.type} after agent_stopped`);
     // A task agent has one task; nothing may follow its end.
-    if (this.mode === 'task' && [...this.tasks.values()].some((t) => t.terminal)) return this.breakWith();
+    if (this.mode === 'task' && [...this.tasks.values()].some((t) => t.terminal)) return this.breakWith(`${m.type} after the task ended`);
     const task = 'taskId' in m && m.taskId !== undefined ? this.tasks.get(m.taskId) : undefined;
-    if ('taskId' in m && m.taskId !== undefined && (!task || task.terminal)) return this.breakWith();
+    if ('taskId' in m && m.taskId !== undefined && (!task || task.terminal)) return this.breakWith(`${m.type} for ${task ? 'an ended' : 'an unknown'} task ${m.taskId}`);
     const board = this.options.status;
     // A note without a question blocks the run only until the agent moves on.
     if (this.openNote !== undefined && m.type !== 'ask_user') {
@@ -704,21 +708,21 @@ class HostRun {
     switch (m.type) {
       case 'observe': {
         const session = this.session(m.app);
-        if (!session) return this.breakWith();
+        if (!session) return this.breakWith(`${m.type} on ${m.app}, which the agent does not declare`);
         const opts: ObserveOptions = {
           ...(m.elements !== undefined && { elements: m.elements }),
           ...(m.screenshot !== undefined && { screenshot: m.screenshot !== false }),
           ...(typeof m.screenshot === 'object' && { region: m.screenshot.region }),
         };
         const observation = await this.observe(session, opts, signal);
-        if (!observation) return signal.aborted ? 'ok' : this.breakWith();
+        if (!observation) return signal.aborted ? 'ok' : this.failWith(this.lastObserveError ?? `cannot observe ${m.app}`);
         this.latest.set(m.app, observation.snapshotId);
         this.send({ type: 'observation', taskId: m.taskId, requestId: m.requestId, app: m.app, observation });
         return 'ok';
       }
       case 'wait': {
         const session = this.session(m.app);
-        if (!session) return this.breakWith();
+        if (!session) return this.breakWith(`${m.type} on ${m.app}, which the agent does not declare`);
         let check;
         try {
           check = await session.waitFor(m.wait, signal);
@@ -727,7 +731,7 @@ class HostRun {
           check = { ok: false, evidence: [isRuntimeError(error) ? error.code : 'error'] };
         }
         const observation = await this.observe(session, { elements: true }, signal);
-        if (!observation) return signal.aborted ? 'ok' : this.breakWith();
+        if (!observation) return signal.aborted ? 'ok' : this.failWith(this.lastObserveError ?? `cannot observe ${m.app}`);
         this.latest.set(m.app, observation.snapshotId);
         this.send({
           type: 'observation',
@@ -780,7 +784,8 @@ class HostRun {
         this.hooks.onTaskEnded?.(task!.taskId, this.taskOutcome(task!.taskId, null));
         return 'ok';
       case 'create_task': {
-        if (this.mode === 'task' || !(m.taskType in this.options.spec.tasks)) return this.breakWith();
+        if (this.mode === 'task' || !(m.taskType in this.options.spec.tasks))
+          return this.breakWith(this.mode === 'task' ? 'create_task from a task agent' : `create_task for undeclared task type ${m.taskType}`);
         const taskId = this.hooks.createTask ? await this.hooks.createTask({ taskType: m.taskType, input: m.input }) : this.hooks.newId();
         this.addTask({ taskId, taskType: m.taskType, input: m.input, budget: this.hooks.defaultBudget ?? DEFAULT_BUDGET, origin: 'agent' });
         this.send({ type: 'task_created', requestId: m.requestId, taskId });
@@ -788,15 +793,22 @@ class HostRun {
         return 'ok';
       }
       case 'agent_stopped':
-        if (this.mode === 'task') return this.breakWith();
+        if (this.mode === 'task') return this.breakWith('agent_stopped from a task agent');
         this.stopped = m;
         return 'stopped';
     }
   }
 
-  private breakWith(): Verdict {
+  private breakWith(problem: string): Verdict {
     this.broken = true;
+    this.problem ??= problem;
     return 'protocol';
+  }
+
+  /** The desktop failed under the agent, e.g. its window went away: an error, not the agent's fault. */
+  private failWith(problem: string): Verdict {
+    this.problem ??= problem;
+    return 'failed';
   }
 
   private session(app: string): Session | undefined {
@@ -806,8 +818,9 @@ class HostRun {
   private async observe(session: Session, opts: ObserveOptions, signal: AbortSignal): Promise<Observation | undefined> {
     try {
       return await session.observe(opts, signal);
-    } catch {
+    } catch (error) {
       // The window is gone or the run is stopping; the caller ends the task either way.
+      this.lastObserveError = error instanceof Error ? error.message : String(error);
       return undefined;
     }
   }
@@ -1003,7 +1016,7 @@ class HostRun {
     }
     if (this.askedQuestions.has(m.questionId)) {
       // One answer per question id; asking again under the same id is a protocol slip.
-      this.broken = true;
+      this.breakWith(`question ${m.questionId} asked twice`);
       return;
     }
     this.askedQuestions.add(m.questionId);
@@ -1040,7 +1053,7 @@ class HostRun {
     const end = t.terminal;
     if (!end || this.mode === 'task') {
       const failure = stopped ?? (this.broken ? 'protocol' : undefined);
-      if (failure) return { status: 'failed', failure, ...base };
+      if (failure) return { status: 'failed', failure, ...(this.problem !== undefined && { message: this.problem }), ...base };
     }
     if (!end) return { status: 'failed', failure: 'exited', ...base };
     if (end.type === 'task_failed') return { status: 'failed', failure: end.reason, message: end.message, ...base };
@@ -1052,7 +1065,13 @@ class HostRun {
 // ---------------------------------------------------------------------------
 // Resident agents
 
-export type ResidentRunEnd = 'work_hours' | 'cancelled' | 'crashed' | 'protocol' | 'heartbeat_lost' | 'stopped_itself' | 'error';
+export type ResidentRunEnd = 'work_hours' | 'cancelled' | 'crashed' | 'protocol' | 'heartbeat_lost' | 'stopped_itself' | 'error' | 'no_session';
+
+/** Sessions opened for each process run of a resident agent and closed after it, so no app is held outside the hours. */
+export interface SessionSource {
+  open(signal: AbortSignal): Promise<ReadonlyMap<string, Session>>;
+  close(sessions: ReadonlyMap<string, Session>): Promise<void>;
+}
 
 /** One process lifetime of a resident agent. */
 export interface ResidentRunRecord {
@@ -1063,6 +1082,8 @@ export interface ResidentRunRecord {
   exitCode: number | null;
   /** Tasks still open when the process ended; they go on in the next one. */
   carried: number;
+  /** What went wrong, when the runtime knows: a malformed line, a window that went away. */
+  detail?: string;
 }
 
 export interface ResidentOutcome {
@@ -1071,7 +1092,10 @@ export interface ResidentOutcome {
   runs: ResidentRunRecord[];
 }
 
-export interface ResidentAgentOptions extends AgentHostOptions {
+export interface ResidentAgentOptions extends Omit<AgentHostOptions, 'sessions'> {
+  /** Sessions held for the agent's whole life; or give `sessionSource` to open them per run. */
+  sessions?: ReadonlyMap<string, Session>;
+  sessionSource?: SessionSource;
   /** Stops the agent for good. */
   signal?: AbortSignal;
   /** No line for this long and the agent counts as lost. Default: twice the manifest's idlePollSeconds. */
@@ -1133,7 +1157,8 @@ const sleepFor = (ms: number, signal: AbortSignal): Promise<void> =>
 export function startResidentAgent(options: ResidentAgentOptions): ResidentAgent {
   const { spec } = options;
   if (spec.mode !== 'resident' || !spec.schedule) throw new RuntimeError('invalid_input', 'startResidentAgent runs resident agents with a schedule');
-  checkSessions(options);
+  if (options.sessions) checkSessions({ ...options, sessions: options.sessions });
+  else if (!options.sessionSource) throw new RuntimeError('invalid_input', 'a resident agent needs sessions or a sessionSource');
   const command = agentCommand(options.packageDir, spec, options.interpreters);
   const clock = options.clock ?? systemClock;
   const newId = options.newId ?? (() => crypto.randomUUID());
@@ -1188,7 +1213,45 @@ export function startResidentAgent(options: ResidentAgentOptions): ResidentAgent
           continue;
         }
         const runId = newId();
-        const run = new HostRun(options, clock, runId, 'resident', {
+        let sessions = options.sessions;
+        if (!sessions) {
+          try {
+            sessions = await options.sessionSource!.open(stopper.signal);
+            checkSessions({ ...options, sessions });
+          } catch (error) {
+            if (sessions) await options.sessionSource!.close(sessions).catch(() => undefined);
+            if (stopper.signal.aborted) break;
+            const at = clock.now().toISOString();
+            const record: ResidentRunRecord = {
+              runId,
+              startedAt: at,
+              endedAt: at,
+              end: 'no_session',
+              exitCode: null,
+              carried: carried.length,
+              detail: error instanceof Error ? error.message : String(error),
+            };
+            runs.push(record);
+            try {
+              options.onRunEnded?.(record);
+            } catch {
+              // The caller's.
+            }
+            strikes += 1;
+            if (strikes > maxRestarts) {
+              gaveUp = true;
+              break;
+            }
+            try {
+              await sleep(delays[Math.min(strikes - 1, delays.length - 1)]!, stopper.signal);
+            } catch {
+              break;
+            }
+            continue;
+          }
+        }
+        const runOptions: AgentHostOptions = { ...options, sessions };
+        const run = new HostRun(runOptions, clock, runId, 'resident', {
           newId,
           unknownTargets,
           ...(options.createTask && { createTask: options.createTask }),
@@ -1219,6 +1282,7 @@ export function startResidentAgent(options: ResidentAgentOptions): ResidentAgent
         });
         current.live = false;
         current = undefined;
+        if (!options.sessions) await options.sessionSource!.close(sessions).catch(() => undefined);
 
         let end: ResidentRunEnd;
         switch (result.stopping) {
@@ -1234,9 +1298,17 @@ export function startResidentAgent(options: ResidentAgentOptions): ResidentAgent
             end = run.stopped ? (run.stopped.reason === 'work_hours' && !inHours() ? 'work_hours' : 'stopped_itself') : 'crashed';
         }
         carried = run.activeTasks();
-        const record: ResidentRunRecord = { runId, startedAt, endedAt: clock.now().toISOString(), end, exitCode: result.exitCode, carried: carried.length };
+        const record: ResidentRunRecord = {
+          runId,
+          startedAt,
+          endedAt: clock.now().toISOString(),
+          end,
+          exitCode: result.exitCode,
+          carried: carried.length,
+          ...(run.problem !== undefined && { detail: run.problem }),
+        };
         runs.push(record);
-        options.status?.finish(runId, { ok: end === 'work_hours' || end === 'cancelled', ...(end !== 'work_hours' && end !== 'cancelled' && { failure: end }) });
+        options.status?.finish(runId, { ok: end === 'work_hours' || end === 'cancelled', ...(end !== 'work_hours' && end !== 'cancelled' && { failure: run.problem ? `${end}: ${run.problem}` : end }) });
         try {
           options.onRunEnded?.(record);
         } catch {

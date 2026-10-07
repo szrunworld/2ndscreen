@@ -16,7 +16,6 @@ import {
   EFFECT_CLASSES,
   validateAction,
   validateWaitSpec,
-  type AccountScope,
   type Action,
   type ActionResult,
   type ArtifactCompleteness,
@@ -34,6 +33,18 @@ import {
 } from './contracts.ts';
 
 export const AGENT_SPEC_SCHEMA_VERSION = 2;
+
+/**
+ * The account an agent works in, on whatever platform its app belongs to:
+ * a key the user chose (letters, digits, '.', '_', '-'), never read from a
+ * window. The BOSS task runtime's AccountScope is one of these.
+ */
+export interface AgentAccount {
+  platform: string;
+  accountKey: string;
+  binding?: 'observed' | 'explicit';
+  displayHint?: string;
+}
 export const AGENT_PROTOCOL = 'agent-jsonl/1';
 export const AGENT_PROTOCOL_VERSION = 1;
 /** What `runtimeContract` ranges are matched against. Bumped with breaking changes to this file. */
@@ -492,7 +503,7 @@ export type RuntimeMessage = MessageBase &
     | {
         type: 'agent_start';
         agent: { id: string; version: string; mode: AgentMode };
-        account?: AccountScope;
+        account?: AgentAccount;
         grants: Grant[];
         schedule?: ScheduleInfo;
         /** A summary the agent may show; never usable to authenticate. */

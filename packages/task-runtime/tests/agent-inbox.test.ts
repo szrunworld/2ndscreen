@@ -139,6 +139,7 @@ test('the inbox commands check their words before anything is decided', async ()
     approve: async (id: string) => (calls.push(['approve', id]), {}),
     deny: async (id: string, g: unknown) => (calls.push(['deny', id, g]), {}),
     answer: async (id: string, text: string) => (calls.push(['answer', id, text]), {}),
+    host: unused,
   } as unknown as TaskControl & AgentViewControl;
   const cli = async (words: string[]) => {
     const out: string[] = [];

@@ -361,6 +361,7 @@ agent → Runtime：
 - **Provider 与身份的令牌**：个人用户本地持有 key；组织用户走组织的服务端代理。两条路径都通过同一个 provider 服务，agent 无感。profile 的 endpoint 白名单和 identity 的受众限定是防止凭据被 agent 借道外传的唯一控制，必须和限额一样不可由 agent 放宽。
 - **协议版本化**：`agent-jsonl/1` 冻结后只增消息类型，不改已有字段；破坏性变更升 `/2`，Runtime 同时支持相邻两个版本一个发布周期。
 - **与 Bridge 的关系**：Bridge 继续作为 Runtime 内部的探索器存在；是否把它也改写为一个 `builtin` agent，等 P1 之后看是否有收益。
+- **主窗口判定**：适配器把宽度不足窗口配置一半的窗口当作加载窗口，这条规则按 BOSS 直聘定。2026-10-07 计算器验收时，198 宽的固定窗口被误判，只能靠把窗口配置写到实际尺寸附近绕过。通用 agent 需要由窗口配置声明最小主窗口尺寸，或者改用别的信号判断加载完成。
 - **与 remotedesk-it 已合并工作的关系**：Worker `screen_question`、Cloud 的 grant 与 operations 仍在 `develop`，但其调用方假设（Work daemon 身份）与本文不符；RemoteDesk 组织档案落地时要么改调用方身份，要么弃用。
 
 **十四 与现有文档的关系**

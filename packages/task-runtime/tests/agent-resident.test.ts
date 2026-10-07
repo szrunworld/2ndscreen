@@ -264,3 +264,26 @@ test('only resident agents with every session start, and only declared task type
   agent.stop();
   await agent.done;
 });
+
+test('sessions that cannot be opened count as failed runs, start no process, and are given up on', async () => {
+  let opens = 0;
+  let spawned = 0;
+  const spawner = createLineProcessSpawner({ inheritEnv: false });
+  const { agent } = start('worker', {
+    sessions: undefined,
+    sessionSource: {
+      open: async () => {
+        opens += 1;
+        throw new Error('BOSS直聘 is not installed');
+      },
+      close: async () => {},
+    },
+    spawn: (file, args, env) => ((spawned += 1), spawner(file, args, env)),
+    maxRestarts: 1,
+  });
+  const outcome = await agent.done;
+  assert.equal(outcome.stoppedBy, 'gave_up');
+  assert.deepEqual(outcome.runs.map((r) => r.end), ['no_session', 'no_session']);
+  assert.equal(opens, 2);
+  assert.equal(spawned, 0);
+});

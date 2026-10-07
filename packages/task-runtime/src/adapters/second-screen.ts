@@ -49,6 +49,8 @@ export interface SecondScreenAdapterOptions {
   screenshotDir: string; // 截图存放目录，由调用方清理
   clock?: Clock;
   commandTimeoutMs?: number; // 单条 CLI 命令上限，默认 15000
+  /** Signals a process; default process.kill. Used only to end an app this adapter launched for a binding that failed. */
+  signalProcess?: (pid: number, signal: 'SIGTERM' | 'SIGKILL') => void;
 }
 
 /** How long a new side instance may take to answer, and the app its main window. */
@@ -351,6 +353,93 @@ export function createSecondScreenAdapter(options: SecondScreenAdapterOptions): 
     return { args: [], error: `the adapter takes element indexes and relative points; the session resolves ${target.kind} locators` };
   }
 
+  /**
+   * Binds the app's main window on the screen. `launchedApp` is filled in
+   * the moment this call launches the app, so a failure after that can end it.
+   */
+  async function bindAppOnce(
+    screenId: string,
+    profile: WindowProfile,
+    bindOptions: { takeOver: boolean },
+    signal: AbortSignal | undefined,
+    launchedApp: { pid?: number; who?: { bundleId?: string; startedAt?: string } },
+  ): Promise<WindowBinding> {
+    // The screen must exist before anything is launched or moved; its frame is read again below.
+    await screen(screenId, signal);
+    const running = await runningPid(profile.bundleId, signal);
+    let pid: number;
+    let launched = false;
+    if (running === undefined) {
+      const reply = await cli(['app', 'launch', '--screen', screenId, '--bundle', profile.bundleId, '--fill'], signal);
+      if (!reply.ok) throw cliError(`cannot launch ${profile.bundleId}`, reply);
+      pid = Number(reply.json.pid);
+      if (!Number.isInteger(pid)) throw new RuntimeError('io', 'app launch reported no pid');
+      launched = true;
+      launchedApp.pid = pid;
+      launchedApp.who = await identity(pid, signal).catch(() => undefined);
+    } else {
+      pid = running;
+      const onScreen = await cli(['state', '--screen', screenId, '--pid', String(pid)], signal);
+      if (!onScreen.ok) {
+        if (classifyCliError(onScreen.error ?? '') !== 'window_lost') throw cliError('cannot read the app window', onScreen);
+        if (!bindOptions.takeOver) {
+          const who = await identity(pid, signal);
+          throw new RuntimeError('conflict', `${profile.bundleId} (pid ${pid}) is running off screen ${screenId} and was not handed over; pass takeOver to use it`, {
+            pid,
+            processStartedAt: who.startedAt,
+            bundleId: who.bundleId,
+          });
+        }
+        const moved = await cli(['window', 'move', '--screen', screenId, '--pid', String(pid), '--fill'], signal);
+        if (!moved.ok) throw cliError(`cannot move ${profile.bundleId} onto ${screenId}`, moved);
+      }
+    }
+    let window = await mainWindow(screenId, pid, profile, signal);
+    // The window counts as on its screen when its center is; it must lie wholly within it, or
+    // screenshots are clipped and coordinates drift. Read the screen again: displays move.
+    let current = await screen(screenId, signal);
+    for (let refits = 0; !rectWithin(window.frame, current.frame); refits++) {
+      const details = { pid, windowId: window.windowId, frame: window.frame, screenFrame: current.frame };
+      // Resizing a window the runtime neither launched nor was handed would rearrange the user's app.
+      if (!launched && !bindOptions.takeOver)
+        throw new RuntimeError('conflict', `${profile.bundleId} (pid ${pid}) reaches past screen ${screenId} (window ${describeRect(window.frame)}, screen ${describeRect(current.frame)}) and was not handed over; pass takeOver to refit it`, details);
+      if (refits >= REFIT_ATTEMPTS)
+        throw new RuntimeError('conflict', `${profile.bundleId} (pid ${pid}) still reaches past screen ${screenId} after ${REFIT_ATTEMPTS} refits (window ${describeRect(window.frame)}, screen ${describeRect(current.frame)})`, details);
+      const refit = await cli(['window', 'move', '--screen', screenId, '--pid', String(pid), '--window-id', String(window.windowId), '--fill'], signal);
+      if (!refit.ok) throw cliError(`cannot fit ${profile.bundleId} onto ${screenId}`, refit, details);
+      window = await mainWindow(screenId, pid, profile, signal);
+      current = await screen(screenId, signal);
+    }
+    const who = await identity(pid, signal);
+    if (who.bundleId !== profile.bundleId)
+      throw new RuntimeError('conflict', `pid ${pid} is ${who.bundleId ?? 'not an app'}, not ${profile.bundleId}`, { pid });
+    return { screenId, socket: options.socket, window: geometry(window, profile.bundleId, who.startedAt, current), launchedByRuntime: launched };
+  }
+
+  /**
+   * Ends an app this adapter launched for a binding that then failed. Left
+   * running, its window would be moved onto the user's displays when the
+   * agent screen goes away. Only the very process launched is signalled:
+   * same bundle, same start time.
+   */
+  async function endLaunched(launchedApp: { pid?: number; who?: { bundleId?: string; startedAt?: string } }, bundleId: string): Promise<void> {
+    const { pid, who } = launchedApp;
+    if (pid === undefined || !who?.startedAt || who.bundleId !== bundleId) return;
+    const same = async () => {
+      const now = await identity(pid).catch(() => undefined);
+      return now?.bundleId === bundleId && now.startedAt === who.startedAt;
+    };
+    for (const name of ['SIGTERM', 'SIGKILL'] as const) {
+      if (!(await same())) return;
+      try {
+        (options.signalProcess ?? ((p: number, n: 'SIGTERM' | 'SIGKILL') => void process.kill(p, n)))(pid, name);
+      } catch {
+        return;
+      }
+      for (let i = 0; i < 20 && (await same()); i++) await delay(150);
+    }
+  }
+
   return {
     async capabilities(signal) {
       const list = await screens(signal);
@@ -417,54 +506,13 @@ export function createSecondScreenAdapter(options: SecondScreenAdapterOptions): 
     },
 
     async bindApp(screenId, profile, bindOptions, signal) {
-      // The screen must exist before anything is launched or moved; its frame is read again below.
-      await screen(screenId, signal);
-      const running = await runningPid(profile.bundleId, signal);
-      let pid: number;
-      let launched = false;
-      if (running === undefined) {
-        const reply = await cli(['app', 'launch', '--screen', screenId, '--bundle', profile.bundleId, '--fill'], signal);
-        if (!reply.ok) throw cliError(`cannot launch ${profile.bundleId}`, reply);
-        pid = Number(reply.json.pid);
-        if (!Number.isInteger(pid)) throw new RuntimeError('io', 'app launch reported no pid');
-        launched = true;
-      } else {
-        pid = running;
-        const onScreen = await cli(['state', '--screen', screenId, '--pid', String(pid)], signal);
-        if (!onScreen.ok) {
-          if (classifyCliError(onScreen.error ?? '') !== 'window_lost') throw cliError('cannot read the app window', onScreen);
-          if (!bindOptions.takeOver) {
-            const who = await identity(pid, signal);
-            throw new RuntimeError('conflict', `${profile.bundleId} (pid ${pid}) is running off screen ${screenId} and was not handed over; pass takeOver to use it`, {
-              pid,
-              processStartedAt: who.startedAt,
-              bundleId: who.bundleId,
-            });
-          }
-          const moved = await cli(['window', 'move', '--screen', screenId, '--pid', String(pid), '--fill'], signal);
-          if (!moved.ok) throw cliError(`cannot move ${profile.bundleId} onto ${screenId}`, moved);
-        }
+      const launchedApp: { pid?: number; who?: { bundleId?: string; startedAt?: string } } = {};
+      try {
+        return await bindAppOnce(screenId, profile, bindOptions, signal, launchedApp);
+      } catch (error) {
+        await endLaunched(launchedApp, profile.bundleId).catch(() => undefined);
+        throw error;
       }
-      let window = await mainWindow(screenId, pid, profile, signal);
-      // The window counts as on its screen when its center is; it must lie wholly within it, or
-      // screenshots are clipped and coordinates drift. Read the screen again: displays move.
-      let current = await screen(screenId, signal);
-      for (let refits = 0; !rectWithin(window.frame, current.frame); refits++) {
-        const details = { pid, windowId: window.windowId, frame: window.frame, screenFrame: current.frame };
-        // Resizing a window the runtime neither launched nor was handed would rearrange the user's app.
-        if (!launched && !bindOptions.takeOver)
-          throw new RuntimeError('conflict', `${profile.bundleId} (pid ${pid}) reaches past screen ${screenId} (window ${describeRect(window.frame)}, screen ${describeRect(current.frame)}) and was not handed over; pass takeOver to refit it`, details);
-        if (refits >= REFIT_ATTEMPTS)
-          throw new RuntimeError('conflict', `${profile.bundleId} (pid ${pid}) still reaches past screen ${screenId} after ${REFIT_ATTEMPTS} refits (window ${describeRect(window.frame)}, screen ${describeRect(current.frame)})`, details);
-        const refit = await cli(['window', 'move', '--screen', screenId, '--pid', String(pid), '--window-id', String(window.windowId), '--fill'], signal);
-        if (!refit.ok) throw cliError(`cannot fit ${profile.bundleId} onto ${screenId}`, refit, details);
-        window = await mainWindow(screenId, pid, profile, signal);
-        current = await screen(screenId, signal);
-      }
-      const who = await identity(pid, signal);
-      if (who.bundleId !== profile.bundleId)
-        throw new RuntimeError('conflict', `pid ${pid} is ${who.bundleId ?? 'not an app'}, not ${profile.bundleId}`, { pid });
-      return { screenId, socket: options.socket, window: geometry(window, profile.bundleId, who.startedAt, current), launchedByRuntime: launched };
     },
 
     async observe(binding, observeOptions: ObserveOptions, signal) {
@@ -586,6 +634,11 @@ export function createSecondScreenAdapter(options: SecondScreenAdapterOptions): 
         // Something answered ok without saying it pressed through accessibility: what it did cannot be told.
         return { actionId: request.actionId, status: 'unknown', route, startedAt, finishedAt: clock.now().toISOString(), error: { code: 'capability_missing', message: `ax-press answered with route ${String(reply.json.route ?? 'none')}, not ${EXPLICIT_PRESS_ROUTE}` } };
       return { actionId: request.actionId, status: 'ok', route, point: target.point, startedAt, finishedAt: clock.now().toISOString() };
+    },
+
+    async quitApp(binding) {
+      if (!binding.launchedByRuntime) throw new RuntimeError('conflict', 'only an app the runtime launched is quit');
+      await endLaunched({ pid: binding.window.pid, who: { bundleId: binding.window.bundleId, ...(binding.window.processStartedAt && { startedAt: binding.window.processStartedAt }) } }, binding.window.bundleId);
     },
 
     async releaseWindow(binding, signal) {

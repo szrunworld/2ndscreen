@@ -394,6 +394,20 @@ test('a malformed line, or a message for another task, ends the task as a protoc
   assert.equal(undeclared.failure, 'protocol');
 });
 
+test('a window that goes away under the agent ends the task as an error that says why, not as the agent\'s protocol fault', async () => {
+  const broken = fakeSession(BOSS, 4242);
+  (broken as unknown as { observe: () => Promise<never> }).observe = async () => {
+    throw new Error('window 4243 of com.zhipin.www is gone');
+  };
+  const { outcome } = await runEcho({ steps: [{ type: 'observe', app: BOSS }] }, { sessions: new Map([[BOSS, broken], [MAIL, fakeSession(MAIL, 5252)]]) });
+  assert.equal(outcome.status, 'failed');
+  assert.equal(outcome.failure, 'error');
+  assert.match(outcome.message ?? '', /window 4243 of com.zhipin.www is gone/);
+  const { outcome: malformed } = await runEcho({ steps: [{ rawLine: '{"v":1}' }] });
+  assert.equal(malformed.failure, 'protocol');
+  assert.match(malformed.message ?? '', /malformed line/);
+});
+
 test('an agent that exits without finishing has failed', async () => {
   const { outcome, report } = await runEcho({ steps: [], finish: 'exit' });
   assert.ok(report);

@@ -425,6 +425,20 @@ Provider calls are counted per agent, with tokens and, when
 
 MCP has them as `task_agents` and `task_usage`.
 
+The agent host keeps the resident agents enabled in `agents/config.json`
+of the tasks directory running through their work hours, on agent screens
+of their own. Approvals and questions from agents wait in an inbox until
+someone decides them:
+
+```bash
+2ndscreen task host start|stop|status
+2ndscreen task inbox
+2ndscreen task approve|deny|answer INBOX_ID ...
+```
+
+MCP has them as `task_host`, `task_inbox`, `task_approve`, `task_deny` and
+`task_answer`.
+
 Task runs take a lease on BOSS直聘 in the task ledger (`leaseScopeKey` in
 `packages/task-runtime/src/contracts.ts`), so two of them, or another
 agent that takes the same lease, never act on it at the same time.
