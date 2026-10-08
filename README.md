@@ -1,5 +1,14 @@
 # 2ndscreen
 
+> **此仓库已冻结（2026-10-08）。** 核心引擎已完整并入
+> [szrunworld/agentdesktop](https://github.com/szrunworld/agentdesktop)
+> 的 `engine/`（导入提交 `49218be`，源为本仓库 `da5677c`），之后所有
+> macOS、Windows、Android、iPhone、GUI Explorer、ACP 与 Runtime 的开发都
+> 在 agentdesktop 进行。本仓库不再接受功能性 PR；历史代码、PR 与 Git
+> 历史保留。当时开着的 7 个 PR 的处置与转入 agentdesktop 的待办见
+> agentdesktop 的 `docs/migration/2026-10-08-2ndscreen-closeout.md`。
+> 下文是冻结前的说明，仅供查阅。
+
 A software second screen for macOS. 2ndscreen creates a virtual display
 with no hardware behind it, so an agent can work in apps placed there
 while you keep using your own screen. Swipe to its full-screen preview to
