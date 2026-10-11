@@ -79,11 +79,17 @@ CLI=2ndscreen   # or <repo>/.build/release/2ndscreen
    $CLI scroll --screen login-test --pid PID --x 2400 --y 500 --direction up --by page
    ```
 
-   A menu or panel a page opens on hover: `hover` rests the pointer on
-   its trigger without clicking (the page sees a middle click, so not on
-   a link), and the panel stays open for `click`s on its options. Try a
-   `click --x --y` on the trigger first; most such panels open on a
-   click as well.
+   A menu or panel a page opens on hover: try a `click --x --y` on the
+   trigger first; most such panels open on a click as well.
+
+   **`hover` is not a pointer move: it sends a middle-button press and
+   release at the point.** The page gets `mousedown`, `mouseup` and
+   `auxclick`; a link there opens; apps that paste on a middle click
+   (iTerm2 by default) paste the clipboard; middle-button handlers run. A plain background move reaches neither Chrome nor AppKit, so
+   there is no safe hover here (agentdesktop #263). Use it only on a
+   trigger you checked ignores middle clicks, never on a link, a text
+   field or a terminal, and ask the user first when unsure. AgentDesktop's
+   runtime/1 refuses hover for these reasons.
 
    ```bash
    $CLI hover --screen login-test --pid PID --text "筛选"
@@ -118,7 +124,7 @@ CLI=2ndscreen   # or <repo>/.build/release/2ndscreen
    | --- | --- | --- |
    | `ax.press`, `ax.press.explicit`, `ax.insert`, `ax.value` | Done through accessibility; the control took it, or the field shows the text | Check the outcome as usual |
    | `ax.insert.unconfirmed`, `ax.value.unconfirmed` | The text went in, but the field had not shown it yet | `state` and read the field; do not type it again blindly, or it goes in twice |
-   | `event.click`, `event.double`, `event.right`, `event.hover`, `event.wheel` (also with `.overlay`) | Mouse events posted; nothing confirms the app acted | Always check with `state` or a screenshot |
+   | `event.click`, `event.double`, `event.right`, `event.hover`, `event.wheel` (also with `.overlay`) | Mouse events posted (`event.hover` is a middle-button press and release); nothing confirms the app acted | Always check with `state` or a screenshot; after `event.hover`, check that no link opened and nothing was pasted |
    | `event.unicode`, `event.key`, `event.key.menu`, `event.key.held`, `event.click+...` | Keys posted; nothing confirms the app acted | Read the field or the window again |
    | `hid.drag` | A foreground drag with the real pointer | Check; drags are often lost |
 

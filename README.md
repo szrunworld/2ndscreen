@@ -158,7 +158,8 @@ Things to know:
   and **Destroy**.
 
 Agents then look and act with `state`, `click`, `type`, `key`, `scroll`,
-`hover` and `ax-press`, which work in the background and show the agent cursor:
+`hover` and `ax-press`, which work in the background and show the agent cursor
+(`hover` is a middle click, not a pointer move: see the warning below):
 
 ```bash
 $CLI state --screen test-a --pid 1234 [--screenshot before.png]   # elements + accessibility tree
@@ -229,15 +230,25 @@ reaches a list nested inside a larger window; with neither, over the
 middle of the window. A right click reaches the app by two routes, so
 some apps see it twice; check a context menu before acting on it.
 
-`hover` rests the pointer on an element or point without clicking, for
-menus, panels and tooltips a page opens on hover; the page keeps the hover
-until the next mouse event, so its options can then be clicked as usual.
-Chromium ignores mouse moves posted to a background window but takes
-hover from a button event, so this is a middle-button press and release at
-the point: the page sees `auxclick` and no `click`. Not for links, which
-Chromium opens on a middle click. Many panels that look hover-only open on
-a click too: BOSS直聘's 筛选 panel opens with `click --x --y`, and its
-options take clicks, in the background.
+**Warning: `hover` is not a pointer move. It is a middle-button press
+and release at the point.** The page receives `pointerdown`, `mousedown`,
+`mouseup`, `pointerup` and `auxclick` (measured with an event-logging page,
+szrunworld/agentdesktop#263). Consequences:
+
+- a link under the point opens (Chromium opens links on a middle click);
+- any `auxclick` or middle-button handler on the page runs;
+- apps that paste on a middle click (iTerm2 does by default; X11-style
+  apps do) paste the clipboard into whatever is under the point;
+- a native control reacting to `otherMouseDown` reacts.
+
+It was built this way because a plain mouse move posted to a background
+window reaches neither Chromium nor AppKit tracking areas (#263), so no
+background hover without a button event exists here. Use it only on a
+trigger you have checked ignores middle clicks, never on a link, a text
+field or a terminal window. Prefer `click --x --y`: most panels that look
+hover-only open on a click too (BOSS直聘's 筛选 panel opens with
+`click --x --y`, and its options take clicks, in the background).
+For these reasons AgentDesktop's runtime/1 refuses `hover` (agentdesktop #263); refusing it in the AgentDesktop engine too is agentdesktop #288.
 
 `ax-press --index N` presses one element of the last `state` through
 accessibility alone, with no pointer event: for a control that answers an
@@ -360,7 +371,8 @@ executor, for example, is `amplifistudio/remotedesk-boss-agent`.
 `2ndscreen mcp` serves the commands above, except `agent`, as MCP tools over stdio:
 `screen_create`, `screen_list`, `screen_destroy`, `app_launch`,
 `window_move`, `screenshot`, `state`, `click`, `type`, `key`, `scroll`,
-`drag` and `hover`. Each tool
+`drag` and `hover` (a middle click, not a pointer move: see the warning
+above). Each tool
 runs the matching CLI command, so the guards and output are identical.
 `screenshot`, and `state` with `screenshot: true`, also return the image,
 downscaled to 1280 px as JPEG.
